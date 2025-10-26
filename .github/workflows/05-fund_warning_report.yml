@@ -30,7 +30,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        # --- 错误修正：将 'actions:setup-python@v5' 改为 'actions/setup-python@v5' ---
         uses: actions/setup-python@v5 
         with:
           python-version: '3.x'
@@ -38,8 +37,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas 
-
+          pip install pandas requests # 【关键修正】：新增 requests 库
+          
       - name: Run fund analysis script
         id: analysis
         run: python analyzer.py
