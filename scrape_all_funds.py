@@ -9,8 +9,8 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 import re
-import json # 用于存储结构化的历史任职数据
 
+# subprocess 已移除，因为不再进行 Git 操作
 # ==================== 配置 ====================
 shanghai_tz = pytz.timezone('Asia/Shanghai')
 now = datetime.datetime.now(shanghai_tz)
@@ -28,16 +28,12 @@ HEADERS = {
                    'AppleWebKit/537.36 (KHTML, like Gecko) '
                    'Chrome/128.0.0.0 Safari/537.36')
 }
-
-# 【优化参数】降低并发数，避免被封锁
-MAX_WORKERS = 8 
 # ==============================================
 
 def scrape_and_parse_fund(fund_code):
-    """抓取单只基金的概况 + 费率 + 基金经理信息（包括历史任职），返回 dict"""
-    
-    # 【优化参数】增加随机延时，降低抓取频率
-    time.sleep(random.uniform(1.0, 3.0))
+    """抓取单只基金的概况 + 费率 + 基金经理信息，返回 dict"""
+    # 随机延时防封
+    time.sleep(random.uniform(0.15, 0.6))
 
     result = {'基金代码': fund_code, '状态': '成功'}
 
@@ -65,7 +61,6 @@ def scrape_and_parse_fund(fund_code):
                 result['状态_概况'] = "抓取警告: 未找到概况表格"
     except requests.RequestException as e:
         result['状态_概况'] = f"抓取失败: 网络错误 ({e})"
-
 
     # ---------- 2. 费率 (jjfl) ----------
     fee_url = f"https://fundf10.eastmoney.com/jjfl_{fund_code}.html"
@@ -101,10 +96,12 @@ def scrape_and_parse_fund(fund_code):
                         rate   = cols[2].get_text(strip=True)
 
                         # 【增强逻辑】：统一键名：大于等于7天 → 赎回费率_7D0
+                        # 将所有与 "持有7天及以上" 相关的描述统一映射到 '赎回费率_7D0'
                         if any(p in period.replace(' ', '') for p in
                                ['大于等于7天', '7天及以上', '≥7天', '7天以上', '7天-1年', '7天＜持有期限＜1年']):
                             result['赎回费率_7D0'] = rate
                         else:
+                            # 对于其他不符合7天条件的期限，使用原始名称作为键
                             result[f"赎回费率_{period.replace(' ', '')}"] = rate
                 else:
                     result['状态_费率'] = "抓取警告: 未找到赎回费率表格"
@@ -120,92 +117,60 @@ def scrape_and_parse_fund(fund_code):
             result['状态_经理'] = f"抓取失败: 经理页 {r.status_code}"
         else:
             soup = BeautifulSoup(r.text, 'html.parser')
-
-            # --- 3.1 基金经理变动一览（历史任职信息）---
-            manager_history = []
-            history_table = soup.find('table', class_='w782 comm jloff')
-            
-            if history_table and history_table.find('tbody'):
-                rows = history_table.find('tbody').find_all('tr')
-                for i, row in enumerate(rows):
-                    cols = row.find_all('td')
-                    if len(cols) >= 5:
-                        start_date = cols[0].get_text(strip=True)
-                        end_date = cols[1].get_text(strip=True)
-                        # 替换 &nbsp; 为空格
-                        managers = cols[2].get_text(strip=True).replace('\xa0', ' ') 
-                        duration = cols[3].get_text(strip=True)
-                        return_rate = cols[4].get_text(strip=True)
-                        
-                        record = {
-                            '起始期': start_date,
-                            '截止期': end_date,
-                            '基金经理': managers,
-                            '任职期间': duration,
-                            '任职回报': return_rate
-                        }
-                        manager_history.append(record)
-                        
-                        # 特别提取：如果这是第一行（即现任经理的最新记录）
-                        if i == 0 and end_date == '至今':
-                            result['现任经理任职回报'] = return_rate
-                            result['现任经理任职期间'] = duration
-
-            # 将历史记录存储为 JSON 字符串
-            result['基金经理历史任职'] = json.dumps(manager_history, ensure_ascii=False)
-            
-            
-            # --- 3.2 现任基金经理简介 ---
             manager_intro_box = soup.find('div', class_='jl_intro')
             
             if manager_intro_box:
                 # 提取姓名
-                # 找到第一个p标签内的a标签
-                name_tag = manager_intro_box.find('p').find('a') 
+                name_tag = manager_intro_box.find('p').find('a')
                 result['基金经理姓名'] = name_tag.get_text(strip=True) if name_tag else ''
 
                 # 提取上任日期
-                # 找到包含“上任日期”文本的p标签
                 date_tag = manager_intro_box.find('p', string=lambda t: t and '上任日期' in t)
                 if date_tag:
-                    # 使用正则匹配日期
+                    # 匹配 '上任日期：' 后的日期
                     match = re.search(r'上任日期[:：]\s*(\d{4}-\d{2}-\d{2})', date_tag.get_text(strip=True))
                     result['基金经理上任日期'] = match.group(1) if match else ''
 
-                # 提取简介
+                # 提取简介 (在 <div class="text"> 中，通常是最后一个 <p> 标签之前的内容)
                 text_div = manager_intro_box.find('div', class_='text')
                 if text_div:
+                    # 获取所有 <p> 标签
                     paragraphs = text_div.find_all('p')
-                    
-                    manager_intro = []
-                    # 遍历所有p标签的文本
-                    for text in [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]:
-                        # 忽略姓名和上任日期行
-                        if text.startswith('姓名') or text.startswith('上任日期'):
-                            continue
-                        # 遇到“查看更多”则停止
-                        if text.startswith('查看更多基金经理详情'):
-                            break
-                        manager_intro.append(text)
+                    if len(paragraphs) >= 3:
+                        # 假设简介是包含在第二个 <p> (索引1) 和倒数第二个 <p> 之间的文本。
+                        # 在这个页面的结构中，马磊的简介是从'马磊先生:中国国籍...'开始的，
+                        # 它位于日期P标签之后，最后一个<p class="tor">之前。
+                        
+                        # 我们可以获取 text_div 的所有直接文本内容，然后拼接，去除掉姓名和日期行
+                        
+                        # 筛选出文本行，忽略掉包含'姓名'或'上任日期'的行，以及最后的'查看更多'行
+                        # 假设简介是最后一个不是'姓名'或'上任日期'的P标签
+                        
+                        # 重新解析：获取所有的p标签文本，然后移除姓名和日期行，剩下的就是简介
+                        all_p_texts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+                        
+                        manager_intro = []
+                        is_intro_start = False
+                        for text in all_p_texts:
+                            if text.startswith('姓名') or text.startswith('上任日期'):
+                                continue
+                            if text.startswith('查看更多基金经理详情'):
+                                break # 简介结束
+                            manager_intro.append(text)
                             
-                    result['基金经理简介'] = '\n'.join(manager_intro).strip()
-            
-            elif not manager_history:
-                 # 如果没有简介和历史记录，则给出警告
-                result['状态_经理'] = result.get('状态_经理', '') + "抓取警告: 未找到基金经理信息。"
+                        result['基金经理简介'] = '\n'.join(manager_intro).strip()
+            else:
+                result['状态_经理'] = "抓取警告: 未找到现任基金经理简介"
 
     except requests.RequestException as e:
         result['状态_经理'] = f"抓取失败: 经理页网络错误 ({e})"
 
 
     # 统一状态
-    # 只要任何一个子状态是“失败”，总状态就是“失败”
     if any('失败' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '失败'
-    # 否则，只要任何一个子状态是“警告”，总状态就是“警告”
     elif any('警告' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '警告'
-    
     return result
 
 # ==================== 主逻辑 ====================
@@ -220,12 +185,11 @@ else:
     fund_codes = []
 
 
-print(f"[{now.strftime('%H:%M:%S')}] 共 {len(fund_codes)} 只基金，准备并行抓取 (最大并发: {MAX_WORKERS})...")
-
+print(f"[{now.strftime('%H:%M:%S')}] 共 {len(fund_codes)} 只基金，准备并行抓取...")
+MAX_WORKERS = 40
 all_data = []
 if fund_codes:
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        # 使用 list() 来强制执行所有 future 并收集结果
         all_data = list(pool.map(scrape_and_parse_fund, fund_codes))
 
 print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 抓取完毕")
@@ -236,20 +200,12 @@ for d in all_data:
     all_keys.update(d.keys())
 
 # 定义键的优先级顺序
-preferred_keys = [
-    '基金代码', '状态', 
-    '基金经理姓名', '基金经理上任日期', 
-    '现任经理任职期间', '现任经理任职回报', 
-    '基金经理简介', '基金经理历史任职'
-]
-# 筛选所有费率相关的键
+preferred_keys = ['基金代码', '状态', '基金经理姓名', '基金经理上任日期', '基金经理简介']
 fee_keys = sorted({k for k in all_keys if '费' in k or '费率' in k})
 
-# 最终键列表的构建
+# 最终键列表：优先键 + 费率键 + 其他键
 final_keys_set = set(preferred_keys) | set(fee_keys)
-# 排除所有优先键、费率键和临时状态键（状态_概况等）
-other_keys = sorted({k for k in all_keys if k not in final_keys_set and not k.startswith('状态_')})
-# 最终的列顺序：优先键 -> 费率键 -> 其他键
+other_keys = sorted({k for k in all_keys if k not in final_keys_set and not k.startswith('状态_')}) # 忽略临时的状态键
 final_keys = [k for k in preferred_keys if k in all_keys] + fee_keys + other_keys
 
 out_path = os.path.join(output_base_dir, f"basic_info_and_fees_all_funds_{timestamp}.csv")
@@ -259,7 +215,7 @@ try:
         w = csv.DictWriter(f, fieldnames=final_keys)
         w.writeheader()
         for d in all_data:
-            # 确保只写入 final_keys 中定义的字段
+            # 过滤掉内部的状态键，并且确保数据字典只包含 final_keys 中的键
             row_data = {k: d.get(k, '') for k in final_keys}
             w.writerow(row_data)
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全量文件已保存 → {out_path}")
