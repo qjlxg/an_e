@@ -1,9 +1,9 @@
-name: 经理
+name: 规模
 
 on:
   # 允许手动运行
   workflow_dispatch:
-  # 当脚本、配置文件或工作流本身变动时自动运行
+  # 当脚本、配置文件或基金代码列表变动时自动运行
   push:
     paths:
       - 'scrape_fund_data.py'
@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 检出代码
+      - name: 检出代码 (获取完整历史用于增量对比)
         uses: actions/checkout@v4
         with:
-          # 必须检出，才能将生成的新文件推送回仓库
+          # 必须检出所有历史提交，以便脚本能找到并读取历史数据文件
           fetch-depth: 0 
           
       - name: 设置Python环境
@@ -30,31 +30,43 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 安装依赖 (requests, beautifulsoup4, pandas)
-        # 增加了 pandas 依赖
+      - name: 安装依赖
         run: pip install requests beautifulsoup4 pandas
 
-      - name: 运行数据抓取脚本 (并行)
+      - name: 运行数据抓取脚本 (并行/增量)
         # 脚本将生成 '年/月/总表_YYYYMMDD_HHMMSS.csv' 格式的文件
         run: python scrape_fund_data.py
         
-      - name: 配置 Git 用户信息
+      - name: 检查并推送新生成的数据到仓库
+        id: push_data
         run: |
-          # 使用 GitHub Actions 的默认 bot 身份进行提交
+          echo "--- 文件列表 (ls -R) ---"
+          ls -R
+          echo "--------------------------"
+          
+          # 查找新生成的 CSV 文件路径，并存储为变量（应在 年/月 目录下）
+          NEW_FILE_PATH=$(find . -type f -name '总表_*.csv' | head -n 1)
+          
+          if [ -z "$NEW_FILE_PATH" ]; then
+            echo "::notice::⚠️ 警告：未找到新的总表文件 (总表_*.csv)。"
+            exit 0 # 正常退出，没有文件需要推送
+          fi
+          
+          echo "::notice::✅ 发现新的总表文件: $NEW_FILE_PATH"
+
+          # 配置 Git 用户信息
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-
-      - name: 推送新生成的数据到仓库
-        run: |
-          # 添加所有新增或修改的文件（包括新的 年/月 目录和csv文件）
+          
+          # 强制添加整个工作目录，确保新增的 年/月 目录和 CSV 文件被追踪
           git add .
           
-          # 检查是否有文件更改需要提交
-          # '??' 表示未跟踪的文件 (新生成的csv)，'M' 表示已修改的文件
+          # 检查是否有文件更改需要提交 ('??' = 新文件, 'M' = 修改文件)
           if git status --porcelain | grep -q '??' || git status --porcelain | grep -q 'M'; then
-            # 使用上海时区的时间生成 commit 信息
             COMMIT_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
-            git commit -m "🤖 Auto: 并行更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
+            git commit -m "🤖 Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
+            
+            # 推送提交
             git push
           else
             echo "没有新的数据文件生成或文件内容没有变化，跳过推送。"
