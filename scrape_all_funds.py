@@ -9,9 +9,8 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 import re
-import json # 引入 json 库用于存储结构化数据
+import json # 用于存储结构化的历史任职数据
 
-# subprocess 已移除，因为不再进行 Git 操作
 # ==================== 配置 ====================
 shanghai_tz = pytz.timezone('Asia/Shanghai')
 now = datetime.datetime.now(shanghai_tz)
@@ -29,17 +28,20 @@ HEADERS = {
                    'AppleWebKit/537.36 (KHTML, like Gecko) '
                    'Chrome/128.0.0.0 Safari/537.36')
 }
+
+# 【优化参数】降低并发数，避免被封锁
+MAX_WORKERS = 8 
 # ==============================================
 
 def scrape_and_parse_fund(fund_code):
     """抓取单只基金的概况 + 费率 + 基金经理信息（包括历史任职），返回 dict"""
-    # 随机延时防封
-    time.sleep(random.uniform(0.15, 0.6))
+    
+    # 【优化参数】增加随机延时，降低抓取频率
+    time.sleep(random.uniform(1.0, 3.0))
 
     result = {'基金代码': fund_code, '状态': '成功'}
 
     # ---------- 1. 基本概况 (jbgk) ----------
-    # (此部分代码保持不变，与您上次提供的版本一致)
     jbgk_url = f"https://fundf10.eastmoney.com/jbgk_{fund_code}.html"
     try:
         r = requests.get(jbgk_url, headers=HEADERS, timeout=12)
@@ -66,7 +68,6 @@ def scrape_and_parse_fund(fund_code):
 
 
     # ---------- 2. 费率 (jjfl) ----------
-    # (此部分代码保持不变，与您上次提供的版本一致)
     fee_url = f"https://fundf10.eastmoney.com/jjfl_{fund_code}.html"
     try:
         r = requests.get(fee_url, headers=HEADERS, timeout=12)
@@ -131,7 +132,8 @@ def scrape_and_parse_fund(fund_code):
                     if len(cols) >= 5:
                         start_date = cols[0].get_text(strip=True)
                         end_date = cols[1].get_text(strip=True)
-                        managers = cols[2].get_text(strip=True).replace('\xa0', ' ')
+                        # 替换 &nbsp; 为空格
+                        managers = cols[2].get_text(strip=True).replace('\xa0', ' ') 
                         duration = cols[3].get_text(strip=True)
                         return_rate = cols[4].get_text(strip=True)
                         
@@ -144,8 +146,8 @@ def scrape_and_parse_fund(fund_code):
                         }
                         manager_history.append(record)
                         
-                        # 特别提取：如果这是第一行（即现任经理的记录）
-                        if i == 0:
+                        # 特别提取：如果这是第一行（即现任经理的最新记录）
+                        if i == 0 and end_date == '至今':
                             result['现任经理任职回报'] = return_rate
                             result['现任经理任职期间'] = duration
 
@@ -158,12 +160,15 @@ def scrape_and_parse_fund(fund_code):
             
             if manager_intro_box:
                 # 提取姓名
-                name_tag = manager_intro_box.find('p').find('a')
+                # 找到第一个p标签内的a标签
+                name_tag = manager_intro_box.find('p').find('a') 
                 result['基金经理姓名'] = name_tag.get_text(strip=True) if name_tag else ''
 
                 # 提取上任日期
+                # 找到包含“上任日期”文本的p标签
                 date_tag = manager_intro_box.find('p', string=lambda t: t and '上任日期' in t)
                 if date_tag:
+                    # 使用正则匹配日期
                     match = re.search(r'上任日期[:：]\s*(\d{4}-\d{2}-\d{2})', date_tag.get_text(strip=True))
                     result['基金经理上任日期'] = match.group(1) if match else ''
 
@@ -173,9 +178,12 @@ def scrape_and_parse_fund(fund_code):
                     paragraphs = text_div.find_all('p')
                     
                     manager_intro = []
+                    # 遍历所有p标签的文本
                     for text in [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]:
+                        # 忽略姓名和上任日期行
                         if text.startswith('姓名') or text.startswith('上任日期'):
                             continue
+                        # 遇到“查看更多”则停止
                         if text.startswith('查看更多基金经理详情'):
                             break
                         manager_intro.append(text)
@@ -186,16 +194,18 @@ def scrape_and_parse_fund(fund_code):
                  # 如果没有简介和历史记录，则给出警告
                 result['状态_经理'] = result.get('状态_经理', '') + "抓取警告: 未找到基金经理信息。"
 
-
     except requests.RequestException as e:
         result['状态_经理'] = f"抓取失败: 经理页网络错误 ({e})"
 
 
     # 统一状态
+    # 只要任何一个子状态是“失败”，总状态就是“失败”
     if any('失败' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '失败'
+    # 否则，只要任何一个子状态是“警告”，总状态就是“警告”
     elif any('警告' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '警告'
+    
     return result
 
 # ==================== 主逻辑 ====================
@@ -210,11 +220,12 @@ else:
     fund_codes = []
 
 
-print(f"[{now.strftime('%H:%M:%S')}] 共 {len(fund_codes)} 只基金，准备并行抓取...")
-MAX_WORKERS = 40
+print(f"[{now.strftime('%H:%M:%S')}] 共 {len(fund_codes)} 只基金，准备并行抓取 (最大并发: {MAX_WORKERS})...")
+
 all_data = []
 if fund_codes:
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        # 使用 list() 来强制执行所有 future 并收集结果
         all_data = list(pool.map(scrape_and_parse_fund, fund_codes))
 
 print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 抓取完毕")
@@ -231,11 +242,14 @@ preferred_keys = [
     '现任经理任职期间', '现任经理任职回报', 
     '基金经理简介', '基金经理历史任职'
 ]
+# 筛选所有费率相关的键
 fee_keys = sorted({k for k in all_keys if '费' in k or '费率' in k})
 
-# 最终键列表：优先键 + 费率键 + 其他键
+# 最终键列表的构建
 final_keys_set = set(preferred_keys) | set(fee_keys)
-other_keys = sorted({k for k in all_keys if k not in final_keys_set and not k.startswith('状态_')}) # 忽略临时的状态键
+# 排除所有优先键、费率键和临时状态键（状态_概况等）
+other_keys = sorted({k for k in all_keys if k not in final_keys_set and not k.startswith('状态_')})
+# 最终的列顺序：优先键 -> 费率键 -> 其他键
 final_keys = [k for k in preferred_keys if k in all_keys] + fee_keys + other_keys
 
 out_path = os.path.join(output_base_dir, f"basic_info_and_fees_all_funds_{timestamp}.csv")
@@ -245,7 +259,7 @@ try:
         w = csv.DictWriter(f, fieldnames=final_keys)
         w.writeheader()
         for d in all_data:
-            # 过滤掉内部的状态键，并且确保数据字典只包含 final_keys 中的键
+            # 确保只写入 final_keys 中定义的字段
             row_data = {k: d.get(k, '') for k in final_keys}
             w.writerow(row_data)
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全量文件已保存 → {out_path}")
