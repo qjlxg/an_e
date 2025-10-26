@@ -39,25 +39,27 @@ def load_latest_history():
         print(f"-> 发现最新历史文件: {latest_file}")
         
         # 读取历史数据，使用 'utf-8-sig' 处理中文
-        # errors='ignore' 避免因为少数编码问题导致整个文件读取失败
         history_df = pd.read_csv(latest_file, encoding='utf-8-sig', errors='ignore')
+        
+        # 检查关键列是否存在，如果不存在则返回空
+        if history_df.empty or '基金代码' not in history_df.columns:
+             print("历史文件为空或缺少 '基金代码' 列，将执行完整抓取。")
+             return pd.DataFrame(), {}
         
         # 为快速查找创建历史基本信息字典
         history_basic_info = {}
-        # 确保基金代码是字符串类型进行分组
-        if '基金代码' in history_df.columns:
-            for code, group in history_df.groupby('基金代码'):
-                code_str = str(code).strip()
-                if not code_str: continue
+        for code, group in history_df.groupby('基金代码'):
+            code_str = str(code).strip()
+            if not code_str: continue
 
-                # 取该基金在历史表中任意一条记录的基本信息作为对比基准
-                first_record = group.iloc[0]
-                history_basic_info[code_str] = {
-                    '成立日期': str(first_record.get('成立日期', '')).strip(),
-                    '基金经理(现任)': str(first_record.get('基金经理(现任)', '')).strip(),
-                    '资产规模': str(first_record.get('资产规模', '')).strip(),
-                    '截止至': str(first_record.get('截止至', '')).strip()
-                }
+            # 取该基金在历史表中任意一条记录的基本信息作为对比基准
+            first_record = group.iloc[0]
+            history_basic_info[code_str] = {
+                '成立日期': str(first_record.get('成立日期', '')).strip(),
+                '基金经理(现任)': str(first_record.get('基金经理(现任)', '')).strip(),
+                '资产规模': str(first_record.get('资产规模', '')).strip(),
+                '截止至': str(first_record.get('截止至', '')).strip()
+            }
         
         return history_df, history_basic_info
         
@@ -183,7 +185,6 @@ def scrape_fund_data(fund_code, history_df, history_basic_info):
 
         if not needs_full_update and fund_code_str in history_basic_info:
             # 关键信息无变化，直接从历史数据中提取记录
-            # 确保历史记录中包含当前基金代码
             historical_records = history_df[history_df['基金代码'].astype(str) == fund_code_str].to_dict('records')
             
             # 使用最新的基本信息覆盖历史记录中的基本信息
@@ -231,7 +232,11 @@ def main():
     history_df, history_basic_info = load_latest_history()
     
     # 3. 合并和去重基金代码列表：C类.txt + 历史文件中的代码
-    history_codes = history_df['基金代码'].astype(str).str.strip().unique().tolist()
+    history_codes = []
+    # 关键修复：只有在历史DataFrame非空且包含'基金代码'列时才提取历史代码
+    if not history_df.empty and '基金代码' in history_df.columns:
+        history_codes = history_df['基金代码'].astype(str).str.strip().unique().tolist()
+    
     all_codes_to_track = sorted(list(set(new_fund_codes) | set(history_codes)))
     
     if not all_codes_to_track:
