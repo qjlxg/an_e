@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -9,7 +8,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 import re
-# subprocess 已移除，因为不再进行 Git 操作
+
 
 # ==================== 配置 ====================
 shanghai_tz = pytz.timezone('Asia/Shanghai')
@@ -22,11 +21,6 @@ fund_data_dir = 'fund_data'
 output_base_dir = month_dir
 os.makedirs(output_base_dir, exist_ok=True)
 
-# 只要 7 天以上赎回费 = 0.00%，管理费/托管费放宽
-MAX_MANAGEMENT_FEE = 99.0      # 实际上不限制
-MAX_CUSTODIAN_FEE = 0.20       # 仍保留 0.20% 限制
-MAX_REDEMPTION_FEE_7D = 0.00   # 必须 0%
-
 # 防反爬请求头
 HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -34,13 +28,6 @@ HEADERS = {
                    'Chrome/128.0.0.0 Safari/537.36')
 }
 # ==============================================
-
-def clean_fee_rate(fee_str):
-    """提取百分比数字（如 '1.50%' → 1.5）"""
-    if not fee_str:
-        return None
-    m = re.search(r'(\d+\.?\d*)%', fee_str)
-    return float(m.group(1)) if m else None
 
 
 def scrape_and_parse_fund(fund_code):
@@ -170,61 +157,5 @@ try:
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全量文件已保存 → {out_path}")
 except Exception as e:
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 写入全量文件失败: {e}")
-
-# ---------- 2. 低费率（7天免赎回）报告 ----------
-print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 开始筛选【7天以上免赎回费】基金...")
-report_funds = []
-
-for d in all_data:
-    if d.get('状态') != '成功':
-        continue
-
-    mgmt = clean_fee_rate(d.get('管理费', ''))
-    cust = clean_fee_rate(d.get('托管费', ''))
-    red7 = clean_fee_rate(d.get('赎回费率_7D0', ''))  # 检查统一键名
-
-    # 逻辑：(管理费放宽) AND (托管费 <= MAX_CUSTODIAN_FEE) AND (赎回费(>=7D) 必须 0%)
-    is_qualified = True
-    
-    if mgmt is not None and mgmt > MAX_MANAGEMENT_FEE:
-        is_qualified = False
-    
-    if cust is None or cust > MAX_CUSTODIAN_FEE:
-        is_qualified = False
-
-    if red7 is None or red7 > MAX_REDEMPTION_FEE_7D:
-        is_qualified = False
-    
-    if not is_qualified:
-        continue
-
-    name = d.get('基金全称') or d.get('基金简称') or ''
-    svc  = clean_fee_rate(d.get('销售服务费', ''))
-
-    report_funds.append({
-        '代码': d['基金代码'],
-        '名称': name,
-        '管理费': f"{mgmt:.2f}%" if mgmt is not None else 'N/A',
-        '托管费': f"{cust:.2f}%" if cust is not None else 'N/A',
-        '销售服务费': f"{svc:.2f}%" if svc is not None else '0.00%',
-        '赎回费(>=7天)': '0.00%',
-        '基金类型': d.get('基金类型', ''),
-        '成立日期': d.get('成立日期', '')
-    })
-
-report_path = os.path.join(output_base_dir, f"zero_redemption_funds_{timestamp}.csv")
-report_cols = ['代码','名称','管理费','托管费','销售服务费','赎回费(>=7天)','基金类型','成立日期']
-
-if report_funds:
-    try:
-        with open(report_path, 'w', newline='', encoding='utf-8') as f:
-            w = csv.DictWriter(f, fieldnames=report_cols)
-            w.writeheader()
-            w.writerows(report_funds)
-        print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 找到 {len(report_funds)} 只【7天免赎回】基金 → {report_path}")
-    except Exception as e:
-        print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 写入报告文件失败: {e}")
-else:
-    print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 未找到符合条件的基金")
 
 print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全部完成")
