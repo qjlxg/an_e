@@ -42,7 +42,7 @@ def load_latest_history():
         history_df = pd.read_csv(latest_file, encoding='utf-8-sig', errors='ignore')
         
         # 检查关键列是否存在，如果不存在则返回空
-        if history_df.empty or 'code' not in history_df.columns:
+        if history_df.empty or '基金代码' not in history_df.columns:
              print("历史文件为空或缺少 '基金代码' 列，将执行完整抓取。")
              return pd.DataFrame(), {}
         
@@ -118,6 +118,7 @@ def extract_basic_info(soup, fund_code):
                          
     # 格式化用于对比的基础数据
     base_data_extracted = {
+        '基金代码': fund_code, # <<< FIX: 确保基金代码被包含在返回的字典中
         '成立日期': basic_info.get('成立日期', ''),
         '基金经理(现任)': basic_info.get('基金经理(现任)', ''),
         '类型': basic_info.get('类型', ''),
@@ -148,15 +149,14 @@ def extract_manager_changes(soup, base_data):
                             '任职回报': cols[4].get_text(strip=True)
                         }
                         # 合并基本信息到每一条变动记录中
-                        record = {'基金代码': base_data['基金代码']}
-                        record.update(base_data)
-                        record.pop('基金代码') # 避免重复键
+                        record = {} # 创建一个空字典
+                        record.update(base_data) # 包含所有基本信息（包括基金代码）
                         record.update(change_entry)
                         manager_changes_list.append(record)
 
     # 如果没有变动记录，仍返回一条包含基本信息的记录
     if not manager_changes_list:
-        record = {'基金代码': base_data['基金代码']}
+        record = {}
         record.update(base_data)
         manager_changes_list.append(record)
 
@@ -200,7 +200,7 @@ def scrape_fund_data(fund_code, history_df, history_basic_info):
                 }
                 
                 # 创建新的记录字典，并合并最新的基本信息和历史变动信息
-                new_record = {'基金代码': fund_code_str}
+                new_record = {}
                 new_record.update(base_data_new)
                 new_record.update(change_info)
                 updated_historical_records.append(new_record)
@@ -233,7 +233,7 @@ def main():
     
     # 3. 合并和去重基金代码列表：C类.txt + 历史文件中的代码
     history_codes = []
-    # 关键修复：只有在历史DataFrame非空且包含'基金代码'列时才提取历史代码
+    # 只有在历史DataFrame非空且包含'基金代码'列时才提取历史代码
     if not history_df.empty and '基金代码' in history_df.columns:
         history_codes = history_df['基金代码'].astype(str).str.strip().unique().tolist()
     
