@@ -42,7 +42,7 @@ def load_latest_history():
         history_df = pd.read_csv(latest_file, encoding='utf-8-sig', errors='ignore')
         
         # 检查关键列是否存在，如果不存在则返回空
-        if history_df.empty or '基金代码' not in history_df.columns:
+        if history_df.empty or 'code' not in history_df.columns:
              print("历史文件为空或缺少 '基金代码' 列，将执行完整抓取。")
              return pd.DataFrame(), {}
         
