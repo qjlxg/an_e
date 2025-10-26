@@ -1,0 +1,74 @@
+name: Fund Manager Details Scraper (C-Class)
+
+on:
+  # 每天固定时间运行 (例如 UTC 00:00，对应北京时间 JST/CST 08:00 或 09:00)
+  schedule:
+    - cron: '0 0 * * *' 
+  # 允许在 GitHub 界面手动触发
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    # 设置一个环境变量，用于计算当前日期和时间戳
+    env:
+      TZ: Asia/Shanghai # 设置时区为北京时间，用于日志和归档命名
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------
+      # 1. 设置环境和依赖
+      # -----------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # 推荐使用稳定版本
+          
+      - name: Install Python dependencies
+        run: pip install requests selenium pandas
+
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install ChromeDriver (Automatically finds correct version)
+        uses: nanasess/setup-chromedriver@v2
+        
+      # -----------------------------------------------------
+      # 2. 运行 Python 爬虫
+      # -----------------------------------------------------
+      # 注意：由于 C类.txt 已经在仓库根目录，这里可以直接运行爬虫脚本
+      - name: Run Python crawler (crawl.py)
+        # 确保 chromedriver 路径设置正确，以供 crawl.py 中的 Service 使用
+        run: PATH=$PATH:/usr/local/bin python crawl.py
+
+      # -----------------------------------------------------
+      # 3. 获取日期和时间戳，用于归档
+      # -----------------------------------------------------
+      - name: Get current date and time
+        id: date
+        run: |
+          echo "TIMESTAMP=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+          echo "YEAR=$(date +'%Y')" >> $GITHUB_OUTPUT
+          echo "MONTH=$(date +'%m')" >> $GITHUB_OUTPUT
+          
+      # -----------------------------------------------------
+      # 4. 提交和推送数据
+      # -----------------------------------------------------
+      - name: Commit and push fund_manager_details.csv 💾
+        uses: actions-js/push@v1.4
+        with:
+          # files: 始终提交最新的 CSV 文件
+          files: 'data/fund_manager_details.csv' 
+          # target-branch: 目标分支
+          target-branch: 'main'
+          # message: 提交信息
+          message: "Data Crawl: Fund Manager details (C-Class) [${{ steps.date.outputs.YEAR }}-${{ steps.date.outputs.MONTH }}]"
+          # destination: 将文件归档到按年/月/时间戳命名的目录中
+          destination: "data_archive/${{ steps.date.outputs.YEAR }}/${{ steps.date.outputs.MONTH }}/fund_manager_details_${{ steps.date.outputs.TIMESTAMP }}.csv"
+          # 确保能够推送到仓库
+          github_token: ${{ secrets.GITHUB_TOKEN }}
