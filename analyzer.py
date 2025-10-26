@@ -21,6 +21,7 @@ def get_fund_info(fund_code):
     url_original = f"http://api.fund.eastmoney.com/pinzhong/LSPZ?fundcode={fund_code}"
     
     # 【核心修正】：增加 Referer 头部，模拟浏览器请求
+    # 必须正确设置 User-Agent 和 Referer 才能拿到数据
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Referer': 'http://fund.eastmoney.com/' # 必须添加此行
@@ -126,7 +127,6 @@ def calculate_technical_indicators(df):
     }
 
 # --- 其他不变的辅助函数 (extract_fund_codes, calculate_consecutive_drops, calculate_max_drawdown) ---
-# ... (保持不变)
 
 def extract_fund_codes(report_content):
     codes = set()
@@ -174,8 +174,7 @@ def calculate_max_drawdown(series):
     mdd = drawdown.max()
     return mdd
 
-# --- 修正后的生成报告函数（重新划分三个优先级列表） ---
-# 注意：以下函数中的 SyntaxWarning 依然存在，需要您手动将 f-string 改为 rf-string 消除
+# --- 【二次修正】后的生成报告函数（所有 f-string 警告已修复为 rf-string） ---
 def generate_report(results, timestamp_str):
     now_str = timestamp_str
 
@@ -226,8 +225,8 @@ def generate_report(results, timestamp_str):
         df_buy_signal_1.index = df_buy_signal_1.index + 1
         
         report += f"\n## **🥇 第一优先级：【即时恐慌买入】** ({len(df_buy_signal_1)}只)\n\n"
-        # 这一行包含 SyntaxWarning: invalid escape sequence，需要手动修改为 rf"..."
-        report += f"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳 + RSI超卖 ($ < 35\%$) + **当日跌幅 $\ge$ {MIN_DAILY_DROP_PERCENT*100:.0f}%**\n"
+        # 修正：使用 rf"" 避免 SyntaxWarning
+        report += rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳 + RSI超卖 ($ < 35\%$) + **当日跌幅 $\ge$ {MIN_DAILY_DROP_PERCENT*100:.0f}%**\n"
         report += f"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**按当日跌幅降序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
@@ -258,8 +257,8 @@ def generate_report(results, timestamp_str):
         df_buy_signal_2.index = df_buy_signal_2.index + 1
         
         report += f"\n## **🥈 第二优先级：【技术共振建仓】** ({len(df_buy_signal_2)}只)\n\n"
-        # 这一行包含 SyntaxWarning: invalid escape sequence，需要手动修改为 rf"..."
-        report += f"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳 + RSI超卖 ($ < 35\%$) + **当日跌幅 $< {MIN_DAILY_DROP_PERCENT*100:.0f}\%$**\n"
+        # 修正：使用 rf"" 避免 SyntaxWarning
+        report += rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳 + RSI超卖 ($ < 35\%$) + **当日跌幅 $< {MIN_DAILY_DROP_PERCENT*100:.0f}\%$**\n"
         report += f"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**按 RSI 升序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
@@ -292,8 +291,8 @@ def generate_report(results, timestamp_str):
         df_extended_elastic.index = df_extended_elastic.index + 1
         
         report += f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_extended_elastic)}只)\n\n"
-        # 这一行包含 SyntaxWarning: invalid escape sequence，需要手动修改为 rf"..."
-        report += f"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n"
+        # 修正：使用 rf"" 避免 SyntaxWarning
+        report += rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + 低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n"
         report += f"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**按最大回撤降序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
@@ -308,8 +307,8 @@ def generate_report(results, timestamp_str):
         report += "\n---\n"
     else:
         report += f"\n## **🥉 第三优先级：【扩展观察池】**\n\n"
-        # 这一行包含 SyntaxWarning: invalid escape sequence，需要手动修改为 rf"..."
-        report += f"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。\n\n"
+        # 修正：使用 rf"" 避免 SyntaxWarning
+        report += rf"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。\n\n"
         report += "\n---\n"
 
     # 5. 原有预警基金列表 (所有符合条件的基金)
@@ -347,7 +346,11 @@ def analyze_all_funds(target_codes=None):
     # 保持原有文件查找逻辑不变
     if target_codes:
         csv_files = [os.path.join(FUND_DATA_DIR, f'{code}.csv') for code in target_codes]
-        csv_files = [f for f in csv_files if os.path.exists(f)]
+        # 补充：处理文件名包含非数字的情况 (如 '持仓_015456_2024.csv')
+        additional_files = [f for f in glob.glob(os.path.join(FUND_DATA_DIR, '*.csv')) 
+                            if os.path.basename(f).startswith('持仓_') and any(code in os.path.basename(f) for code in target_codes)]
+        csv_files = [f for f in csv_files if os.path.exists(f)] + additional_files
+        csv_files = list(set(csv_files)) # 去重
         
         if not csv_files:
             print(f"警告：在目录 '{FUND_DATA_DIR}' 中未找到目标基金对应的 CSV 文件。")
@@ -367,7 +370,7 @@ def analyze_all_funds(target_codes=None):
         try:
             # 兼容处理文件名为 '持仓_015456_2024.csv' 这种非数字的命名
             base_name = os.path.splitext(os.path.basename(filepath))[0]
-            # 尝试从文件名中提取纯数字的基金代码，如果失败则跳过基本面分析
+            # 尝试从文件名中提取纯数字的基金代码
             fund_code = ''.join(filter(str.isdigit, base_name))
             
             if not fund_code:
@@ -381,6 +384,10 @@ def analyze_all_funds(target_codes=None):
             if tenure < 2.0 or scale < 2.0:
                 print(f"基本面过滤：{fund_code} 不合格 (经理任职: {tenure:.2f}年, 规模: {scale:.2f}亿) → 跳过技术面分析")
                 continue # 跳过该基金的后续技术面分析
+            else:
+                # 打印合格基金的信息，用于调试
+                # print(f"基本面合格：{fund_code} (经理任职: {tenure:.2f}年, 规模: {scale:.2f}亿) → 继续技术面分析")
+                pass
             # ============================================
 
 
