@@ -15,7 +15,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service 
 from selenium.webdriver.common.by import By 
-import js2py
+#import js2py
 import json
 import time
 import random
