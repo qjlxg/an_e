@@ -1,74 +1,61 @@
-name: Fund Manager Details Scraper (C-Class)
+name: 基金数据抓取与推送 (并行)
 
 on:
-  # 每天固定时间运行 (例如 UTC 00:00，对应北京时间 JST/CST 08:00 或 09:00)
-  schedule:
-    - cron: '0 0 * * *' 
-  # 允许在 GitHub 界面手动触发
+  # 允许手动运行
   workflow_dispatch:
+  # 当脚本、配置文件或工作流本身变动时自动运行
+  push:
+    paths:
+      - 'scrape_fund_data.py'
+      - '.github/workflows/update_data.yml'
+      - 'C类.txt'
+
+# 设置环境变量，指定时区为上海时区
+env:
+  TZ: Asia/Shanghai
 
 jobs:
-  scrape:
+  scrape_and_push:
     runs-on: ubuntu-latest
     
-    # 设置一个环境变量，用于计算当前日期和时间戳
-    env:
-      TZ: Asia/Shanghai # 设置时区为北京时间，用于日志和归档命名
-
     steps:
-      - name: Checkout repository
+      - name: 检出代码
         uses: actions/checkout@v4
-
-      # -----------------------------------------------------
-      # 1. 设置环境和依赖
-      # -----------------------------------------------------
-      - name: Set up Python
+        with:
+          # 必须检出，才能将生成的新文件推送回仓库
+          fetch-depth: 0 
+          
+      - name: 设置Python环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # 推荐使用稳定版本
-          
-      - name: Install Python dependencies
-        run: pip install requests selenium pandas
+          python-version: '3.x'
 
-      - name: Install Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+      - name: 安装依赖 (requests, beautifulsoup4, pandas)
+        # 增加了 pandas 依赖
+        run: pip install requests beautifulsoup4 pandas
 
-      - name: Install ChromeDriver (Automatically finds correct version)
-        uses: nanasess/setup-chromedriver@v2
+      - name: 运行数据抓取脚本 (并行)
+        # 脚本将生成 '年/月/总表_YYYYMMDD_HHMMSS.csv' 格式的文件
+        run: python scrape_fund_data.py
         
-      # -----------------------------------------------------
-      # 2. 运行 Python 爬虫
-      # -----------------------------------------------------
-      # 注意：由于 C类.txt 已经在仓库根目录，这里可以直接运行爬虫脚本
-      - name: Run Python crawler (crawl.py)
-        # 确保 chromedriver 路径设置正确，以供 crawl.py 中的 Service 使用
-        run: PATH=$PATH:/usr/local/bin python crawl.py
-
-      # -----------------------------------------------------
-      # 3. 获取日期和时间戳，用于归档
-      # -----------------------------------------------------
-      - name: Get current date and time
-        id: date
+      - name: 配置 Git 用户信息
         run: |
-          echo "TIMESTAMP=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
-          echo "YEAR=$(date +'%Y')" >> $GITHUB_OUTPUT
-          echo "MONTH=$(date +'%m')" >> $GITHUB_OUTPUT
+          # 使用 GitHub Actions 的默认 bot 身份进行提交
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: 推送新生成的数据到仓库
+        run: |
+          # 添加所有新增或修改的文件（包括新的 年/月 目录和csv文件）
+          git add .
           
-      # -----------------------------------------------------
-      # 4. 提交和推送数据
-      # -----------------------------------------------------
-      - name: Commit and push fund_manager_details.csv 💾
-        uses: actions-js/push@v1.4
-        with:
-          # files: 始终提交最新的 CSV 文件
-          files: 'data/fund_manager_details.csv' 
-          # target-branch: 目标分支
-          target-branch: 'main'
-          # message: 提交信息
-          message: "Data Crawl: Fund Manager details (C-Class) [${{ steps.date.outputs.YEAR }}-${{ steps.date.outputs.MONTH }}]"
-          # destination: 将文件归档到按年/月/时间戳命名的目录中
-          destination: "data_archive/${{ steps.date.outputs.YEAR }}/${{ steps.date.outputs.MONTH }}/fund_manager_details_${{ steps.date.outputs.TIMESTAMP }}.csv"
-          # 确保能够推送到仓库
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # 检查是否有文件更改需要提交
+          # '??' 表示未跟踪的文件 (新生成的csv)，'M' 表示已修改的文件
+          if git status --porcelain | grep -q '??' || git status --porcelain | grep -q 'M'; then
+            # 使用上海时区的时间生成 commit 信息
+            COMMIT_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
+            git commit -m "🤖 Auto: 并行更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
+            git push
+          else
+            echo "没有新的数据文件生成或文件内容没有变化，跳过推送。"
+          fi
