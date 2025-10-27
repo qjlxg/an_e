@@ -31,15 +31,18 @@ jobs:
       - name: Run sell decision script
         run: |
           python sell_decision.py || echo "Script failed, check logs for details" >&2
-        continue-on-error: true  # 优化：脚本失败不中止，记录错误
+        continue-on-error: true  # 脚本失败不中止，记录错误
 
-      - name: Rename report with timestamp
+      - name: Rename CSV results with timestamp 💾
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d_%H%M%S')
-          if [ -f sell_decision_optimized.md ]; then
-            mv sell_decision_optimized.md sell_decision_optimized_${TIMESTAMP}.md
+          # 检查并重命名新的 CSV 输出文件
+          if [ -f sell_decision_results.csv ]; then
+            mv sell_decision_results.csv sell_decision_results_${TIMESTAMP}.csv
+            echo "Successfully archived CSV file as sell_decision_results_${TIMESTAMP}.csv"
           else
-            echo "Report file not found, skipping rename" >&2
+            echo "Results CSV file (sell_decision_results.csv) not found, skipping rename." >&2
+            # 保持 exit 1 停止流程，如果脚本成功但文件丢失，则认为是致命错误
             exit 1
           fi
 
@@ -47,7 +50,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add sell_decision_optimized_*.md sell_decision_results.csv
+          # 只添加 timestamped CSV 文件进行归档
+          git add sell_decision_results_*.csv
+          # 确保 holdings_config.json 即使没有更改，也保留在 add 列表中 (可选，取决于您是否希望每次都提交它)
+          # git add holdings_config.json 
           git commit -m "Update sell_decision report with timestamp [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No changes to commit"
           git push
         env:
