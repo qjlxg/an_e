@@ -45,48 +45,51 @@ jobs:
       - name: 检查并推送新生成的数据到仓库
         id: push_data
         run: |
-          echo "--- 文件列表 (ls -R) ---"
+          echo "--- 当前目录结构 (ls -R) ---"
           ls -R
-          echo "--------------------------"
+          echo "-------------------------------"
           
-          # 查找新生成的 CSV 文件路径，并存储为变量
+          # 查找最新的总表文件
           NEW_FILE_PATH=$(find . -type f -name '总表_*.csv' | sort -r | head -n 1)
           
           if [ -z "$NEW_FILE_PATH" ]; then
-            echo "::notice::⚠️ 警告：未找到新的总表文件 (总表_*.csv)。"
+            echo "::notice::警告：未找到新的总表文件 (总表_*.csv)。"
             exit 0
           fi
           
-          echo "::notice::✅ 发现新的总表文件: $NEW_FILE_PATH"
+          echo "::notice::发现新的总表文件: $NEW_FILE_PATH"
 
-          # 检查文件是否存在
+          # 确保文件存在
           if [ ! -f "$NEW_FILE_PATH" ]; then
-            echo "::error::❌ 严重错误：路径 $NEW_FILE_PATH 已找到，但文件不存在于磁盘上！"
-            exit 1 
+            echo "::error::严重错误：文件路径存在但文件不可读！"
+            exit 1
           fi
 
-          # 配置 Git 用户信息
+          # 配置 Git
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          # 强制添加文件 (确保忽略 .gitignore，并添加新目录)
-          git add -f $NEW_FILE_PATH
-          git add . # 捕捉其他可能变化的 tracked 文件
-          
-          # 检查是否有文件更改需要提交
-          if git status --porcelain | grep -q '??' || git status --porcelain | grep -q 'M'; then
+
+          # 关键修复：先添加整个目录（推荐），再强制添加文件
+          NEW_FILE_DIR=$(dirname "$NEW_FILE_PATH")
+          echo "正在添加目录: $NEW_FILE_DIR"
+          git add "$NEW_FILE_DIR"
+
+          # 再次强制添加文件（保险起见）
+          git add -f "$NEW_FILE_PATH"
+
+          # 检查是否有实际变更
+          if git status --porcelain | grep -q '^??' || git status --porcelain | grep -q '^M'; then
             COMMIT_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
-            COMMIT_MSG="🤖 Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
+            COMMIT_MSG="Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
             
             git commit -m "$COMMIT_MSG"
             
-            echo "::notice::🚀 正在推送更改到远程仓库..."
-            # 再次强调：这里推送使用的是 GITHUB_TOKEN，现在它具有写入权限
-            git push || { 
-              echo "::error::🚨 Git Push 失败！请检查分支保护规则（如果开启）或 Git 诊断信息。"
-              exit 1 
+            echo "::notice::正在推送更改..."
+            git push origin HEAD:${{ github.ref_name }} || {
+              echo "::error::Git Push 失败！请检查网络或分支保护规则。"
+              exit 1
             }
-            echo "::notice::✅ 推送成功。"
+            echo "::notice::推送成功！文件已保存至: $NEW_FILE_PATH"
           else
-            echo "没有新的数据文件生成或文件内容没有变化，跳过推送。"
+            echo "没有检测到文件变更，跳过提交。"
           fi
