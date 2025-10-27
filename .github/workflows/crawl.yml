@@ -1,37 +1,48 @@
 name: 规模
 
+# -------------------------------------------------
+# 触发方式
+# -------------------------------------------------
 on:
-  # 允许手动运行
-  workflow_dispatch:
-  # 当脚本、配置文件或基金代码列表变动时自动运行
+  workflow_dispatch:               # 手动触发
   push:
     branches:
-      - main # 假设您的主分支是 main
+      - main                     # 请根据实际主分支改名
     paths:
       - 'scrape_fund_data.py'
       - '.github/workflows/crawl.yml'
       - 'C类.txt'
 
-# 设置环境变量，指定时区为上海时区
+# -------------------------------------------------
+# 全局环境变量（上海时区）
+# -------------------------------------------------
 env:
   TZ: Asia/Shanghai
 
+# -------------------------------------------------
+# 任务定义
+# -------------------------------------------------
 jobs:
   scrape_and_push:
     runs-on: ubuntu-latest
-    
-    # 🌟 关键修改：明确授予 GITHUB_TOKEN 对仓库内容的写入权限 🌟
+
+    # 显式声明 GITHUB_TOKEN 的写权限（即使仓库默认改回只读也不受影响）
     permissions:
-      contents: write 
-      
+      contents: write          # 必须的写权限
+
     steps:
-      - name: 检出代码 (获取完整历史用于增量对比)
-        # 此步骤使用带有写入权限的 GITHUB_TOKEN
+      # -------------------------------------------------
+      # 1. 拉取完整历史（增量对比需要）
+      # -------------------------------------------------
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 
-          
-      - name: 设置Python环境
+          fetch-depth: 0      # 完整历史
+
+      # -------------------------------------------------
+      # 2. 安装 Python & 依赖
+      # -------------------------------------------------
+      - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -39,57 +50,84 @@ jobs:
       - name: 安装依赖
         run: pip install requests beautifulsoup4 pandas
 
-      - name: 运行数据抓取脚本 (并行/增量)
+      # -------------------------------------------------
+      # 3. 运行抓取脚本
+      # -------------------------------------------------
+      - name: 运行数据抓取脚本
         run: python scrape_fund_data.py
-        
-      - name: 检查并推送新生成的数据到仓库
+
+      # -------------------------------------------------
+      # 4. 提交 & 推送新生成的 CSV
+      # -------------------------------------------------
+      - name: 提交并推送新生成的总表
         id: push_data
         run: |
-          echo "--- 当前目录结构 (ls -R) ---"
+          echo "=== 当前工作目录结构 ==="
           ls -R
-          echo "-------------------------------"
-          
-          # 查找最新的总表文件
-          NEW_FILE_PATH=$(find . -type f -name '总表_*.csv' | sort -r | head -n 1)
-          
-          if [ -z "$NEW_FILE_PATH" ]; then
-            echo "::notice::警告：未找到新的总表文件 (总表_*.csv)。"
+          echo "=========================="
+
+          # ---- 新增调试：打印 .gitignore 内容（如果存在） ----
+          if [ -f ".gitignore" ]; then
+            echo "=== .gitignore 内容 ==="
+            cat .gitignore
+            echo "========================"
+          else
+            echo "没有 .gitignore 文件。"
+          fi
+
+          # 找出最新的总表文件（格式：总表_YYYYMMDD_HHMMSS.csv）
+          NEW_FILE=$(find . -type f -name '总表_*.csv' | sort -r | head -n 1)
+
+          if [[ -z "$NEW_FILE" ]]; then
+            echo "::notice::未检测到新生成的总表文件，任务结束。"
             exit 0
           fi
-          
-          echo "::notice::发现新的总表文件: $NEW_FILE_PATH"
 
-          # 确保文件存在
-          if [ ! -f "$NEW_FILE_PATH" ]; then
-            echo "::error::严重错误：文件路径存在但文件不可读！"
-            exit 1
-          fi
+          echo "::notice::发现新文件 → $NEW_FILE"
 
-          # 配置 Git
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          # ---- 新增调试：打印文件内容（前几行）确认文件存在 ----
+          echo "=== 新文件内容预览（head -n 5） ==="
+          head -n 5 "$NEW_FILE" || echo "无法读取文件内容！"
+          echo "=================================="
 
-          # 关键修复：先添加整个目录（推荐），再强制添加文件
-          NEW_FILE_DIR=$(dirname "$NEW_FILE_PATH")
-          echo "正在添加目录: $NEW_FILE_DIR"
-          git add "$NEW_FILE_DIR"
+          # 配置 Git（使用 GitHub Actions 自带的 bot）
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 再次强制添加文件（保险起见）
-          git add -f "$NEW_FILE_PATH"
+          # ---- 新增调试：git add 前 git status ----
+          echo "=== git add 前 git status --porcelain ==="
+          git status --porcelain
+          echo "========================================="
 
-          # 检查是否有实际变更
-          if git status --porcelain | grep -q '^??' || git status --porcelain | grep -q '^M'; then
-            COMMIT_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
+          # ---- 关键：先 add 目录，再强制 add 文件 ----
+          NEW_DIR=$(dirname "$NEW_FILE")
+          echo "添加目录: $NEW_DIR"
+          git add -v "$NEW_DIR"  # -v 显示添加细节
+
+          echo "强制添加文件: $NEW_FILE"
+          git add -f -v "$NEW_FILE"  # -v 显示添加细节
+
+          # ---- 新增调试：git add 后 git status ----
+          echo "=== git add 后 git status --porcelain ==="
+          git status --porcelain
+          echo "========================================="
+
+          # 检查是否有实际变更（?? 新文件、M 修改）
+          if git status --porcelain | grep -E '^( \?)|(\sM)'; then
+            COMMIT_TIME=$(date "+%Y-%m-%d %H:%M:%S")
             COMMIT_MSG="Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
-            
+
             git commit -m "$COMMIT_MSG"
-            
-            echo "::notice::正在推送更改..."
-            git push origin HEAD:${{ github.ref_name }} || {
-              echo "::error::Git Push 失败！请检查网络或分支保护规则。"
+            echo "::notice::正在 push 到 ${GITHUB_REF##*/} ..."
+            git push origin HEAD:${GITHUB_REF##*/} || {
+              echo "::error::Push 失败，请检查分支保护规则或网络。"
               exit 1
             }
-            echo "::notice::推送成功！文件已保存至: $NEW_FILE_PATH"
+            echo "::notice::Push 成功！文件已保存 → $NEW_FILE"
           else
             echo "没有检测到文件变更，跳过提交。"
+            # ---- 新增调试：如果无变更，强制检查文件是否被忽略 ----
+            echo "=== 调试：检查文件是否被 Git 忽略 ==="
+            git check-ignore -v "$NEW_FILE" || echo "文件未被忽略。"
+            echo "====================================="
           fi
