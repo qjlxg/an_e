@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
   # 当脚本、配置文件或基金代码列表变动时自动运行
   push:
+    branches:
+      - main # 假设您的主分支是 main
     paths:
       - 'scrape_fund_data.py'
       - '.github/workflows/update_data.yml'
@@ -45,7 +47,8 @@ jobs:
           echo "--------------------------"
           
           # 查找新生成的 CSV 文件路径，并存储为变量（应在 年/月 目录下）
-          NEW_FILE_PATH=$(find . -type f -name '总表_*.csv' | head -n 1)
+          # 优先查找最新的文件，如果有多个，确保只取一个
+          NEW_FILE_PATH=$(find . -type f -name '总表_*.csv' | sort -r | head -n 1)
           
           if [ -z "$NEW_FILE_PATH" ]; then
             echo "::notice::⚠️ 警告：未找到新的总表文件 (总表_*.csv)。"
@@ -54,20 +57,37 @@ jobs:
           
           echo "::notice::✅ 发现新的总表文件: $NEW_FILE_PATH"
 
+          # 🚨 步骤1: 再次检查文件是否存在 (新增/强化检查)
+          if [ ! -f "$NEW_FILE_PATH" ]; then
+            echo "::error::❌ 严重错误：路径 $NEW_FILE_PATH 已找到，但文件不存在于磁盘上！"
+            exit 1 
+          fi
+
           # 配置 Git 用户信息
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           
-          # 强制添加整个工作目录，确保新增的 年/月 目录和 CSV 文件被追踪
+          # 步骤2: 强制添加文件 (新增 -f 确保忽略 .gitignore)
+          # 明确添加新生成的总表文件（防止被忽略）
+          git add -f $NEW_FILE_PATH
+          # 同时也添加其他可能变化的 tracked 文件（例如 C类.txt 如果有变动）
           git add .
           
-          # 检查是否有文件更改需要提交 ('??' = 新文件, 'M' = 修改文件)
+          # 步骤3: 检查是否有文件更改需要提交 ('??' = 新文件, 'M' = 修改文件)
           if git status --porcelain | grep -q '??' || git status --porcelain | grep -q 'M'; then
             COMMIT_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
-            git commit -m "🤖 Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
+            COMMIT_MSG="🤖 Auto: 增量更新基金数据总表 - ${COMMIT_TIME} (Shanghai)"
             
-            # 推送提交
-            git push
+            git commit -m "$COMMIT_MSG"
+            
+            echo "::notice::🚀 正在推送更改到远程仓库..."
+            # 步骤4: 推送提交，并打印结果（确保不会静默失败）
+            # 使用 '|| echo "::error::🚨 Git Push 失败！请检查仓库权限或分支保护规则。"'
+            git push || { 
+              echo "::error::🚨 Git Push 失败！请检查仓库权限或分支保护规则。"
+              exit 1 
+            }
+            echo "::notice::✅ 推送成功。"
           else
             echo "没有新的数据文件生成或文件内容没有变化，跳过推送。"
           fi
