@@ -9,8 +9,8 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 import re
-# subprocess 已移除，因为不再进行 Git 操作
 
+# subprocess 已移除，因为不再进行 Git 操作
 # ==================== 配置 ====================
 shanghai_tz = pytz.timezone('Asia/Shanghai')
 now = datetime.datetime.now(shanghai_tz)
@@ -22,11 +22,6 @@ fund_data_dir = 'fund_data'
 output_base_dir = month_dir
 os.makedirs(output_base_dir, exist_ok=True)
 
-# 只要 7 天以上赎回费 = 0.00%，管理费/托管费放宽
-MAX_MANAGEMENT_FEE = 99.0      # 实际上不限制
-MAX_CUSTODIAN_FEE = 0.20       # 仍保留 0.20% 限制
-MAX_REDEMPTION_FEE_7D = 0.00   # 必须 0%
-
 # 防反爬请求头
 HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -35,22 +30,14 @@ HEADERS = {
 }
 # ==============================================
 
-def clean_fee_rate(fee_str):
-    """提取百分比数字（如 '1.50%' → 1.5）"""
-    if not fee_str:
-        return None
-    m = re.search(r'(\d+\.?\d*)%', fee_str)
-    return float(m.group(1)) if m else None
-
-
 def scrape_and_parse_fund(fund_code):
-    """抓取单只基金的概况 + 费率，返回 dict"""
+    """抓取单只基金的概况 + 费率 + 基金经理信息，返回 dict"""
     # 随机延时防封
     time.sleep(random.uniform(0.15, 0.6))
 
     result = {'基金代码': fund_code, '状态': '成功'}
 
-    # ---------- 1. 基本概况 ----------
+    # ---------- 1. 基本概况 (jbgk) ----------
     jbgk_url = f"https://fundf10.eastmoney.com/jbgk_{fund_code}.html"
     try:
         r = requests.get(jbgk_url, headers=HEADERS, timeout=12)
@@ -75,7 +62,7 @@ def scrape_and_parse_fund(fund_code):
     except requests.RequestException as e:
         result['状态_概况'] = f"抓取失败: 网络错误 ({e})"
 
-    # ---------- 2. 费率 ----------
+    # ---------- 2. 费率 (jjfl) ----------
     fee_url = f"https://fundf10.eastmoney.com/jjfl_{fund_code}.html"
     try:
         r = requests.get(fee_url, headers=HEADERS, timeout=12)
@@ -121,13 +108,70 @@ def scrape_and_parse_fund(fund_code):
     except requests.RequestException as e:
         result['状态_费率'] = f"抓取失败: 网络错误 ({e})"
 
+
+    # ---------- 3. 基金经理信息 (jjjl) ----------
+    manager_url = f"https://fundf10.eastmoney.com/jjjl_{fund_code}.html"
+    try:
+        r = requests.get(manager_url, headers=HEADERS, timeout=12)
+        if r.status_code != 200:
+            result['状态_经理'] = f"抓取失败: 经理页 {r.status_code}"
+        else:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            manager_intro_box = soup.find('div', class_='jl_intro')
+            
+            if manager_intro_box:
+                # 提取姓名
+                name_tag = manager_intro_box.find('p').find('a')
+                result['基金经理姓名'] = name_tag.get_text(strip=True) if name_tag else ''
+
+                # 提取上任日期
+                date_tag = manager_intro_box.find('p', string=lambda t: t and '上任日期' in t)
+                if date_tag:
+                    # 匹配 '上任日期：' 后的日期
+                    match = re.search(r'上任日期[:：]\s*(\d{4}-\d{2}-\d{2})', date_tag.get_text(strip=True))
+                    result['基金经理上任日期'] = match.group(1) if match else ''
+
+                # 提取简介 (在 <div class="text"> 中，通常是最后一个 <p> 标签之前的内容)
+                text_div = manager_intro_box.find('div', class_='text')
+                if text_div:
+                    # 获取所有 <p> 标签
+                    paragraphs = text_div.find_all('p')
+                    if len(paragraphs) >= 3:
+                        # 假设简介是包含在第二个 <p> (索引1) 和倒数第二个 <p> 之间的文本。
+                        # 在这个页面的结构中，马磊的简介是从'马磊先生:中国国籍...'开始的，
+                        # 它位于日期P标签之后，最后一个<p class="tor">之前。
+                        
+                        # 我们可以获取 text_div 的所有直接文本内容，然后拼接，去除掉姓名和日期行
+                        
+                        # 筛选出文本行，忽略掉包含'姓名'或'上任日期'的行，以及最后的'查看更多'行
+                        # 假设简介是最后一个不是'姓名'或'上任日期'的P标签
+                        
+                        # 重新解析：获取所有的p标签文本，然后移除姓名和日期行，剩下的就是简介
+                        all_p_texts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+                        
+                        manager_intro = []
+                        is_intro_start = False
+                        for text in all_p_texts:
+                            if text.startswith('姓名') or text.startswith('上任日期'):
+                                continue
+                            if text.startswith('查看更多基金经理详情'):
+                                break # 简介结束
+                            manager_intro.append(text)
+                            
+                        result['基金经理简介'] = '\n'.join(manager_intro).strip()
+            else:
+                result['状态_经理'] = "抓取警告: 未找到现任基金经理简介"
+
+    except requests.RequestException as e:
+        result['状态_经理'] = f"抓取失败: 经理页网络错误 ({e})"
+
+
     # 统一状态
-    if any('失败' in result.get(k, '') for k in ('状态_概况', '状态_费率')):
+    if any('失败' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '失败'
-    elif any('警告' in result.get(k, '') for k in ('状态_概况', '状态_费率')):
+    elif any('警告' in result.get(k, '') for k in ('状态_概况', '状态_费率', '状态_经理')):
         result['状态'] = '警告'
     return result
-
 
 # ==================== 主逻辑 ====================
 fund_codes = []
@@ -144,7 +188,6 @@ else:
 print(f"[{now.strftime('%H:%M:%S')}] 共 {len(fund_codes)} 只基金，准备并行抓取...")
 MAX_WORKERS = 40
 all_data = []
-
 if fund_codes:
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         all_data = list(pool.map(scrape_and_parse_fund, fund_codes))
@@ -156,75 +199,27 @@ all_keys = set()
 for d in all_data:
     all_keys.update(d.keys())
 
-sorted_keys = ['基金代码', '状态']
+# 定义键的优先级顺序
+preferred_keys = ['基金代码', '状态', '基金经理姓名', '基金经理上任日期', '基金经理简介']
 fee_keys = sorted({k for k in all_keys if '费' in k or '费率' in k})
-final_keys = sorted_keys + fee_keys + sorted({k for k in all_keys if k not in sorted_keys + fee_keys})
+
+# 最终键列表：优先键 + 费率键 + 其他键
+final_keys_set = set(preferred_keys) | set(fee_keys)
+other_keys = sorted({k for k in all_keys if k not in final_keys_set and not k.startswith('状态_')}) # 忽略临时的状态键
+final_keys = [k for k in preferred_keys if k in all_keys] + fee_keys + other_keys
 
 out_path = os.path.join(output_base_dir, f"basic_info_and_fees_all_funds_{timestamp}.csv")
+
 try:
     with open(out_path, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=final_keys)
         w.writeheader()
         for d in all_data:
-            w.writerow({k: d.get(k, '') for k in final_keys})
+            # 过滤掉内部的状态键，并且确保数据字典只包含 final_keys 中的键
+            row_data = {k: d.get(k, '') for k in final_keys}
+            w.writerow(row_data)
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全量文件已保存 → {out_path}")
 except Exception as e:
     print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 写入全量文件失败: {e}")
-
-# ---------- 2. 低费率（7天免赎回）报告 ----------
-print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 开始筛选【7天以上免赎回费】基金...")
-report_funds = []
-
-for d in all_data:
-    if d.get('状态') != '成功':
-        continue
-
-    mgmt = clean_fee_rate(d.get('管理费', ''))
-    cust = clean_fee_rate(d.get('托管费', ''))
-    red7 = clean_fee_rate(d.get('赎回费率_7D0', ''))  # 检查统一键名
-
-    # 逻辑：(管理费放宽) AND (托管费 <= MAX_CUSTODIAN_FEE) AND (赎回费(>=7D) 必须 0%)
-    is_qualified = True
-    
-    if mgmt is not None and mgmt > MAX_MANAGEMENT_FEE:
-        is_qualified = False
-    
-    if cust is None or cust > MAX_CUSTODIAN_FEE:
-        is_qualified = False
-
-    if red7 is None or red7 > MAX_REDEMPTION_FEE_7D:
-        is_qualified = False
-    
-    if not is_qualified:
-        continue
-
-    name = d.get('基金全称') or d.get('基金简称') or ''
-    svc  = clean_fee_rate(d.get('销售服务费', ''))
-
-    report_funds.append({
-        '代码': d['基金代码'],
-        '名称': name,
-        '管理费': f"{mgmt:.2f}%" if mgmt is not None else 'N/A',
-        '托管费': f"{cust:.2f}%" if cust is not None else 'N/A',
-        '销售服务费': f"{svc:.2f}%" if svc is not None else '0.00%',
-        '赎回费(>=7天)': '0.00%',
-        '基金类型': d.get('基金类型', ''),
-        '成立日期': d.get('成立日期', '')
-    })
-
-report_path = os.path.join(output_base_dir, f"zero_redemption_funds_{timestamp}.csv")
-report_cols = ['代码','名称','管理费','托管费','销售服务费','赎回费(>=7天)','基金类型','成立日期']
-
-if report_funds:
-    try:
-        with open(report_path, 'w', newline='', encoding='utf-8') as f:
-            w = csv.DictWriter(f, fieldnames=report_cols)
-            w.writeheader()
-            w.writerows(report_funds)
-        print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 找到 {len(report_funds)} 只【7天免赎回】基金 → {report_path}")
-    except Exception as e:
-        print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 写入报告文件失败: {e}")
-else:
-    print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 未找到符合条件的基金")
 
 print(f"[{datetime.datetime.now(shanghai_tz).strftime('%H:%M:%S')}] 全部完成")
