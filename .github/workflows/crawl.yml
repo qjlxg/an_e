@@ -1,5 +1,4 @@
 name: 规模
-
 # 触发条件
 on:
   # 1. 允许手动触发 (Workflow Dispatch)
@@ -25,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     
     # 设置时区为亚洲/上海，影响脚本内部的时间函数 get_shanghai_time() 
-    # 以及整个 CI/CD 运行时的时间感知。
     env:
       TZ: 'Asia/Shanghai'
 
@@ -48,7 +46,6 @@ jobs:
           pip install requests beautifulsoup4 pandas
           
       - name: 🚀 执行基金数据抓取脚本
-        id: run_script
         run: |
           python scrape_fund_data.py
           
@@ -60,16 +57,19 @@ jobs:
       - name: 🔍 检查是否有新文件生成或变动
         id: git_status
         run: |
-          # 查找所有新增或修改的 .csv 文件，特别是在 YYYY/MM/ 目录下
-          NEW_FILES=$(git status --porcelain | grep '^\(A\|M\)' | grep -E '\d{4}/\d{2}/总表_.*\.csv$' | xargs)
-          if [ -n "$NEW_FILES" ]; then
-            echo "::set-output name=files_changed::true"
-            echo "::set-output name=new_files::$NEW_FILES"
-          else
-            echo "::set-output name=files_changed::false"
-          fi
+          # 修正: 使用 awk '{print $2}' 提取 Git 状态输出中的第二列，即文件路径
+          NEW_FILES=$(git status --porcelain | grep '^\(A\|M\)' | grep -E '\d{4}/\d{2}/总表_.*\.csv$' | awk '{print $2}' | xargs)
           
+          if [ -n "$NEW_FILES" ]; then
+            echo "files_changed=true" >> $GITHUB_OUTPUT
+            echo "new_files=$NEW_FILES" >> $GITHUB_OUTPUT
+          else
+            echo "files_changed=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+        
       - name: ➕ 暂存并提交抓取结果
+        # 使用新输出变量的访问语法: steps.git_status.outputs.<variable_name>
         if: steps.git_status.outputs.files_changed == 'true'
         run: |
           # 暂存所有新生成的或修改的 .csv 文件和历史数据相关的变动
@@ -84,7 +84,6 @@ jobs:
           
       - name: 📤 推送新生成的或变动的文件到仓库
         if: steps.git_status.outputs.files_changed == 'true'
-        # 使用 git push 推送，不需要 actions/upload-artifact
         run: |
           git push
           echo "✅ Successfully pushed new data to repository."
