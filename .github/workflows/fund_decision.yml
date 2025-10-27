@@ -3,7 +3,7 @@ name: Fund Sell Decision Workflow-4
 on:
   push:
     paths:
-      - 'market_monitor.py'
+      - 'sell_decision.py'
       - 'holdings_config.json'
       - '.github/workflows/fund_decision.yml'
   schedule:
@@ -47,7 +47,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add sell_decision_optimized_*.md
+          git add sell_decision_optimized_*.md sell_decision_results.csv
           git commit -m "Update sell_decision report with timestamp [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No changes to commit"
           git push
         env:
