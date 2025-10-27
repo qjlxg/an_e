@@ -173,7 +173,12 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
     signal = fund_latest['signal']
     ma50 = fund_latest['ma50']
     adx = fund_latest['adx']
-    bb_pos = '中轨'
+    
+    # --- 修复 UnboundLocalError: 在函数开头设置默认值 ---
+    bb_pos = '未知'
+    macd_signal = '未知'
+    macd_zero_dead_cross = False
+    # --------------------------------------------------
     
     # 辅助信息
     sell_reasons = []
@@ -213,6 +218,8 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             'decision': '暂停定投'
         }
 
+    # --- 变量赋值和趋势判断（现在位于止损判断之后） ---
+    
     if len(full_fund_data) >= 2:
         recent_data = full_fund_data.tail(2)
         if (recent_data['net_value'] > recent_data['bb_upper']).all():
@@ -223,14 +230,13 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             bb_pos = '中轨'
             
     macd_signal = '金叉'
-    macd_zero_dead_cross = False
     if len(full_fund_data) >= 2:
         recent_macd = full_fund_data.tail(2)
         if (recent_macd['macd'] < recent_macd['signal']).all():
             macd_signal = '死叉'
             if (recent_macd.iloc[-1]['macd'] < 0 and recent_macd.iloc[-1]['signal'] < 0):
                 macd_zero_dead_cross = True
-
+    
     # --- 高优先级规则 ---
 
     # 移动止盈
@@ -253,7 +259,12 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
         if not recent_data.empty:
             peak_nav_idx = recent_data['net_value'].idxmax()
             peak_macd_idx = recent_data['macd'].idxmax()
-            if peak_nav_idx == len(recent_data) - 1 and peak_macd_idx != peak_nav_idx:
+            # 判断净值是否创新高，且MACD未能创新高
+            is_nav_peak = (full_fund_data['net_value'].iloc[-1] == holding['current_peak'])
+            is_macd_divergence = is_nav_peak and (recent_data['macd'].iloc[-1] < recent_data['macd'].max())
+            
+            # 使用更严格的判断：价格创新高，但MACD的峰值在更早出现
+            if is_macd_divergence:
                 sell_reasons.append('MACD顶背离触发')
                 return {
                     'code': code,
@@ -473,7 +484,7 @@ for d in decisions:
 
 md_content += f"""
 ## 策略建议 (优化及新增规则说明)
-- **【优先级最高】绝对止损:** 亏损超过 **15%** 时，触发**卖出100%**。
+- **【优先级最高】绝对止损:** 亏损超过 **15%** 时，触发**减仓50%**，亏损超过 **20%** 触发**卖出100%**。
 - **【优先级高】移动止盈已启用:** 净值从最高点回撤超过 **{int(trailing_stop_loss_pct * 100)}%** 则触发卖出。
 - **【强化】MACD 顶背离:** 当净值创新高而MACD指标未能创新高时，视为重要顶部信号，触发**减仓70%**（原50%）。
 - **【强化】ADX 趋势转弱:** 若 ADX ≥ {adx_threshold} 且 MACD 在 0 轴附近或下方死叉，视为趋势转弱，触发**减仓50%**。
