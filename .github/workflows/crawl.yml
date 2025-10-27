@@ -1,4 +1,5 @@
 name: 规模
+
 # 触发条件
 on:
   # 1. 允许手动触发 (Workflow Dispatch)
@@ -54,36 +55,48 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 🔍 检查是否有新文件生成或变动
-        id: git_status
+      - name: ➕ 暂存所有变动文件
+        id: git_add
         run: |
-          # 修正: 使用 awk '{print $2}' 提取 Git 状态输出中的第二列，即文件路径
-          NEW_FILES=$(git status --porcelain | grep '^\(A\|M\)' | grep -E '\d{4}/\d{2}/总表_.*\.csv$' | awk '{print $2}' | xargs)
+          # 1. 查找所有新增或修改的 .csv 文件，并使用 awk 提取路径
+          CSV_FILES=$(git status --porcelain | grep '^\(A\|M\)' | grep -E '\d{4}/\d{2}/总表_.*\.csv$' | awk '{print $2}' | xargs)
           
-          if [ -n "$NEW_FILES" ]; then
-            echo "files_changed=true" >> $GITHUB_OUTPUT
-            echo "new_files=$NEW_FILES" >> $GITHUB_OUTPUT
+          # 2. 检查 C类.txt 是否变动 (只保留路径)
+          C_CLASS_FILE_STATUS=$(git status --porcelain | grep '^\(A\|M\)' | grep 'C类.txt' | awk '{print $2}')
+
+          # 3. 合并所有需要暂存的文件列表
+          ALL_FILES_TO_ADD="$CSV_FILES $C_CLASS_FILE_STATUS"
+          
+          # 4. 清理合并后的字符串，去除多余空格
+          ALL_FILES_TO_ADD=$(echo "$ALL_FILES_TO_ADD" | tr -s ' ' | xargs)
+
+          if [ -n "$ALL_FILES_TO_ADD" ]; then
+            echo "发现变动文件: $ALL_FILES_TO_ADD"
+            
+            # 使用 xargs -n 1 确保每个文件都单独添加到暂存区，解决文件名带空格的问题
+            echo "$ALL_FILES_TO_ADD" | tr ' ' '\n' | xargs -n 1 git add
+            
+            echo "files_staged=true" >> $GITHUB_OUTPUT
+            echo "staged_files_list=$ALL_FILES_TO_ADD" >> $GITHUB_OUTPUT
           else
-            echo "files_changed=false" >> $GITHUB_OUTPUT
+            echo "未发现需要提交的变动，跳过提交和推送。"
+            echo "files_staged=false" >> $GITHUB_OUTPUT
           fi
         shell: bash
         
-      - name: ➕ 暂存并提交抓取结果
-        # 使用新输出变量的访问语法: steps.git_status.outputs.<variable_name>
-        if: steps.git_status.outputs.files_changed == 'true'
+      - name: ✍️ 提交变动 (Commit Changes)
+        # 只有在成功暂存文件后才执行提交
+        if: steps.git_add.outputs.files_staged == 'true'
         run: |
-          # 暂存所有新生成的或修改的 .csv 文件和历史数据相关的变动
-          git add ${{ steps.git_status.outputs.new_files }}
-          git add C类.txt # 确保输入文件变动也被提交
-          
-          # 创建提交信息
           COMMIT_MSG="🤖 Auto Scrape: Update fund data on $(date '+%Y-%m-%d %H:%M:%S')"
           
-          echo "Commiting files: ${{ steps.git_status.outputs.new_files }}"
+          echo "Committing files: ${{ steps.git_add.outputs.staged_files_list }}"
+          # 执行提交
           git commit -m "$COMMIT_MSG"
           
-      - name: 📤 推送新生成的或变动的文件到仓库
-        if: steps.git_status.outputs.files_changed == 'true'
+      - name: 📤 推送新生成的或变动的文件到仓库 (Push)
+        # 只有在成功暂存文件后才执行推送
+        if: steps.git_add.outputs.files_staged == 'true'
         run: |
           git push
           echo "✅ Successfully pushed new data to repository."
