@@ -2,6 +2,8 @@ import pandas as pd
 import glob
 import os
 import numpy as np
+from datetime import datetime 
+import pytz 
 
 # --- 配置参数 (双重筛选条件) ---
 FUND_DATA_DIR = 'fund_data'
@@ -89,7 +91,6 @@ def calculate_technical_indicators(df):
     }
 
 # --- 其他不变的辅助函数 (extract_fund_codes, calculate_consecutive_drops, calculate_max_drawdown) ---
-# ... (保持不变)
 
 def extract_fund_codes(report_content):
     codes = set()
@@ -191,7 +192,7 @@ def generate_report(results, timestamp_str):
         report += f"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**按当日跌幅降序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
-        report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | :---: | :---: |\n"  
+        report += f"| :---: | :---: | ---: | ---: | ---: | ---: | :---: | ---: | :---: | :---: |\n"  
 
         for index, row in df_buy_signal_1.iterrows():
             latest_value = row.get('最新净值', 1.0)
@@ -222,7 +223,7 @@ def generate_report(results, timestamp_str):
         report += f"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**按 RSI 升序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
-        report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | :---: | :---: |\n"  
+        report += f"| :---: | :---: | ---: | ---: | ---: | ---: | :---: | ---: | :---: | :---: |\n"  
 
         for index, row in df_buy_signal_2.iterrows():
             latest_value = row.get('最新净值', 1.0)
@@ -255,7 +256,7 @@ def generate_report(results, timestamp_str):
         report += f"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**按最大回撤降序排列。**\n\n"
         
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | 试水买价 (跌3%) | 行动提示 |\n"
-        report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | :---: | :---: |\n"  
+        report += f"| :---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | :---: |\n"  
 
         for index, row in df_extended_elastic.iterrows():
             latest_value = row.get('最新净值', 1.0)
@@ -392,15 +393,23 @@ def analyze_all_funds(target_codes=None):
 if __name__ == '__main__':
     
     # 0. 获取当前时间戳和目录名
+    # --- 修正：统一使用 datetime 和 pytz 确保时区一致性 (UTC+8) ---
     try:
-        now = pd.Timestamp.now(tz='Asia/Shanghai') 
-        timestamp_for_report = now.strftime('%Y-%m-d %H:%M:%S')
+        tz = pytz.timezone('Asia/Shanghai')
+        now = datetime.now(tz) 
+        
+        timestamp_for_report = now.strftime('%Y-%m-%d %H:%M:%S')
         timestamp_for_filename = now.strftime('%Y%m%d_%H%M%S')
         DIR_NAME = now.strftime('%Y%m') 
-    except Exception:
-        timestamp_for_report = pd.Timestamp.now().strftime('%Y-%m-d %H:%M:%S')
-        timestamp_for_filename = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-        DIR_NAME = pd.Timestamp.now().strftime('%Y%m')
+        
+    except Exception as e:
+        # 警告：如果导入或时区查找失败，回退到本地时间，但报告会提示可能的时间不一致问题。
+        print(f"警告: 时区处理异常 ({e})，回退到本地时间 (可能与 Asia/Shanghai 不一致)。")
+        # 使用标准 datetime fallback
+        now_fallback = datetime.now() 
+        timestamp_for_report = now_fallback.strftime('%Y-%m-%d %H:%M:%S')
+        timestamp_for_filename = now_fallback.strftime('%Y%m%d_%H%M%S')
+        DIR_NAME = now_fallback.strftime('%Y%m')
         
     # 1. 创建目标目录
     os.makedirs(DIR_NAME, exist_ok=True)
