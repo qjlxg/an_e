@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-回测模块：对 fund_data 目录下所有基金进行滚动 30 天窗口回测
+回测模块：滚动30天窗口回测所有基金
 输出：
     backtest_results/YYYYMM/backtest_summary_*.csv
     backtest_results/YYYYMM/backtest_report_*.md
@@ -248,7 +248,16 @@ def run_backtest():
     report_path = os.path.join(out_dir, f"backtest_report_{timestamp}.md")
 
     csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-    logger.info(f"发现 {len(csv_files)} 只基金，开始并行回测...")
+
+    # === 调试模式：限制基金数量 ===
+    DEBUG_LIMIT = 10  # 设为 None 或 0 即全量回测
+    if DEBUG_LIMIT:
+        total_files = len(csv_files)
+        csv_files = csv_files[:DEBUG_LIMIT]
+        logger.info(f"【调试模式】仅回测前 {DEBUG_LIMIT} 只（共 {total_files} 只）")
+    # ====================================
+
+    logger.info(f"开始回测 {len(csv_files)} 只基金...")
 
     all_records = []
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
