@@ -41,6 +41,10 @@ def load_latest_history():
         # 读取历史数据，使用 'utf-8-sig' 处理中文
         history_df = pd.read_csv(latest_file, encoding='utf-8-sig', errors='ignore')
         
+        # 标准化基金代码为6位字符串，补领先零
+        if '基金代码' in history_df.columns:
+            history_df['基金代码'] = history_df['基金代码'].astype(str).str.strip().str.zfill(6)
+        
         # 检查关键列是否存在，如果不存在则返回空
         if history_df.empty or '基金代码' not in history_df.columns:
              print("历史文件为空或缺少 '基金代码' 列，将执行完整抓取。")
@@ -164,7 +168,7 @@ def extract_manager_changes(soup, base_data):
 
 def scrape_fund_data(fund_code, history_df, history_basic_info):
     """抓取单个基金的详细数据，并根据历史数据决定是否跳过"""
-    fund_code_str = str(fund_code).strip()
+    fund_code_str = str(fund_code).zfill(6)
     url = BASE_URL.format(code=fund_code_str)
     print(f"\n-> 准备处理基金代码: {fund_code_str}")
     
@@ -225,8 +229,11 @@ def main():
 
     # 1. 读取所有需要追踪的代码 (C类.txt)
     with open(FUND_CODES_FILE, 'r', encoding='utf-8') as f:
-        # 过滤空行和注释行，并转换为字符串
-        new_fund_codes = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        # 过滤空行、注释行、非数字行，并转换为字符串
+        new_fund_codes = [line.strip() for line in f if line.strip() and not line.startswith('#') and line.strip().isdigit()]
+    
+    # 标准化为6位代码
+    new_fund_codes = [str(code).zfill(6) for code in new_fund_codes]
     
     # 2. 读取历史数据
     history_df, history_basic_info = load_latest_history()
