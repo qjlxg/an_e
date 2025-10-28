@@ -1,4 +1,4 @@
-name: C类基金抓取（Selenium）
+name: C类基金抓取（自动驱动）
 
 on:
   schedule:
@@ -15,9 +15,9 @@ on:
         required: false
         default: '5'
       concurrency:
-        description: '最大并发（建议≤5）'
+        description: '最大并发（建议 2~3）'
         required: false
-        default: '3'
+        default: '2'
 
 env:
   TZ: Asia/Shanghai
@@ -36,20 +36,18 @@ jobs:
 
       - name: Install Chrome
         run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
       - name: Install deps
         run: |
-          pip install selenium tqdm
+          pip install selenium tqdm webdriver-manager
 
       - name: Run scraper
         run: |
           CMD="python scrape_fund.py"
           [[ "${{ github.event.inputs.limit }}" =~ ^[0-9]+$ ]] && CMD="$CMD --limit ${{ github.event.inputs.limit }}"
-          CONC=3
+          CONC=2
           [[ "${{ github.event.inputs.concurrency }}" =~ ^[0-9]+$ ]] && CONC=${{ github.event.inputs.concurrency }}
           CMD="$CMD --concurrency $CONC"
           echo "执行: $CMD"
