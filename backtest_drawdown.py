@@ -6,6 +6,10 @@
 输出：
     backtest_results/YYYYMM/backtest_summary_*.csv
     backtest_results/YYYYMM/backtest_report_*.md
+
+修改内容：
+1. 完整包含了之前提供的所有函数和逻辑（包括止损模拟）。
+2. 在 run_backtest() 函数中加入了文件过滤逻辑：跳过文件名中包含 '持仓_' 的文件。
 """
 
 import os
@@ -71,18 +75,15 @@ MIN_HISTORY = cfg["min_history_days"]
 MAX_WORKERS = cfg.get("max_workers", 4)
 
 # ================================
-# 核心指标函数 (无改动)
+# 核心指标函数
 # ================================
 def calculate_consecutive_drops(series: pd.Series) -> int:
-    """从最新一天开始连续下跌天数（包含今天）"""
+    """从最新一天开始连续下跌天数（包含今天）。假设 series 传入的是**降序**（最新在前）。"""
     if len(series) < 2:
         return 0
     values = series.values
-    # 注意：这里是 series[t] vs series[t-1]，因为 series 是降序排列的，
-    # drops[0] = values[0] > values[1]，即 T-1 > T-2，这不是我们要的。
-    # 原始代码中的调用是在 window 和 week 上，它们是按日期升序的，但 df.iloc[:i] 是按时间戳降序的。
-    # 假设 series 传入的是**降序**（最新在前），则以下是正确的：
-    drops = values[1:] < values[:-1] # values[T] < values[T-1]
+    # T日 < T-1日 算作下跌
+    drops = values[1:] < values[:-1] 
     count = 0
     for d in drops:
         if d:
@@ -93,9 +94,9 @@ def calculate_consecutive_drops(series: pd.Series) -> int:
 
 
 def calculate_max_drawdown(series: pd.Series) -> float:
+    """计算最大回撤。要求 series 是按日期**升序**排列的净值序列。"""
     if series.empty:
         return 0.0
-    # series 必须是升序的才能正确使用 cummax
     peak = series.cummax()
     drawdown = (peak - series) / peak
     return drawdown.max()
@@ -144,7 +145,7 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     value_latest = df_asc['value'].iloc[-1]
     net_to_ma50 = value_latest / ma50_latest if ma50_latest != 0 else np.nan
 
-    # 布林带 (此处省略部分代码，保留原函数的MACD, MA50, RSI等逻辑)
+    # 布林带
     ma20 = df_asc['value'].rolling(20).mean()
     std20 = df_asc['value'].rolling(20).std()
     ma20_latest = ma20.iloc[-1]
@@ -190,7 +191,6 @@ def generate_signal(row: pd.Series) -> str:
             return "第一优先级 即时买入"
         
         if row['RSI'] < TH.get("rsi_oversold", 35) and row['当日跌幅'] >= TH["min_daily_drop_percent"]:
-            # 这里的逻辑与上一个分支相同，但在rsi_extreme_oversold未设定的情况下，可能会被此捕捉
             return "第一优先级 即时买入"
         
         if row['RSI'] < TH.get("rsi_oversold", 35):
@@ -245,8 +245,8 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
 
             max_drop_month = calculate_consecutive_drops(window_desc)
             mdd_month = calculate_max_drawdown(window_df['value']) # mdd 传入升序
-            max_drop_week = calculate_consecutive_drops(week_desc)
             tech = calculate_technical_indicators(df.iloc[:i].iloc[::-1]) # 传入降序数据 (T-1, T-2, ...)
+            max_drop_week = calculate_consecutive_drops(week_desc)
 
             # --- 核心筛选条件 ---
             if (max_drop_month >= TH["min_consecutive_drop_days"] and
@@ -296,8 +296,9 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
                         if pd.isna(row['止损退出天数']):
                              # 查找首次触及止损的索引位置（在 returns_from_entry 中的相对索引）
                              # +1 是因为 T+1 是第一天
-                             sl_hit_pos = (returns_from_entry <= -SL_THRESHOLD).idxmax() - df_index[i] + 1
-                             row['止损退出天数'] = sl_hit_pos
+                             # idxmax() 返回第一个 True 的索引位置
+                             sl_hit_pos_in_future = (returns_from_entry <= -SL_THRESHOLD).idxmax() - df_index[i] + 1
+                             row['止损退出天数'] = sl_hit_pos_in_future
                     else:
                         # 3. 未触发止损：收益为持有到 T+d 的收益
                         row[col] = hold_period_returns.iloc[-1]
@@ -312,7 +313,7 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
 
 
 # ================================
-# 主流程 (无改动)
+# 主流程 (已修改：加入文件过滤逻辑)
 # ================================
 def run_backtest():
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
@@ -326,7 +327,16 @@ def run_backtest():
     summary_path = os.path.join(out_dir, f"backtest_summary_{timestamp}.csv")
     report_path = os.path.join(out_dir, f"backtest_report_{timestamp}.md")
 
-    csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    # 1. 获取所有 CSV 文件
+    all_csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    
+    # 2. 【核心修改】过滤掉文件名中包含 '持仓_' 的文件
+    initial_count = len(all_csv_files)
+    csv_files = [f for f in all_csv_files if '持仓_' not in os.path.basename(f)]
+    filtered_count = len(csv_files)
+    
+    if initial_count > filtered_count:
+        logger.info(f"已过滤 {initial_count - filtered_count} 个包含 '持仓_' 的文件。")
 
     # === 调试模式：限制基金数量 ===
     DEBUG_LIMIT = None  # 设为 None 或 0 即全量回测
@@ -343,8 +353,12 @@ def run_backtest():
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = [executor.submit(backtest_single_fund, f) for f in csv_files]
         for future in futures:
-            all_records.extend(future.result())
-
+            # 使用 .result() 来获取函数返回值并处理可能的异常
+            try:
+                all_records.extend(future.result())
+            except Exception as e:
+                logger.error(f"进程执行失败: {e}")
+                
     if not all_records:
         logger.info("无符合条件的回测信号")
         return
@@ -355,12 +369,13 @@ def run_backtest():
 
     # 生成报告
     signal_groups = df_all.groupby('信号')
+    SL_THRESHOLD_PCT = TH.get("stop_loss_threshold", 0.10) * 100
     report_lines = [
         f"# 基金预警策略回测报告\n",
         f"**生成时间**：{now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)\n",
         f"**回测范围**：{START_DATE or '全部'} ~ {END_DATE or '全部'}\n",
         f"**基金数量**：{len(set(df_all['基金代码']))}，**信号总数**：{len(df_all)}\n",
-        f"**核心风控纪律**：**所有收益已模拟 10% 严格止损退出**。\n\n",
+        f"**核心风控纪律**：**所有收益已模拟 {SL_THRESHOLD_PCT:.0f}% 严格止损退出**。\n\n",
         "---\n"
     ]
 
@@ -377,7 +392,7 @@ def run_backtest():
             if len(valid) == 0:
                 continue
             
-            # 统计止损次数
+            # 统计止损次数 (判断是否等于止损阈值，因为止损退出的收益被设为 -SL_THRESHOLD)
             stop_loss_count = (valid <= -TH.get("stop_loss_threshold", 0.10)).sum()
             
             win_rate = (valid > 0).mean()
@@ -398,7 +413,7 @@ def run_backtest():
 
         if stats:
             df_stats = pd.DataFrame(stats)
-            report_lines.append("\n### 收益分布 (已应用 10% 止损)\n")
+            report_lines.append("\n### 收益分布 (已应用止损)\n")
             report_lines.append("| 持有天数 | 胜率 | 平均收益 | 中位数 | 最大 | **止损次数** | 样本 |\n")
             report_lines.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
             for _, r in df_stats.iterrows():
