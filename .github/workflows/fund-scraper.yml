@@ -1,4 +1,4 @@
-name: 抓取 C 类基金费率（调试模式）
+name: 抓取 C 类基金费率
 
 on:
   workflow_dispatch:          # 手动触发
@@ -16,32 +16,49 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     permissions:
+      # 授予工作流对内容仓库的写入权限，以进行提交和推送
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository 🛒
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 🐍
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install deps
+      - name: Install dependencies 🛠️
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml pandas
 
-      - name: Run script
+      - name: Run Python script to fetch data 🚀
         env:
+          # 设置时区，确保脚本内部的时间戳是上海时间
           TZ: Asia/Shanghai
         run: |
           python fetch_fund_fee.py
-
-      - name: Commit CSV if changed
+          
+      # --- 关键的提交和推送步骤 ---
+      - name: Commit and Push CSV if changed ✨
         run: |
+          # 1. 配置 Git 身份
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          
+          # 2. 将结果文件添加到暂存区
           git add fund_fee_result.csv
-          git diff --quiet && echo "No change" || git commit -m "Update fund_fee_result.csv $(date '+%F %T')"
-          git push
+          
+          # 3. 检查暂存区是否有新的变更
+          # 如果文件内容与HEAD版本相比没有变化，git diff --cached --exit-code 返回 0 (成功)
+          if git diff --cached --exit-code; then
+            echo "✅ fund_fee_result.csv 内容没有变化，跳过提交和推送。"
+          else
+            # 4. 如果有变化，则创建提交
+            git commit -m "Update fund_fee_result.csv $(TZ=Asia/Shanghai date '+%F %T')"
+            
+            # 5. 推送提交到远程仓库
+            echo "🚀 正在推送新的 fund_fee_result.csv..."
+            git push
+          fi
