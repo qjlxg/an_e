@@ -5,7 +5,7 @@ on:
     - cron: '30 1 * * *'   # UTC 01:30 = 上海 09:30
   push:
     paths:
-      - 'scripts/scrape_fund.py'
+      - 'scrape_fund.py'
       - '.github/workflows/fund-scraper.yml'
       - 'C类.txt'
   workflow_dispatch:
@@ -40,11 +40,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas tqdm
 
-      - name: Run parallel scraper
+      - name: Run scraper (根目录)
         run: |
           LIMIT="${{ github.event.inputs.limit }}"
           CONCURRENCY="${{ github.event.inputs.concurrency }}"
-          CMD="scrape_fund.py"
+          CMD="python scrape_fund.py"
           [[ -n "$LIMIT" ]] && CMD="$CMD --limit $LIMIT"
           [[ -n "$CONCURRENCY" ]] && CMD="$CMD --concurrency $CONCURRENCY"
           echo "执行: $CMD"
