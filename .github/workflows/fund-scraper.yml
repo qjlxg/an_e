@@ -56,7 +56,14 @@ jobs:
             echo "✅ fund_fee_result.csv 内容没有变化，跳过提交和推送。"
           else
             # 4. 如果有变化，则创建提交
-            git commit -m "Update fund_fee_result.csv $(TZ=Asia/Shanghai date '+%F %T')"
+            COMMIT_MESSAGE="Update fund_fee_result.csv $(TZ=Asia/Shanghai date '+%F %T')"
+            git commit -m "$COMMIT_MESSAGE"
+            
+            # --- 修复推送冲突：先拉取远程最新变更并Rebase ---
+            echo "🔄 尝试拉取远程最新变更并 Rebase 合并..."
+            # 使用 --rebase 避免非快进式错误，确保本地提交在远程最新提交之上
+            # 这样 git push 就是一个安全的快进式推送
+            git pull --rebase
             
             # 5. 推送提交到远程仓库
             echo "🚀 正在推送新的 fund_fee_result.csv..."
