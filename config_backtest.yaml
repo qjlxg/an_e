@@ -1,0 +1,29 @@
+# ================================
+# 回测专用配置（与主脚本完全解耦）
+# ================================
+
+# ---------- 数据路径 ----------
+data_dir: "fund_data"                # 基金 CSV 所在目录
+output_dir: "backtest_results"       # 回测结果输出根目录
+
+# ---------- 回测时间范围 ----------
+# 留空表示使用所有可用数据；否则填写 YYYY-MM-DD
+start_date: ""                       # 例如: "2024-01-01"
+end_date: ""                         # 例如: "2025-10-27"
+
+# ---------- 预警阈值（与主脚本保持一致） ----------
+thresholds:
+  min_consecutive_drop_days: 3
+  min_month_drawdown: 0.06
+  high_elasticity_min_drawdown: 0.10
+  min_daily_drop_percent: 0.03
+  rsi_oversold: 35
+  rsi_extreme_oversold: 30
+
+# ---------- 收益统计 ----------
+forward_days: [1, 3, 5, 10, 20]      # 统计买入后第 N 日的收益率
+benchmark_hold_days: 20              # 基准：持有 20 天
+
+# ---------- 其他 ----------
+min_history_days: 60                 # 每个基金至少需要的历史天数（保证指标计算）
+max_workers: 4                       # 并行处理的进程数（加速回测）
