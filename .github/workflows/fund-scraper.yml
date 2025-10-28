@@ -1,4 +1,4 @@
-name: C类基金并行抓取
+name: 抓取
 
 on:
   schedule:
