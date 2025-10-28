@@ -27,3 +27,4 @@ benchmark_hold_days: 20              # 基准：持有 20 天
 # ---------- 其他 ----------
 min_history_days: 60                 # 每个基金至少需要的历史天数（保证指标计算）
 max_workers: 4                       # 并行处理的进程数（加速回测）
+ stop_loss_threshold: 0.10 # 新增：严格止损阈值 (10%)
