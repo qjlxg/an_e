@@ -3,7 +3,7 @@ name: Fund Drawdown Backtest
 
 on:
   schedule:
-    - cron: '0 16 * * *'  # 北京时间 00:00
+    - cron: '0 16 * * *'  # 北京时间 00:00 (UTC 16:00)
   workflow_dispatch:
   push:
     branches: [ main ]
@@ -50,7 +50,7 @@ jobs:
         run: |
           python backtest_drawdown.py
 
-      # 6. 提交并推送结果
+      # 6. 提交并推送结果 (已修复 Rejected 错误)
       - name: Commit and push backtest results
         run: |
           git config --global user.name "github-actions[bot]"
@@ -65,6 +65,9 @@ jobs:
             exit 0
           fi
 
+          # 【修复：先拉取远程变更，再提交】
+          git pull --rebase origin main 
+          
           git commit -m "Backtest results: $(date '+%Y-%m-%d %H:%M:%S')"
           git push origin main
         env:
