@@ -26,7 +26,8 @@ jobs:
     - name: 检出代码 (Checkout repository)
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        # 确保获取完整的 Git 历史记录
+        fetch-depth: 0 
 
     - name: 设置 Python 环境
       uses: actions/setup-python@v5
@@ -49,6 +50,14 @@ jobs:
         echo "开始执行 fund_spider.py..."
         # 运行爬虫脚本，抓取并更新数据
         python fund_spider.py
+        
+    - name: ⭐ 解决推送冲突：拉取远程最新更改 (Git Pull)
+      run: |
+        # 配置 Git 用户信息（`git-auto-commit-action` 实际上会自动配置，但为了保险可以增加此步骤）
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # 拉取并合并远程 main 分支的最新更改，以解决 'non-fast-forward' 错误
+        git pull origin main
         
     - name: 检查并提交更改 (Commit and Push changes)
       uses: stefanzweifel/git-auto-commit-action@v5
