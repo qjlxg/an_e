@@ -247,8 +247,17 @@ def save_to_csv(fund_code, data):
     try:
         new_df['net_value'] = pd.to_numeric(new_df['net_value'], errors='coerce').round(4)
         new_df['cumulative_net_value'] = pd.to_numeric(new_df['cumulative_net_value'], errors='coerce').round(4)
-        new_df['daily_growth_rate'] = new_df['daily_growth_rate'].replace('--', '0').str.rstrip('%').astype(float) / 100.0
+        
+        # 核心修改点：处理 daily_growth_rate 中的空字符串 '' 和 '--'
+        # 1. strip() 去除首尾空格
+        growth_rate_series = new_df['daily_growth_rate'].str.strip()
+        # 2. 将空字符串 '' 和 '--' 都替换为 '0'
+        growth_rate_series = growth_rate_series.replace(['--', ''], '0') 
+        # 3. 移除 '%'，转换为 float，然后除以 100.0
+        new_df['daily_growth_rate'] = growth_rate_series.str.rstrip('%').astype(float) / 100.0
+        
         new_df['date'] = pd.to_datetime(new_df['date'], errors='coerce')
+        # 增加对 daily_growth_rate 的非空检查，以确保后续数据质量
         new_df.dropna(subset=['date', 'net_value'], inplace=True)
         if new_df.empty:
             # print(f"    基金 {fund_code} 数据无效或为空，跳过保存。")
