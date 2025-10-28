@@ -1,64 +1,58 @@
-name: 净值更新 Fetch Fund Net Value Data
+name: 基金净值数据自动抓取
 
-# 定义触发条件
 on:
-  # 触发 1: 手动触发，允许在 GitHub Actions 页面点击“Run workflow”运行
-  workflow_dispatch:
-  
-  # 触发 2: 文件变更时自动运行
-  push:
-    paths:
-      - '.github/workflows/fetch_fund_data.yml'
-      - 'fund_spider.py'
-      - 'C类.txt'
-
-  # 触发 3: 定时运行（每 3 小时）
+  # 每天世界协调时间 (UTC) 13:08 运行一次 
   schedule:
-       - cron: 0 */3 * * *
+    - cron: '0 0 * * *' 
+  # 也可以通过手动触发
+  workflow_dispatch:
+  # 或在推送到主分支时触发
+  push:
+    branches:
+      - main
 
 jobs:
-  update-data:
+  run_spider:
+    # 使用最新的 Ubuntu 操作系统环境
     runs-on: ubuntu-latest
     
-
     steps:
-      # 步骤 1: 检出仓库代码
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: 检出代码 (Checkout repository)
+      uses: actions/checkout@v4
+      with:
+        # 必须开启 fetch-depth: 0 才能在后面正确推送到仓库
+        fetch-depth: 0
 
-      # 步骤 2: 设置 Python 环境
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+    - name: 设置时区
+      run: sudo timedatectl set-timezone 'Asia/Shanghai'
 
-      # 步骤 3: 缓存 Python 依赖
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
 
-      # 步骤 4: 安装依赖库
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas requests beautifulsoup4 aiohttp lxml tenacity
-
-      # 步骤 5: 执行 Python 爬虫脚本
-      - name: Run fund spider script
-        env:
-          # 如果脚本需要 API 密钥，可通过 GitHub Secrets 配置
-          API_KEY: ${{ secrets.FUND_API_KEY }}
-        run: |
-          python fund_spider.py || { echo "Script failed, check logs for details"; exit 1; }
-
-      # 步骤 6: 检查是否有新的或更新的数据文件并提交
-      - name: Commit and Push new data
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          file_pattern: 'fund_data/*.csv fund_data/*.json'
-          commit_message: "🤖 chore: Update fund net value data at ${{ github.event.schedule || github.event.head_commit.timestamp || 'manual run' }}"
-          skip_dirty_check: false
+    - name: 安装 Python 依赖
+      run: |
+        # 安装 fund_spider.py 所需的所有库
+        pip install pandas requests aiohttp beautifulsoup4 tenacity json5 jsbeautifier lxml
+        
+    - name: 运行基金爬虫脚本
+      # 调试提示：如果您想在 Action 中查看更详细的输出，可以设置 PYTHONUNBUFFERED=1
+      run: |
+        echo "开始执行 fund_spider.py..."
+        # 运行爬虫脚本，抓取并更新数据
+        python fund_spider.py
+        
+    - name: 检查并提交更改 (Commit and Push changes)
+      # 使用 Git Auto Commit Action 自动处理文件提交和推送
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        # 提交信息
+        commit_message: "🤖 自动更新：抓取最新的基金净值数据"
+        # 自动添加 fund_data 目录下的所有 CSV 文件，以及 C类.txt (以防它被修改或创建)
+        file_pattern: 'fund_data/*.csv C类.txt'
+        # 允许空提交，如果本次运行没有新数据也会记录
+        commit_options: '--allow-empty'
+        # Git 用户配置 (可选，默认会使用 GitHub Actions Bot)
+        # author_name: 'GitHub Actions Bot' 
+        # author_email: 'action@github.com'
