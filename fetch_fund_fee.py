@@ -24,7 +24,7 @@ TXT_FILE = SCRIPT_DIR / "C类.txt"
 RESULT_CSV = SCRIPT_DIR / "fund_fee_result.csv"
 
 # ================== 配置 ==================
-BASE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
+BASE_URL = "https://fundf10.eastmoney.com/jbgk_{code}.html"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
