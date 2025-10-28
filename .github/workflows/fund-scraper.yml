@@ -1,7 +1,8 @@
-name: C类基金抓取（自动驱动）
+name: C类基金抓取（自动驱动 + 安全并发）
 
 on:
   schedule:
+    # 每天 UTC 01:30 = 北京时间 09:30
     - cron: '30 1 * * *'
   push:
     paths:
@@ -11,13 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: '调试：只抓前 N 只'
+        description: '调试：只抓前 N 只（留空抓全部）'
         required: false
-        default: '5'
+        default: '5'          # 默认只抓 5 只（调试用）
       concurrency:
-        description: '最大并发（建议 2~3）'
+        description: '最大并发数（建议 2~5，超过 5 自动降为 5）'
         required: false
-        default: '2'
+        default: '3'          # 默认 3，稳定高效
 
 env:
   TZ: Asia/Shanghai
@@ -26,38 +27,52 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout 代码
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 设置 Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install Chrome
+      - name: 安装 Chrome 浏览器
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-      - name: Install deps
+      - name: 安装 Python 依赖
         run: |
           pip install selenium tqdm webdriver-manager
 
-      - name: Run scraper
+      - name: 构建并运行抓取命令
         run: |
           CMD="python scrape_fund.py"
-          [[ "${{ github.event.inputs.limit }}" =~ ^[0-9]+$ ]] && CMD="$CMD --limit ${{ github.event.inputs.limit }}"
-          CONC=2
-          [[ "${{ github.event.inputs.concurrency }}" =~ ^[0-9]+$ ]] && CONC=${{ github.event.inputs.concurrency }}
+
+          # 处理 --limit
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [[ "$LIMIT" =~ ^[0-9]+$ ]] && [ "$LIMIT" -gt 0 ]; then
+            CMD="$CMD --limit $LIMIT"
+          fi
+
+          # 处理 --concurrency（安全限制 ≤5）
+          CONC="${{ github.event.inputs.concurrency }}"
+          if ! [[ "$CONC" =~ ^[0-9]+$ ]] || [ "$CONC" -le 0 ]; then
+            CONC=3
+          fi
+          if [ "$CONC" -gt 5 ]; then
+            echo "警告：并发数 >5 风险高，自动降为 5"
+            CONC=5
+          fi
           CMD="$CMD --concurrency $CONC"
-          echo "执行: $CMD"
+
+          echo "执行命令: $CMD"
           eval $CMD
 
-      - name: Commit & push
+      - name: 提交更新（CSV + 失败列表）
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add fund_data.csv failed_codes.txt || true
-          git diff --quiet && echo "无变化" || (
-            git commit -m "Update C类基金 $(date '+%F %T')" && git push
+          git diff --quiet && echo "无文件变化" || (
+            git commit -m "Update C类基金数据 $(date '+%Y-%m-%d %H:%M:%S')" && git push
           )
