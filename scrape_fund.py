@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-并行抓取 C类.txt 中的基金
+并行抓取 C类.txt 中的基金（脚本在根目录）
 支持：
-  --limit N        : 只抓前 N 只（调试）
+  --limit N        : 只抓前 N 只（调试用）
   --concurrency N  : 最大并发数（默认 10）
 """
 
@@ -20,10 +20,10 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-# ============================= 配置 =============================
-CODES_FILE = os.path.join(os.path.dirname(__file__), "..", "C类.txt")
-CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "fund_data.csv")
-FAILED_PATH = os.path.join(os.path.dirname(__file__), "..", "failed_codes.txt")
+# ============================= 配置（根目录路径）=============================
+CODES_FILE = "C类.txt"        # 直接在根目录
+CSV_PATH = "fund_data.csv"
+FAILED_PATH = "failed_codes.txt"
 BASE_URL = "https://fund.eastmoney.com/{code}.html"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -33,21 +33,23 @@ RETRY = 2
 # ==================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="C类基金并行抓取")
-    parser.add_argument("--limit", type=int, help="只抓取前 N 只基金（调试用）")
+    parser = argparse.ArgumentParser(description="C类基金并行抓取（根目录脚本）")
+    parser.add_argument("--limit", type=int, default=None, help="只抓取前 N 只基金（调试用）")
     parser.add_argument("--concurrency", type=int, default=10, help="最大并发数")
     return parser.parse_args()
 
 def load_codes(limit: Optional[int] = None) -> List[str]:
     if not os.path.exists(CODES_FILE):
-        print(f"未找到 {CODES_FILE}")
+        print(f"错误：未找到 {CODES_FILE}，当前工作目录: {os.getcwd()}")
         return []
     with open(CODES_FILE, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip() and line.lower() != "code"]
-    codes = [line.split()[0] for line in lines]  # 兼容 "code name"
-    if limit:
+    codes = [line.split()[0] for line in lines]
+    if limit is not None and limit > 0:
         print(f"调试模式：只抓取前 {limit} 只")
         codes = codes[:limit]
+    else:
+        print(f"共加载 {len(codes)} 只基金")
     return codes
 
 def fetch_html(code: str) -> Optional[str]:
@@ -60,7 +62,9 @@ def fetch_html(code: str) -> Optional[str]:
             resp.raise_for_status()
             resp.encoding = "utf-8"
             return resp.text
-        except:
+        except Exception as e:
+            if _ == RETRY:
+                print(f"[{code}] 抓取失败: {e}")
             time.sleep(1)
     return None
 
@@ -123,10 +127,10 @@ def main():
     if not codes:
         return
 
+    print(f"开始并行抓取，最大并发: {args.concurrency}")
+
     results = []
     failed = []
-
-    print(f"开始并行抓取 {len(codes)} 只基金，最大并发: {args.concurrencyurrency}")
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_code = {executor.submit(worker, code): code for code in codes}
