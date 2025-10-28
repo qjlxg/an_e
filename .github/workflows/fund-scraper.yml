@@ -1,8 +1,8 @@
-name: C类基金抓取（根目录脚本）
+name: C类基金抓取（Selenium）
 
 on:
   schedule:
-    - cron: '30 1 * * *'   # UTC 01:30 = 上海 09:30
+    - cron: '30 1 * * *'
   push:
     paths:
       - 'scrape_fund.py'
@@ -11,13 +11,13 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: '调试：只抓前 N 只（留空抓全部）'
+        description: '调试：只抓前 N 只'
         required: false
-        default: ''
+        default: '5'
       concurrency:
-        description: '最大并发数（留空默认10）'
+        description: '最大并发（建议≤5）'
         required: false
-        default: '10'
+        default: '3'
 
 env:
   TZ: Asia/Shanghai
@@ -34,27 +34,24 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Chrome
         run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pandas tqdm
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install deps
+        run: |
+          pip install selenium tqdm
 
       - name: Run scraper
         run: |
           CMD="python scrape_fund.py"
-
-          # 处理 limit
-          if [[ -n "${{ github.event.inputs.limit }}" ]] && [[ "${{ github.event.inputs.limit }}" =~ ^[0-9]+$ ]]; then
-            CMD="$CMD --limit ${{ github.event.inputs.limit }}"
-          fi
-
-          # 处理 concurrency（必须有值）
-          CONCURRENCY="${{ github.event.inputs.concurrency }}"
-          if [[ -z "$CONCURRENCY" ]] || ! [[ "$CONCURRENCY" =~ ^[0-9]+$ ]]; then
-            CONCURRENCY=10
-          fi
-          CMD="$CMD --concurrency $CONCURRENCY"
-
+          [[ "${{ github.event.inputs.limit }}" =~ ^[0-9]+$ ]] && CMD="$CMD --limit ${{ github.event.inputs.limit }}"
+          CONC=3
+          [[ "${{ github.event.inputs.concurrency }}" =~ ^[0-9]+$ ]] && CONC=${{ github.event.inputs.concurrency }}
+          CMD="$CMD --concurrency $CONC"
           echo "执行: $CMD"
           eval $CMD
 
@@ -64,5 +61,5 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add fund_data.csv failed_codes.txt || true
           git diff --quiet && echo "无变化" || (
-            git commit -m "Update C类基金数据 $(date '+%F %T')" && git push
+            git commit -m "Update C类基金 $(date '+%F %T')" && git push
           )
