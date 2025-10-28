@@ -1,102 +1,33 @@
-name: 规模
+name: Run Fund Scraper
 
-# 触发条件
 on:
-  # 1. 允许手动触发 (Workflow Dispatch)
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: '手动运行的原因'
-        required: false
-        default: 'Manual run'
-
-  # 2. 当脚本或配置发生变动时自动运行
   push:
-    branches:
-      - main  # 假设你的主分支是 main
     paths:
-      - 'scrape_fund_data.py'  # 脚本文件
-      - 'C类.txt'              # 基金代码输入文件
-      - '.github/workflows/crawl.yml' # YML 自身变动
+      - 'scrape_fund_data.py'
+      - '.github/workflows/crawl.yml'
+  workflow_dispatch:
 
-# 任务列表
 jobs:
-  scrape_and_commit:
+  scrape:
     runs-on: ubuntu-latest
-    
-    # 设置时区为亚洲/上海，影响脚本内部的时间函数 get_shanghai_time() 
     env:
-      TZ: 'Asia/Shanghai'
-
+      TZ: Asia/Shanghai
     steps:
-      - name: 📥 检出代码 (Checkout Repository)
-        uses: actions/checkout@v4
-        with:
-          # 必须设置 fetch-depth: 0 才能在后续步骤中进行完整的历史提交和推送
-          fetch-depth: 0 
-          
-      - name: 🐍 设置 Python 环境
+      - uses: actions/checkout@v4
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x' 
-          
-      - name: ✨ 安装依赖库
-        # 脚本中使用了 requests, bs4, pandas
+          python-version: '3.12'
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas
-          
-      - name: 🚀 执行基金数据抓取脚本
+      - name: Run scraper script
+        run: python scrape_fund_data.py
+      - name: Commit and push changes
         run: |
-          python scrape_fund_data.py
-          
-      - name: ⚙️ 配置 Git 用户信息
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: ➕ 暂存所有变动文件
-        id: git_add
-        run: |
-          # 1. 查找所有新增或修改的 .csv 文件，并使用 awk 提取路径
-          CSV_FILES=$(git status --porcelain | grep '^\(A\|M\)' | grep -E '\d{4}/\d{2}/总表_.*\.csv$' | awk '{print $2}' | xargs)
-          
-          # 2. 检查 C类.txt 是否变动 (只保留路径)
-          C_CLASS_FILE_STATUS=$(git status --porcelain | grep '^\(A\|M\)' | grep 'C类.txt' | awk '{print $2}')
-
-          # 3. 合并所有需要暂存的文件列表
-          ALL_FILES_TO_ADD="$CSV_FILES $C_CLASS_FILE_STATUS"
-          
-          # 4. 清理合并后的字符串，去除多余空格
-          ALL_FILES_TO_ADD=$(echo "$ALL_FILES_TO_ADD" | tr -s ' ' | xargs)
-
-          if [ -n "$ALL_FILES_TO_ADD" ]; then
-            echo "发现变动文件: $ALL_FILES_TO_ADD"
-            
-            # 使用 xargs -n 1 确保每个文件都单独添加到暂存区，解决文件名带空格的问题
-            echo "$ALL_FILES_TO_ADD" | tr ' ' '\n' | xargs -n 1 git add
-            
-            echo "files_staged=true" >> $GITHUB_OUTPUT
-            echo "staged_files_list=$ALL_FILES_TO_ADD" >> $GITHUB_OUTPUT
-          else
-            echo "未发现需要提交的变动，跳过提交和推送。"
-            echo "files_staged=false" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-        
-      - name: ✍️ 提交变动 (Commit Changes)
-        # 只有在成功暂存文件后才执行提交
-        if: steps.git_add.outputs.files_staged == 'true'
-        run: |
-          COMMIT_MSG="🤖 Auto Scrape: Update fund data on $(date '+%Y-%m-%d %H:%M:%S')"
-          
-          echo "Committing files: ${{ steps.git_add.outputs.staged_files_list }}"
-          # 执行提交
-          git commit -m "$COMMIT_MSG"
-          
-      - name: 📤 推送新生成的或变动的文件到仓库 (Push)
-        # 只有在成功暂存文件后才执行推送
-        if: steps.git_add.outputs.files_staged == 'true'
-        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add .
+          git commit -m "Update fund data from scraper" || echo "No changes to commit"
           git push
-          echo "✅ Successfully pushed new data to repository."
