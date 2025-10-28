@@ -1,4 +1,4 @@
-name: 抓取
+name: C类基金抓取（根目录脚本）
 
 on:
   schedule:
@@ -15,7 +15,7 @@ on:
         required: false
         default: ''
       concurrency:
-        description: '最大并发数'
+        description: '最大并发数（留空默认10）'
         required: false
         default: '10'
 
@@ -41,15 +41,22 @@ jobs:
 
       - name: Run scraper
         run: |
-          LIMIT="${{ github.event.inputs.limit }}"
-          CONCURRENCY="${{ github.event.inputs.concurrency }}"
           CMD="python scrape_fund.py"
-          if [[ "$LIMIT" =~ ^[0-9]+$ ]]; then
-            CMD="$CMD --limit $LIMIT"
+
+          # 处理 limit
+          if [[ -n "${{ github.event.inputs.limit }}" ]] && [[ "${{ github.event.inputs.limit }}" =~ ^[0-9]+$ ]]; then
+            CMD="$CMD --limit ${{ github.event.inputs.limit }}"
+          fi
+
+          # 处理 concurrency（必须有值）
+          CONCURRENCY="${{ github.event.inputs.concurrency }}"
+          if [[ -z "$CONCURRENCY" ]] || ! [[ "$CONCURRENCY" =~ ^[0-9]+$ ]]; then
+            CONCURRENCY=10
           fi
           CMD="$CMD --concurrency $CONCURRENCY"
+
           echo "执行: $CMD"
-          $CMD
+          eval $CMD
 
       - name: Commit & push
         run: |
