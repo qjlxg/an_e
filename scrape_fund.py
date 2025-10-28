@@ -20,8 +20,8 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-# ============================= 配置（根目录路径）=============================
-CODES_FILE = "C类.txt"        # 直接在根目录
+# ============================= 配置 =============================
+CODES_FILE = "C类.txt"        # 根目录
 CSV_PATH = "fund_data.csv"
 FAILED_PATH = "failed_codes.txt"
 BASE_URL = "https://fund.eastmoney.com/{code}.html"
@@ -33,14 +33,14 @@ RETRY = 2
 # ==================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="C类基金并行抓取（根目录脚本）")
+    parser = argparse.ArgumentParser(description="C类基金并行抓取")
     parser.add_argument("--limit", type=int, default=None, help="只抓取前 N 只基金（调试用）")
     parser.add_argument("--concurrency", type=int, default=10, help="最大并发数")
     return parser.parse_args()
 
 def load_codes(limit: Optional[int] = None) -> List[str]:
     if not os.path.exists(CODES_FILE):
-        print(f"错误：未找到 {CODES_FILE}，当前工作目录: {os.getcwd()}")
+        print(f"错误：未找到 {CODES_FILE}，当前目录: {os.getcwd()}")
         return []
     with open(CODES_FILE, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip() and line.lower() != "code"]
