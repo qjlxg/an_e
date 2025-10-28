@@ -44,7 +44,7 @@ jobs:
         run: |
           LIMIT="${{ github.event.inputs.limit }}"
           CONCURRENCY="${{ github.event.inputs.concurrency }}"
-          CMD="python scripts/scrape_fund.py"
+          CMD="scrape_fund.py"
           [[ -n "$LIMIT" ]] && CMD="$CMD --limit $LIMIT"
           [[ -n "$CONCURRENCY" ]] && CMD="$CMD --concurrency $CONCURRENCY"
           echo "执行: $CMD"
