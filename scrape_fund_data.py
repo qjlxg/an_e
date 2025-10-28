@@ -139,10 +139,10 @@ def extract_manager_changes(soup, base_data):
     if manager_table_container:
         manager_table = manager_table_container.find('table', class_='comm jloff')
         if manager_table:
-            tbody = manager_table.find('tbody')
-            if tbody:
-                rows = tbody.find_all('tr')
-                for row in rows:
+            # 直接查找所有tr，跳过表头（假设第一行是表头）
+            rows = manager_table.find_all('tr')
+            if rows:
+                for row in rows[1:]:  # 跳过第一行表头
                     cols = row.find_all(['td', 'th'])
                     if len(cols) >= 5:
                         change_entry = {
