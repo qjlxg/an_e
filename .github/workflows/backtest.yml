@@ -1,12 +1,10 @@
 # .github/workflows/backtest.yml
 name: Fund Drawdown Backtest
 
-# 触发条件
 on:
   schedule:
-    # 每天 UTC 16:00（北京时间 00:00）运行
-    - cron: '0 16 * * *'
-  workflow_dispatch:  # 支持手动触发
+    - cron: '0 16 * * *'  # 北京时间 00:00
+  workflow_dispatch:
   push:
     branches: [ main ]
     paths:
@@ -14,16 +12,18 @@ on:
       - 'backtest_drawdown.py'
       - 'config_backtest.yaml'
 
-# 任务
 jobs:
-  backtest:
+  backtest-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    permissions:
+      contents: write  # 必须：允许 push
 
     steps:
       # 1. 拉取代码
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # 2. 设置 Python
       - name: Set up Python
@@ -37,43 +37,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy pyyaml
 
-      # 4. 检查 fund_data 目录是否存在
-      - name: Check fund data
+      # 4. 检查 fund_data 是否存在
+      - name: Validate fund data
         run: |
           if [ ! -d "fund_data" ] || [ -z "$(ls -A fund_data/*.csv 2>/dev/null)" ]; then
-            echo "Warning: fund_data/ 为空或无 CSV 文件，回测将跳过"
+            echo "Warning: No CSV files in fund_data/, skipping backtest."
             exit 0
           fi
 
       # 5. 运行回测
       - name: Run backtest
-        id: backtest
-        continue-on-error: true
         run: |
           python backtest_drawdown.py
 
-      # 6. 上传回测报告（Artifacts）
-      - name: Upload backtest results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backtest-results-${{ github.run_number }}
-          path: |
-            backtest_results/**/*.csv
-            backtest_results/**/*.md
-          retention-days: 7
-
-      # 7. （可选）推送结果到微信/企业微信/邮箱
-      # - name: Send to WeChat (Server酱)
-      #   if: steps.backtest.outcome == 'success'
-      #   run: |
-      #     curl -X POST "https://sctapi.ftqq.com/${{ secrets.SCT_KEY }}.send" \
-      #       -d "title=基金回测完成" \
-      #       -d "desp=$(cat backtest_results/*/backtest_report_*.md | head -n 50)"
-
-      # 8. 失败时通知
-      - name: Notify on failure
-        if: failure()
+      # 6. 提交并推送结果
+      - name: Commit and push backtest results
         run: |
-          echo "Backtest failed!"
-          exit 1
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add backtest_results/
+          git status
+
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Backtest results: $(date '+%Y-%m-%d %H:%M:%S')"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
