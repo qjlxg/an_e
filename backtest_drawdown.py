@@ -4,25 +4,25 @@
 """
 回测模块：对 fund_data 目录下所有基金进行滚动 30 天窗口回测
 输出：
-    1. backtest_results/YYYYMM/backtest_summary_*.csv   （每只基金每一天的信号 + 后续收益）
-    2. backtest_results/YYYYMM/backtest_report_*.md    （汇总统计：胜率、平均收益、最大回撤等）
+    backtest_results/YYYYMM/backtest_summary_*.csv
+    backtest_results/YYYYMM/backtest_report_*.md
 """
 
 import os
 import glob
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import yaml
 import logging
 from concurrent.futures import ProcessPoolExecutor
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Any
 import warnings
 warnings.filterwarnings("ignore")
 
 # ================================
-# 日志
+# 日志配置
 # ================================
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +49,7 @@ MIN_HISTORY = cfg["min_history_days"]
 MAX_WORKERS = cfg.get("max_workers", 4)
 
 # ================================
-# 核心指标函数（与主脚本完全一致）
+# 核心指标函数
 # ================================
 def calculate_consecutive_drops(series: pd.Series) -> int:
     """从最新一天开始连续下跌天数（包含今天）"""
@@ -75,7 +75,7 @@ def calculate_max_drawdown(series: pd.Series) -> float:
 
 
 def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
-    """计算 RSI、MACD、MA50、布林带、当日跌幅（与主脚本一致）"""
+    """计算 RSI、MACD、MA50、布林带、当日跌幅"""
     if 'value' not in df.columns or len(df) < 50:
         return {
             'RSI': np.nan, 'MACD信号': '数据不足', '净值/MA50': np.nan,
@@ -107,7 +107,7 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     if not np.isnan(macd_prev) and not np.isnan(signal_prev):
         if macd_latest > signal_latest and macd_prev <= signal_prev:
             macd_signal = '金叉'
-        elif macd_latest < signal_latest and  and macd_prev >= signal_prev:
+        elif macd_latest < signal_latest and macd_prev >= signal_prev:
             macd_signal = '死叉'
 
     # MA50
@@ -152,23 +152,23 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def generate_signal(row: pd.Series) -> str:
-    """统一生成信号等级（🥇🥈🥉）"""
+    """生成信号等级"""
     if (row['最大回撤'] >= TH["high_elasticity_min_drawdown"] and
         row['近一周连跌'] == 1 and
         not pd.isna(row['RSI'])):
 
         if row['RSI'] < TH["rsi_extreme_oversold"] and row['当日跌幅'] >= TH["min_daily_drop_percent"]:
-            return "🥇 即时买入"
+            return "第一优先级 即时买入"
         if row['RSI'] < TH["rsi_oversold"] and row['当日跌幅'] >= TH["min_daily_drop_percent"]:
-            return "🥇 即时买入"
+            return "第一优先级 即时买入"
         if row['RSI'] < TH["rsi_oversold"]:
-            return "🥈 技术建仓"
-        return "🥉 观察池"
+            return "第二优先级 技术建仓"
+        return "第三优先级 观察池"
     return "无信号"
 
 
 # ================================
-# 单基金回测函数（供进程池调用）
+# 单基金回测
 # ================================
 def backtest_single_fund(filepath: str) -> List[Dict]:
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
@@ -184,7 +184,6 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
         if len(df) < MIN_HISTORY:
             return []
 
-        # 时间过滤
         if START_DATE:
             df = df[df['date'] >= pd.to_datetime(START_DATE)]
         if END_DATE:
@@ -193,16 +192,14 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
             return []
 
         records = []
-        # 滚动窗口：每一天作为 T 日
         for i in range(30, len(df)):
-            window = df.iloc[i-30:i].copy()                # 最近30天
+            window = df.iloc[i-30:i].copy()
             week = df.iloc[i-5:i].copy() if i >= 5 else window.iloc[-5:]
 
-            # 核心指标
             max_drop_month = calculate_consecutive_drops(window['value'])
             mdd_month = calculate_max_drawdown(window['value'])
             max_drop_week = calculate_consecutive_drops(week['value'])
-            tech = calculate_technical_indicators(df.iloc[:i])  # 使用截至 T 日的所有数据
+            tech = calculate_technical_indicators(df.iloc[:i])
 
             if (max_drop_month >= TH["min_consecutive_drop_days"] and
                 mdd_month >= TH["min_month_drawdown"]):
@@ -219,7 +216,6 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
                 }
                 row['信号'] = generate_signal(pd.Series(row))
 
-                # 未来收益
                 future_prices = df.iloc[i: i + max(FORWARD_DAYS) + 1]['value'].values
                 base_price = df.iloc[i-1]['value']
                 for d in FORWARD_DAYS:
@@ -237,7 +233,7 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
 
 
 # ================================
-# 主回测流程
+# 主流程
 # ================================
 def run_backtest():
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
@@ -268,11 +264,8 @@ def run_backtest():
     df_all.to_csv(summary_path, index=False, encoding='utf-8-sig')
     logger.info(f"详细回测数据已保存：{summary_path}")
 
-    # ================================
-    # 统计报告
-    # ================================
+    # 生成报告
     signal_groups = df_all.groupby('信号')
-
     report_lines = [
         f"# 基金预警策略回测报告\n",
         f"**生成时间**：{now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)\n",
@@ -320,7 +313,6 @@ def run_backtest():
                 )
             report_lines.append("\n")
 
-        # 基准对比（持有20天）
         bench_col = f'未来{BENCH_DAYS}日收益'
         if bench_col in group.columns:
             bench_valid = group[bench_col].dropna()
