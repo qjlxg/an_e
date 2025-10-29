@@ -13,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import concurrent.futures
 import json5 
 import logging
-import jsbeautifier 
 from functools import partial 
 
 # 配置日志
@@ -158,6 +157,8 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
         # 【修改 3】：如果本地有最新日期，提前告知用户增量更新模式
         if latest_date:
             print(f"    基金 {fund_code} 开启增量更新模式，将抓取 {latest_date.strftime('%Y-%m-%d')} 之后的数据。")
+        
+        latest_api_date = None # 用于记录API返回的最新日期
 
         while page_index <= total_pages:
             url = BASE_URL_NET_VALUE.format(fund_code=fund_code, page_index=page_index)
@@ -203,7 +204,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
 
                 page_records = []
                 stop_fetch = False
-                latest_api_date = None
                 
                 for row in rows:
                     cols = row.find_all('td')
