@@ -214,7 +214,7 @@ def generate_report(results, timestamp_str):
     
     # 在 RSI < 30 的基金中，进一步划分为 🥇 和 🥈
     df_base_elastic_low_rsi = df_base_elastic[
-        df_base_elastic['RSI'] < 35
+        df_base_elastic['RSI'] < 25
     ].copy()
     
     # 3. 【🥇 第一优先级：即时恐慌买入】
