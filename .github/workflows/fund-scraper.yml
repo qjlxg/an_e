@@ -47,13 +47,13 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # 2. 将结果文件添加到暂存区
-          git add fund_fee_result.csv
+          # 2. 将结果文件添加到暂存区 (注意：使用 fund_data/ 目录路径)
+          git add fund_data/fund_fee_result.csv
           
           # 3. 检查暂存区是否有新的变更
-          # 如果文件内容与HEAD版本相比没有变化，git diff --cached --exit-code 返回 0 (成功)
+          # git diff --cached --exit-code 返回 0 表示没有变化
           if git diff --cached --exit-code; then
-            echo "✅ fund_fee_result.csv 内容没有变化，跳过提交和推送。"
+            echo "✅ fund_data/fund_fee_result.csv 内容没有变化，跳过提交和推送。"
           else
             # 4. 如果有变化，则创建提交
             COMMIT_MESSAGE="Update fund_fee_result.csv $(TZ=Asia/Shanghai date '+%F %T')"
@@ -61,11 +61,9 @@ jobs:
             
             # --- 修复推送冲突：先拉取远程最新变更并Rebase ---
             echo "🔄 尝试拉取远程最新变更并 Rebase 合并..."
-            # 使用 --rebase 避免非快进式错误，确保本地提交在远程最新提交之上
-            # 这样 git push 就是一个安全的快进式推送
             git pull --rebase
             
             # 5. 推送提交到远程仓库
-            echo "🚀 正在推送新的 fund_fee_result.csv..."
+            echo "🚀 正在推送新的 fund_data/fund_fee_result.csv..."
             git push
           fi
