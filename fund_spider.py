@@ -105,13 +105,12 @@ def load_latest_date(fund_code):
             try:
                 # 仅读取必要的 'date' 列，加速 Pandas 加载
                 # 明确指定日期格式，以提高解析速度和准确性
-                # 使用 chunksize 加载，如果文件特别大，但这里为了鲁棒性，先全读。
                 df = pd.read_csv(
                     output_path, 
                     usecols=['date'], 
                     # 明确 date_parser，确保日期解析准确
+                    # 注意：pd.read_csv在指定parse_dates时，会尝试多种格式，不需要显式指定date_parser
                     parse_dates=['date'], 
-                    date_parser=lambda x: datetime.strptime(x, '%Y-%m-%d'), 
                     encoding=encoding
                 )
                 
@@ -120,7 +119,8 @@ def load_latest_date(fund_code):
                     df.dropna(subset=['date'], inplace=True)
                     if not df.empty:
                         latest_date = df['date'].max().to_pydatetime().date()
-                        # logger.info(f"  -> 基金 {fund_code} 现有最新日期: {latest_date.strftime('%Y-%m-%d')} (使用 {encoding} 编码)")
+                        # 【修改 1】：增加日志输出，确认本地最新日期
+                        logger.info(f"  -> 基金 {fund_code} 现有最新日期: {latest_date.strftime('%Y-%m-%d')} (使用 {encoding} 编码)")
                         return latest_date
             except Exception as e:
                 # print(f"  -> 加载 {fund_code} CSV 失败 (编码 {encoding}): {e}")
@@ -154,6 +154,10 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
         
         # 优化 4: 使用线程池异步加载最新日期
         latest_date = await asyncio.get_event_loop().run_in_executor(executor, load_latest_date, fund_code)
+        
+        # 【修改 3】：如果本地有最新日期，提前告知用户增量更新模式
+        if latest_date:
+            print(f"    基金 {fund_code} 开启增量更新模式，将抓取 {latest_date.strftime('%Y-%m-%d')} 之后的数据。")
 
         while page_index <= total_pages:
             url = BASE_URL_NET_VALUE.format(fund_code=fund_code, page_index=page_index)
@@ -244,6 +248,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 all_records.extend(page_records)
                 
                 if stop_fetch:
+                    # 【修改 3】：明确增量停止的日志输出
                     print(f"    基金 {fund_code} [增量停止]：页面 {page_index} 遇到旧数据 ({latest_date.strftime('%Y-%m-%d')})，停止抓取。")
                     break
                 
@@ -261,7 +266,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 if "Frequency Capped" in str(e):
                     # 优化 3: 频率限制时，更激进地增加延迟
                     dynamic_delay = min(dynamic_delay * 2.5, 10.0) 
-                    print(f"    基金 {fund_code} [警告]：频率限制，延迟调整为 {dynamic_delay} 秒，重试第 {page_index} 页")
+                    print(f"    基金 {fund_code} [警告]：频率限制，延迟调整为 {dynamic_delay:.2f} 秒，重试第 {page_index} 页")
                     continue
                 print(f"    基金 {fund_code} [错误]：请求 API 时发生网络错误 (超时/连接) 在第 {page_index} 页: {e}")
                 return fund_code, f"网络错误: {e}"
@@ -271,7 +276,12 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
             
         print(f"-> [COMPLETE] 基金 {fund_code} 数据抓取完毕，共获取 {len(all_records)} 条新记录。")
         if not all_records:
-            return fund_code, "数据已是最新，无新数据"
+            # 【修改 3】：明确日志输出
+            if latest_date:
+                return fund_code, f"数据已是最新 ({latest_date.strftime('%Y-%m-%d')})，无新数据"
+            else:
+                return fund_code, "未获取到新数据"
+
         return fund_code, all_records
 
 def save_to_csv(fund_code, data):
@@ -292,14 +302,23 @@ def save_to_csv(fund_code, data):
         new_df['net_value'] = pd.to_numeric(new_df['net_value'], errors='coerce').round(4)
         new_df['cumulative_net_value'] = pd.to_numeric(new_df['cumulative_net_value'], errors='coerce').round(4)
         
-        # 处理 daily_growth_rate: 替换空值，去除 %，转换为浮点数
-        growth_rate_series = new_df['daily_growth_rate'].astype(str).str.strip().replace(['--', ''], '0') 
-        new_df['daily_growth_rate'] = growth_rate_series.str.rstrip('%').astype(float) / 100.0
+        # 【修改 2】：使用更健壮的 apply 函数处理 daily_growth_rate
+        def clean_growth_rate(rate_str):
+            rate_str = str(rate_str).strip()
+            if rate_str in ['--', '']:
+                return 0.0
+            try:
+                # 去除 % 并转换为浮点数，然后除以 100
+                return float(rate_str.rstrip('%')) / 100.0
+            except ValueError:
+                return None # 标记为无效数据
+        
+        new_df['daily_growth_rate'] = new_df['daily_growth_rate'].apply(clean_growth_rate)
         
         new_df['date'] = pd.to_datetime(new_df['date'], errors='coerce', format='%Y-%m-%d')
         
         # 丢弃无效的核心记录
-        new_df.dropna(subset=['date', 'net_value'], inplace=True)
+        new_df.dropna(subset=['date', 'net_value', 'daily_growth_rate'], inplace=True)
         if new_df.empty:
             # print(f"    基金 {fund_code} 数据无效或为空，跳过保存。")
             return False, 0
@@ -314,7 +333,7 @@ def save_to_csv(fund_code, data):
             existing_df = pd.read_csv(
                 output_path, 
                 parse_dates=['date'], 
-                date_parser=lambda x: datetime.strptime(x, '%Y-%m-%d'),
+                # 这里不需要显式的 date_parser，pd 默认的行为已经很好了
                 encoding='utf-8' # 保持与保存时一致的编码
             )
             old_record_count = len(existing_df)
