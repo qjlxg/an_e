@@ -1,263 +1,203 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-fetch_fund_fee.py - 优化版：强制脚本目录 + 详细日志 + 鲁棒 HTML 解析 + 修复所有潜在崩溃点
-"""
 import os
-import sys
-import time
-from pathlib import Path
-import re 
-from typing import List, Dict
+import re
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-import traceback 
+from concurrent.futures import ThreadPoolExecutor
 
-# ================== 强制使用脚本所在目录 ==================
-SCRIPT_DIR = Path(__file__).parent.resolve()
-os.chdir(SCRIPT_DIR)
-print(f"[INFO] 工作目录已切换到: {SCRIPT_DIR}")
+# --- 配置常量 ---
+# 天天基金网 F10 档案中费率信息的 URL 模板
+BASE_URL = "http://fundf10.eastmoney.com/jjfl_{}.html"
+# 输出目录和文件名
+OUTPUT_DIR = "fund_data"
+OUTPUT_FILE = "C类基金费率数据_前10只.csv"
+# 读取基金代码的文件名
+FUND_CODES_FILE = "C类.txt"
+# 调试抓取的基金数量
+LIMIT_FUNDS = 10 
 
-TXT_FILE = SCRIPT_DIR / "C类.txt"
-RESULT_CSV = SCRIPT_DIR / "fund_fee_result.csv"
+# --- 1. 抓取与解析函数 ---
 
-# ================== 配置 (已优化：TIMEOUT增加, 避免抓取频率过快) ==================
-BASE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
-HEADERS = {
-    # 保持 User-Agent 最新
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-}
-TIMEOUT = 30  # ***增加超时时间到 30 秒***
-RETRY = 3
-MAX_FUNDS = 10  # ***设置为 0，表示处理全部基金***
-
-
-# =========================================
-def read_codes() -> List[str]:
-    """读取 C类.txt 文件中的基金代码"""
-    if not TXT_FILE.exists():
-        print(f"[ERROR] 未找到 {TXT_FILE}")
-        sys.exit(1)
-
-    codes = []
+def parse_fund_fees(html_content, fund_code):
+    """
+    解析天天基金网基金费率页面（jjfl_<code>.html）的HTML内容，提取关键费率数据。
+    """
     try:
-        with open(TXT_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                code = line.strip()
-                if code and code.isdigit() and len(code) >= 6:
-                    codes.append(code)
-    except Exception as e:
-        print(f"[ERROR] 读取 {TXT_FILE} 文件失败: {e}")
-        sys.exit(1)
-    
-    if MAX_FUNDS > 0 and len(codes) > MAX_FUNDS:
-        print(f"[WARN] 调试模式开启，只处理前 {MAX_FUNDS} 个基金")
-        return codes[:MAX_FUNDS]
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 提取基金名称 (位于页面的标题或基本信息区域)
+        name_tag = soup.find('h4', class_='title')
+        fund_name = name_tag.text.split('(')[0].strip() if name_tag else f"基金({fund_code})"
 
-    return codes
+        # 提取运作费用 (管理费, 托管费, 销售服务费)
+        op_fees_data = {}
+        op_fees_table = soup.find('h4', string=re.compile("运作费用")).find_next('table')
+        if op_fees_table:
+            # 找到所有运作费用的行
+            rows = op_fees_table.find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) == 6: # 确保是包含三对费率的行
+                    # 抓取：管理费率/托管费率/销售服务费率
+                    op_fees_data['管理费率（每年）'] = cols[1].text.strip()
+                    op_fees_data['托管费率（每年）'] = cols[3].text.strip()
+                    op_fees_data['销售服务费率（每年）'] = cols[5].text.strip()
+                    break # 只需要第一行
 
-def fetch_page(code: str) -> str:
-    """尝试多次抓取基金费率页面 (已优化重试逻辑)"""
-    url = BASE_URL.format(code=code)
-    for i in range(RETRY):
+        # 提取赎回费率 (Redemption Fees)
+        redemption_fees = {}
+        redemption_table = soup.find('h4', string=re.compile("赎回费率")).find_next('table')
+        if redemption_table:
+            # 找到所有赎回费率行
+            rows = redemption_table.find('tbody').find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) == 3:
+                    # 适用期限 (e.g., 小于7天, 大于等于7天)
+                    term = cols[1].text.strip()
+                    # 费率
+                    rate = cols[2].text.strip()
+                    
+                    if '小于7天' in term:
+                        redemption_fees['赎回费率（小于7天）'] = rate
+                    elif '大于等于7天' in term:
+                        redemption_fees['赎回费率（大于等于7天）'] = rate
+        
+        # 提取申购费率（C类基金通常为0）
+        # 尝试查找包含“申购费率（前端）”或“认购费率（前端）”的表格
+        sub_fee_rate = 'N/A'
         try:
-            # 增加重试间的等待时间，避免被封
-            if i > 0:
-                wait_time = 3 + i * 2  # 例如：3秒，5秒，7秒
-                print(f"[WAIT] {code} 等待 {wait_time} 秒后重试...")
-                time.sleep(wait_time)
-                
-            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-            response.raise_for_status() # 检查 HTTP 状态码
-            
-            # 检查返回内容，确保抓取到的是目标页面
-            if '<title>基金费率' in response.text:
-                return response.text
-            else:
-                print(f"[WARN] {code} 抓取到非目标内容，重试 {i+1}/{RETRY}")
-                # 针对非目标内容，也进行重试
-                continue
+            # 对于C类基金，通常只有一条优惠费率0.00%
+            sg_table = soup.find('h4', string=re.compile("申购费率（前端）")).find_next('table')
+            if sg_table:
+                # 寻找包含“优惠费率”的列，并取其费率值
+                rate_col = sg_table.find('th', class_='speciacol')
+                if rate_col:
+                    # 获取表格主体，通常费率在 tbody 的第三个 td 中
+                    rate_td = sg_table.find('tbody').find('tr').find_all('td')[-1].text.strip()
+                    sub_fee_rate = rate_td
+        except Exception:
+            pass # 找不到说明可能没有申购费率表或结构有变，保持 N/A
 
-        except requests.exceptions.Timeout:
-            # 单独处理超时
-            print(f"[ERROR] {code} 第 {i+1}/{RETRY} 次请求失败: 请求超时 (Timeout={TIMEOUT}s)")
-            continue
-        except requests.exceptions.RequestException as e:
-            # 处理其他所有请求错误
-            print(f"[ERROR] {code} 第 {i+1}/{RETRY} 次请求失败: {e}")
-            continue
+        # 整合数据
+        data = {
+            '基金代码': fund_code,
+            '基金名称': fund_name,
+            '申购费率（前端，优惠）': sub_fee_rate,
+            **op_fees_data,
+            **redemption_fees
+        }
 
-    print(f"[FATAL] {code} 最终抓取失败")
-    return ""
+        # 检查关键字段是否缺失，对于C类基金申购费率应为0
+        if not data.get('管理费率（每年）') or not data.get('赎回费率（小于7天）'):
+             print(f"警告：基金 {fund_code} 抓取数据不完整，可能网站结构已变。")
+             return None
 
-# ================== 核心解析函数 (已优化) ==================
-def parse_fee(html: str, code: str) -> Dict[str, str]:
-    """
-    使用基于内容定位的更精确逻辑解析 HTML 页面，提取基金费率信息。
-    """
-    soup = BeautifulSoup(html, 'html.parser')
-    info = {
-        "基金代码": code,
-        "页面链接": BASE_URL.format(code=code),
-    }
+        return data
 
-    # 1. 基金名称
-    try:
-        fund_title_element = soup.select_one('div.bs_jz h4.title a')
-        if fund_title_element:
-            name_text = fund_title_element.text.strip()
-            # 移除基金代码部分及其前面的空格/括号
-            info["基金名称"] = re.sub(r'\s*\(\s*' + re.escape(code) + r'\s*\)', '', name_text).strip().replace('...', '')
-        else:
-            # 从 <title> 标签中提取备用名称
-            title_text = soup.find('title').text
-            # 汇添富中证芯片产业指数增强发起式C(014194)基金费率 ... -> 汇添富中证芯片产业指数增强发起式C
-            match = re.search(r'(.+)\(' + re.escape(code) + r'\)', title_text)
-            if match:
-                 info["基金名称"] = match.group(1).strip()
-            else:
-                 info["基金名称"] = "未知"
-    except Exception:
-        info["基金名称"] = "未知"
-
-    # =======================================================
-    # 辅助函数：根据 H4 标题查找对应的表格
-    def find_section_table(title_text):
-        """查找包含特定标题文本的 section 内部的表格"""
-        # 查找 H4 标签中包含目标文本的元素
-        h4 = soup.find('h4', string=lambda t: t and title_text in t)
-        if h4:
-            # 向上找到最近的 'boxitem' 容器
-            boxitem = h4.find_parent('div', class_='boxitem')
-            if boxitem:
-                # 在 boxitem 内部查找 class='jjfl' 的表格
-                return boxitem.find('table', class_='jjfl')
+    except Exception as e:
+        print(f"处理基金 {fund_code} 时发生错误: {e}")
         return None
 
-    # =======================================================
-    # 2. 交易状态
-    try:
-        table_status = find_section_table("交易状态")
-        if table_status:
-            # 找到所有非 th 的 td 单元格 (即值)
-            cells = table_status.select('tr:nth-of-type(1) td:not(.th)')
-            info["申购状态"] = cells[0].text.strip() if len(cells) > 0 else "未知"
-            info["赎回状态"] = cells[1].text.strip() if len(cells) > 1 else "未知"
-            info["定投状态"] = cells[2].text.strip() if len(cells) > 2 else "未知"
-        else:
-            info["申购状态"] = info["赎回状态"] = info["定投状态"] = "未知"
-    except Exception:
-        info["申购状态"] = info["赎回状态"] = info["定投状态"] = "未知"
-
-    # 3. 申购与赎回金额 (申购起点, 定投起点, 日累计申购限额)
-    try:
-        table_limit = find_section_table("申购与赎回金额")
-        if table_limit:
-            # 申购/定投/限额 在第一个 tr
-            row_buy = table_limit.select('tbody tr')[0]
-            # 找到所有非 th 的 td 单元格 (即值)
-            cells = row_buy.select('td:not(.th)')
-            info["申购起点"] = cells[0].text.strip() if len(cells) > 0 else "未知"
-            info["定投起点"] = cells[1].text.strip() if len(cells) > 1 else "未知"
-            info["日累计申购限额"] = cells[2].text.strip() if len(cells) > 2 else "未知"
-        else:
-            info["申购起点"] = info["定投起点"] = info["日累计申购限额"] = "未知"
-    except Exception:
-        info["申购起点"] = info["定投起点"] = info["日累计申购限额"] = "未知"
-
-    # 4. 运作费用 (管理费率, 托管费率, 销售服务费率)
-    try:
-        table_op_fee = find_section_table("运作费用")
-        if table_op_fee:
-            # 找到所有非 th 的 td 单元格 (即值)
-            cells = table_op_fee.select('tr:nth-of-type(1) td:not(.th)')
-            info["管理费率"] = cells[0].text.strip() if len(cells) > 0 else "未知"
-            info["托管费率"] = cells[1].text.strip() if len(cells) > 1 else "未知"
-            info["销售服务费率"] = cells[2].text.strip() if len(cells) > 2 else "未知"
-        else:
-            info["管理费率"] = info["托管费率"] = info["销售服务费率"] = "未知"
-    except Exception:
-        info["管理费率"] = info["托管费率"] = info["销售服务费率"] = "未知"
-
-    # 5. 赎回费率
-    try:
-        table_redeem = find_section_table("赎回费率")
-        redeem_list = []
-        if table_redeem:
-            # 遍历 tbody 中的所有行
-            rows = table_redeem.select('tbody tr')
-            for row in rows:
-                # 抓取所有 td 单元格
-                cells = row.find_all('td')
-                # 期望的结构: 适用金额(cells[0]) | 适用期限(cells[1]) | 赎回费率(cells[2])
-                if len(cells) >= 3:
-                    term = cells[1].text.strip() # 适用期限
-                    rate = cells[2].text.strip() # 赎回费率
-                    redeem_list.append(f"{term}: {rate}")
-
-        info["赎回费率"] = " | ".join(redeem_list) if redeem_list else "0.00%"
-    except Exception:
-        info["赎回费率"] = "未知"
+def fetch_fund_data(fund_code):
+    """
+    从天天基金网获取单个基金的费率页面并解析数据。
+    """
+    url = BASE_URL.format(fund_code)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
-    # 6. 确保所有键都存在，以便写入 DataFrame
-    columns_to_check = [\
-        "基金名称", "申购状态", "赎回状态", "定投状态",\
-        "申购起点", "定投起点", "日累计申购限额",\
-        "管理费率", "托管费率", "销售服务费率",\
-        "赎回费率"\
-    ]
-    for col in columns_to_check:
-        if col not in info:
-            info[col] = "未知"
+    try:
+        # 发起 HTTP GET 请求
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        response.raise_for_status() # 检查HTTP请求是否成功
 
-    return info
+        # 解析 HTML 并提取数据
+        data = parse_fund_fees(response.text, fund_code)
+        
+        if data:
+            print(f"成功抓取并解析基金 {fund_code}: {data.get('基金名称', '')}")
+        else:
+            print(f"未能解析基金 {fund_code} 的数据。")
+        
+        return data
 
-# =========================================
+    except requests.exceptions.HTTPError as e:
+        print(f"抓取基金 {fund_code} 失败: HTTP 错误 {e.response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"抓取基金 {fund_code} 失败: 请求错误 {e}")
+    except Exception as e:
+        print(f"抓取基金 {fund_code} 发生未知错误: {e}")
+        
+    return None
+
+# --- 2. 主执行逻辑 ---
+
 def main():
-    print(f"[START] 开始执行，时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    codes = read_codes()
-
-    results = []
-    for idx, code in enumerate(codes, 1):
-        # 确保每次循环开始前有 1.5 秒的等待
-        if idx > 1:
-            time.sleep(1.5)
-            
-        print(f"\n[{idx}/{len(codes)}] 正在处理 {code} ...", flush=True)
-        html = fetch_page(code)
-        if not html:
-            print(f"[SKIP] {code} 获取失败")
-            continue
-
-        try:
-            info = parse_fee(html, code)
-            results.append(info)
-            print(f"[OK] {code} 解析完成 → {info['基金名称']}")
-        except Exception as e:
-            print(f"[FATAL] {code} 解析崩溃: {e}")
-            traceback.print_exc()
-            continue
-
-    if not results:
-        print("\n[WARN] 没有成功解析任何基金")
+    """
+    读取基金代码，并发抓取数据，并保存到 CSV 文件。
+    """
+    # 1. 读取基金代码
+    fund_codes = []
+    try:
+        with open(FUND_CODES_FILE, 'r', encoding='utf-8') as f:
+            # 跳过第一行（'code'）
+            fund_codes = [line.strip() for line in f.readlines() if line.strip() and line.strip() != 'code']
+    except FileNotFoundError:
+        print(f"错误: 未找到文件 {FUND_CODES_FILE}。请确保文件存在。")
         return
 
-    # 写入 CSV
-    df = pd.DataFrame(results)
-    columns = [\
-        "基金代码", "基金名称", "申购状态", "赎回状态", "定投状态",\
-        "申购起点", "定投起点", "日累计申购限额",\
-        "管理费率", "托管费率", "销售服务费率",\
-        "赎回费率", "页面链接"\
-    ]
-    # 确保 DataFrame 的列顺序正确
-    df = df.reindex(columns=columns, fill_value='未知')
+    if not fund_codes:
+        print("错误: 文件中未找到基金代码。")
+        return
     
-    # 使用 'utf_8_sig' 编码，确保 Excel 打开中文不乱码
-    df.to_csv(RESULT_CSV, index=False, encoding='utf_8_sig')
-    print(f"\n[DONE] 所有数据已保存到 {RESULT_CSV}")
+    # 取前 LIMIT_FUNDS 只进行调试
+    codes_to_fetch = fund_codes[:LIMIT_FUNDS]
+    print(f"成功读取 {len(fund_codes)} 个代码。开始抓取前 {len(codes_to_fetch)} 只基金的费率数据...")
 
+    # 2. 并行抓取数据
+    all_data = []
+    # 使用 ThreadPoolExecutor 进行线程池并行抓取，最大线程数设置为10
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # 提交任务到线程池
+        futures = [executor.submit(fetch_fund_data, code) for code in codes_to_fetch]
+        
+        # 获取结果
+        for future in futures:
+            result = future.result()
+            if result:
+                all_data.append(result)
+
+    if not all_data:
+        print("\n未能成功抓取任何数据。请检查网络连接或网站结构是否发生变化。")
+        return
+
+    # 3. 数据处理与保存
+    df = pd.DataFrame(all_data)
+    
+    # 重新排序列，使关键信息在前
+    columns_order = [
+        '基金代码', '基金名称', '管理费率（每年）', '托管费率（每年）', 
+        '销售服务费率（每年）', '申购费率（前端，优惠）', '赎回费率（小于7天）', 
+        '赎回费率（大于等于7天）'
+    ]
+    # 确保只包含 DataFrame 中已有的列
+    final_columns = [col for col in columns_order if col in df.columns]
+    df = df[final_columns]
+
+    # 创建目录并保存 CSV
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
+    
+    # 使用 utf_8_sig 编码以确保 Excel 打开时中文不乱码
+    df.to_csv(output_path, index=False, encoding='utf_8_sig') 
+
+    print("\n" + "="*50)
+    print(f"✅ 抓取完成！共成功抓取 {len(all_data)} 只基金的数据。")
+    print(f"文件已保存到: {output_path}")
+    print("="*50)
 
 if __name__ == '__main__':
     main()
