@@ -1,91 +1,87 @@
-# .github/workflows/backtest.yml
-name: Fund Drawdown Backtest
+name: 🚀 回测策略运行
 
+# --------------------------
+# 1. 触发条件
+# --------------------------
 on:
-  schedule:
-    - cron: '0 16 * * *'  # 北京时间 00:00 (UTC 16:00)
+  # 允许手动在 GitHub Actions 页面运行工作流
   workflow_dispatch:
+  
+  # 当 main 分支上的特定文件有变动时自动运行
   push:
-    branches: [ main ]
+    branches:
+      - main # 确保只在主分支上运行时自动触发
     paths:
-      - 'fund_data/**'
-      - 'backtest_drawdown.py'
-      - 'config_backtest.yaml'
+      - 'backtester.py' # 当回测脚本变动时
+      - '.github/workflows/backtest.yml' # 当工作流文件变动时
 
+# --------------------------
+# 2. 环境变量 (统一配置)
+# --------------------------
+env:
+  PYTHON_VERSION: '3.10'
+  TZ: 'Asia/Shanghai' # 设置时区为上海
+  REPORT_BASE_NAME: 'backtest_report' # 报告文件基础名
+  
 jobs:
-  backtest-and-push:
+  run_backtest:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # 允许推送提交
-
+    
     steps:
-      # 1. 拉取代码
-      - name: Checkout repository
+      # 1. 检出代码
+      - name: 📥 检出仓库代码
         uses: actions/checkout@v4
-
-      # 2. 设置 Python 环境
-      - name: Set up Python
-        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-
-      # 3. 安装依赖
-      - name: Install dependencies
+          # 用于提交新文件的凭证
+          token: ${{ secrets.GITHUB_TOKEN }} 
+          
+      # 2. 设置 Python 环境
+      - name: 🐍 设置 Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      # 3. 安装依赖 (假设需要 pandas, numpy 等)
+      - name: ⚙️ 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pyyaml
-
-      # 4. 检查 fund_data 目录及 CSV 文件是否存在
-      - name: Validate fund data
-        id: validate_data
+          pip install pandas numpy pytz
+          
+      # 4. 运行回测脚本，并将结果输出到临时文件
+      - name: 🏃 运行回测脚本并生成报告
+        id: run_script
+        # 设置时区，并运行 backtester.py
         run: |
-          if [ ! -d "fund_data" ]; then
-            echo "Error: fund_data/ directory not found!"
-            exit 1
-          fi
-          if ! ls fund_data/*.csv >/dev/null 2>&1; then
-            echo "Warning: No CSV files found in fund_data/, skipping backtest."
-            echo "skip_backtest=true" >> $GITHUB_OUTPUT
-          else
-            echo "CSV files found, proceeding with backtest."
-            echo "skip_backtest=false" >> $GITHUB_OUTPUT
-          fi
+          # 动态获取当前上海时区时间，用于命名文件和目录
+          NOW=$(TZ=${{ env.TZ }} date +'%Y%m%d_%H%M%S')
+          DIR_NAME=$(TZ=${{ env.TZ }} date +'%Y%m')
+          REPORT_FILENAME="${{ env.REPORT_BASE_NAME }}_${NOW}.txt"
+          
+          echo "REPORT_DIR=$DIR_NAME" >> $GITHUB_OUTPUT
+          echo "REPORT_FILE=$REPORT_FILENAME" >> $GITHUB_OUTPUT
+          
+          # 运行脚本，并将终端输出重定向到临时文件
+          python backtester.py > "${REPORT_FILENAME}"
+        env:
+          # 将 PYTHONIOENCODING 设置为 utf-8 以确保中文输出正确
+          PYTHONIOENCODING: utf-8
 
-      # 5. 运行回测（仅当有数据时执行）
-      - name: Run backtest
-        if: steps.validate_data.outputs.skip_backtest == 'false'
+      # 5. 创建目标目录 (年/月)
+      - name: 📂 创建目标目录
         run: |
-          python backtest_drawdown.py
-
-      # 6. 确保结果目录存在并提交推送
-      - name: Commit and push backtest results
-        if: steps.validate_data.outputs.skip_backtest == 'false'
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # 确保结果目录存在
-          mkdir -p backtest_results
-
-          # 添加结果文件
-          git add backtest_results/
-          git status
-
-          # 检查是否有实际变更
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          # 提交本地变更
-          git commit -m "Backtest results: $(date '+%Y-%m-%d %H:%M:%S')"
-
-          # 拉取最新代码并 rebase（避免 rejected）
-          git pull --rebase origin main || {
-            echo "Rebase failed, aborting to avoid conflicts."
-            git rebase --abort
-            exit 1
-          }
-
-          # 推送到远程
-          git push origin main
+          mkdir -p ${{ steps.run_script.outputs.REPORT_DIR }}
+          mv ${{ steps.run_script.outputs.REPORT_FILE }} ${{ steps.run_script.outputs.REPORT_DIR }}/
+          
+      # 6. 将结果推送到仓库
+      - name: ⬆️ 推送回测报告到仓库
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          # 提交修改后的目录和文件
+          commit_message: "🤖 CI: 自动更新回测报告 ${{ steps.run_script.outputs.REPORT_DIR }}/${{ steps.run_script.outputs.REPORT_FILE }}"
+          file_pattern: ${{ steps.run_script.outputs.REPORT_DIR }}/**
+          # 确保提交者信息正确
+          commit_user_name: GitHub Actions Bot
+          commit_user_email: actions@github.com
+          commit_author: GitHub Actions Bot <actions@github.com>
+          # 不上传到工件，直接推送到仓库
+          skip_dirty_check: true
