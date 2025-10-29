@@ -18,7 +18,7 @@ END_DATE = '2024-12-31'    # 回测结束日期
 INITIAL_CAPITAL = 100000   # 初始资金 (元)
 UNIT_PURCHASE = 10000      # 每次买入的金额 (元)
 MAX_HOLDINGS = 5           # 最大持仓基金数量
-MAX_FUNDS_FOR_DEBUG = 10   # 【调试限制】限制参与回测的基金数量
+MAX_FUNDS_FOR_DEBUG = 586  # 【调试限制】限制参与回测的基金数量
 
 # --- 费用配置 (根据用户要求修改) ---
 PURCHASE_FEE_RATE = 0.0           # 申购费（买入费）：0%
