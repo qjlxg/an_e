@@ -313,7 +313,7 @@ def run_backtest():
         logger.info(f"已过滤 {initial_count - filtered_count} 个包含 '持仓_' 的文件。")
 
     # === 调试模式：限制为前 5 个基金 ===
-    DEBUG_LIMIT = 5
+    DEBUG_LIMIT = 600
     if csv_files:
         total_files = len(csv_files)
         csv_files = csv_files[:DEBUG_LIMIT]
