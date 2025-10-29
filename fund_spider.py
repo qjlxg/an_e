@@ -32,11 +32,9 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 30
-# 优化 2: 减少基础延迟，提高请求频率 (原 3.5)
 REQUEST_DELAY = 3.5 
-# 优化 1: 增加最大并发数 (原 5)
 MAX_CONCURRENT = 15 
-MAX_FUNDS_PER_RUN = 10 #限制0个
+MAX_FUNDS_PER_RUN = 10 # 限制为 10 个，与您的运行日志保持一致
 PAGE_SIZE = 20
 
 # --------------------------------------------------------------------------------------
@@ -59,7 +57,6 @@ def get_all_fund_codes(file_path):
 
     for encoding in encodings_to_try:
         try:
-            # 使用 Python 原生文件读取，如果 pandas 慢的话
             with open(file_path, 'r', encoding=encoding) as f:
                 codes = [line.strip() for line in f if line.strip()]
             
@@ -67,10 +64,8 @@ def get_all_fund_codes(file_path):
             print(f"  -> 成功使用 {encoding} 编码读取文件，找到 {len(df)} 个基金代码。")
             break
         except UnicodeDecodeError as e:
-            # print(f"  -> 使用 {encoding} 编码读取失败: {e}")
             continue
         except Exception as e:
-            # print(f"  -> 读取文件时发生错误: {e}")
             continue
 
     if df is None or df.empty:
@@ -86,43 +81,33 @@ def get_all_fund_codes(file_path):
     return valid_codes
 
 # --------------------------------------------------------------------------------------
-# 基金净值抓取核心逻辑 (加速本地 I/O 和网络请求)
+# 基金净值抓取核心逻辑 
 # --------------------------------------------------------------------------------------
 
-# 优化 4: 使用 ThreadPoolExecutor 来运行 load_latest_date，加速 I/O 密集型操作
 def load_latest_date(fund_code):
     """
-    【核心修改】从本地 CSV 文件中读取现有最新日期，增加鲁棒性以避免读取错误。
-    如果读取失败，返回 None 触发全量抓取。
+    从本地 CSV 文件中读取现有最新日期，增加鲁棒性以避免读取错误。
     """
     output_path = os.path.join(OUTPUT_DIR, f"{fund_code}.csv")
     if os.path.exists(output_path):
-        # 尝试多种编码和日期格式
         encodings_to_try = ['utf-8', 'gbk', 'utf-8-sig'] 
         
         for encoding in encodings_to_try:
             try:
-                # 仅读取必要的 'date' 列，加速 Pandas 加载
-                # 明确指定日期格式，以提高解析速度和准确性
                 df = pd.read_csv(
                     output_path, 
                     usecols=['date'], 
-                    # 明确 date_parser，确保日期解析准确
-                    # 注意：pd.read_csv在指定parse_dates时，会尝试多种格式，不需要显式指定date_parser
                     parse_dates=['date'], 
                     encoding=encoding
                 )
                 
                 if not df.empty and 'date' in df.columns:
-                    # 确保只包含日期对象
                     df.dropna(subset=['date'], inplace=True)
                     if not df.empty:
                         latest_date = df['date'].max().to_pydatetime().date()
-                        # 【修改 1】：增加日志输出，确认本地最新日期
                         logger.info(f"  -> 基金 {fund_code} 现有最新日期: {latest_date.strftime('%Y-%m-%d')} (使用 {encoding} 编码)")
                         return latest_date
             except Exception as e:
-                # print(f"  -> 加载 {fund_code} CSV 失败 (编码 {encoding}): {e}")
                 continue
 
         logger.warning(f"  -> 基金 {fund_code} [重要警告]：无法准确读取本地 CSV 文件中的最新日期，将从头开始抓取！")
@@ -130,18 +115,16 @@ def load_latest_date(fund_code):
     return None
 
 async def fetch_page(session, url):
-    """异步请求页面，不带重试，由外部 fetch_net_values 控制"""
-    # 增加连接池限制，确保不会突然创建过多连接，但这里 ClientSession 已经处理了
+    """异步请求页面"""
     async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as response:
         if response.status != 200:
-            # 检查是否为频率限制（514通常是）
             if response.status == 514:
                 raise aiohttp.ClientError("Frequency Capped (HTTP 514)")
             raise aiohttp.ClientError(f"HTTP 错误: {response.status}")
         return await response.text()
 
 async def fetch_net_values(fund_code, session, semaphore, executor):
-    """使用“最新日期”作为停止条件，实现智能增量更新"""
+    """使用“最新日期”作为停止条件，实现智能增量更新 (已修复增量停止逻辑)"""
     print(f"-> [START] 基金代码 {fund_code}")
     
     async with semaphore:
@@ -151,14 +134,12 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
         first_run = True
         dynamic_delay = REQUEST_DELAY
         
-        # 优化 4: 使用线程池异步加载最新日期
         latest_date = await asyncio.get_event_loop().run_in_executor(executor, load_latest_date, fund_code)
         
-        # 【修改 3】：如果本地有最新日期，提前告知用户增量更新模式
         if latest_date:
             print(f"    基金 {fund_code} 开启增量更新模式，将抓取 {latest_date.strftime('%Y-%m-%d')} 之后的数据。")
         
-        latest_api_date = None # 用于记录API返回的最新日期
+        latest_api_date = None 
 
         while page_index <= total_pages:
             url = BASE_URL_NET_VALUE.format(fund_code=fund_code, page_index=page_index)
@@ -169,7 +150,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 
                 text = await fetch_page(session, url)
                 
-                # ****** 新增的全局异常捕获，处理API返回结构异常，修复 015750 错误 ******
                 soup = BeautifulSoup(text, 'lxml')
                 
                 if first_run:
@@ -186,10 +166,8 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                     first_run = False
                 
                 
-                # 检查 HTML 结构是否包含表格
                 table = soup.find('table')
                 if not table:
-                    # 可能是只有一页数据的情况，或数据为空
                     if page_index == 1 and total_pages == 1 and total_records == '未知':
                         logger.warning(f"    基金 {fund_code} [警告]：页面 {page_index} 无表格数据且记录数未知。")
                         return fund_code, "API返回记录数为0或代码无效"
@@ -203,7 +181,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                     break
 
                 page_records = []
-                stop_fetch = False
+                stop_paging = False # 标志是否应该停止翻页
                 
                 for row in rows:
                     cols = row.find_all('td')
@@ -223,15 +201,16 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                         
                     try:
                         date = datetime.strptime(date_str, '%Y-%m-%d').date()
-                        # 记录当前 API 返回的最新的日期 (用于日志)
                         if not latest_api_date or date > latest_api_date:
                             latest_api_date = date
                         
                         # 增量停止逻辑：如果当前记录日期 <= 本地最新日期
                         if latest_date and date <= latest_date:
-                            stop_fetch = True
+                            # 找到停止点，标记停止翻页，并结束当前页的遍历
+                            stop_paging = True
                             break
                             
+                        # 如果是新数据 (date > latest_date)，则加入记录
                         page_records.append({
                             'date': date_str,
                             'net_value': net_value_str,
@@ -242,7 +221,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                             'dividend': dividend
                         })
                     except ValueError:
-                        # 日期解析错误，跳过此行
                         continue
                 
                 if latest_api_date and page_index == 1:
@@ -250,39 +228,32 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 
                 all_records.extend(page_records)
                 
-                if stop_fetch:
-                    # 【修改 3】：明确增量停止的日志输出
-                    print(f"    基金 {fund_code} [增量停止]：页面 {page_index} 遇到旧数据 ({latest_date.strftime('%Y-%m-%d')})，停止抓取。")
+                if stop_paging:
+                    # 修复后的日志：明确是停止翻页，但已收集到新数据
+                    print(f"    基金 {fund_code} [增量停止]：页面 {page_index} 遇到旧数据 ({latest_date.strftime('%Y-%m-%d')})，停止翻页。")
                     break
                 
-                # 检查是否抓取到了足够的新数据（例如，至少一整页数据）
                 if page_index < total_pages and len(rows) < PAGE_SIZE:
-                    # 如果不是最后一页，但数据行少于预期，可能是 API 返回异常，提前停止
-                    logger.warning(f"    基金 {fund_code} [警告]：页面 {page_index} 数据量异常，提前停止。")
+                    logger.warning(f"    基金 {fund_code} [警告]：页面 {page_index} 数据量异常，提前停止翻页。")
                     break
                     
                 page_index += 1
-                # 优化 3: 成功抓取后，减少延迟以加速。
                 dynamic_delay = max(REQUEST_DELAY * 0.5, dynamic_delay * 0.9) 
 
             except aiohttp.ClientError as e:
                 if "Frequency Capped" in str(e):
-                    # 优化 3: 频率限制时，更激进地增加延迟
                     dynamic_delay = min(dynamic_delay * 2.5, 10.0) 
                     print(f"    基金 {fund_code} [警告]：频率限制，延迟调整为 {dynamic_delay:.2f} 秒，重试第 {page_index} 页")
                     continue
                 print(f"    基金 {fund_code} [错误]：请求 API 时发生网络错误 (超时/连接) 在第 {page_index} 页: {e}")
                 return fund_code, f"网络错误: {e}"
             except Exception as e:
-                # 【修改 4】 捕获处理数据时的所有意外错误，例如 015750 的错误
                 print(f"    基金 {fund_code} [错误]：处理数据时发生意外错误在第 {page_index} 页: {e}")
                 return fund_code, f"数据处理错误: {e}"
             
         print(f"-> [COMPLETE] 基金 {fund_code} 数据抓取完毕，共获取 {len(all_records)} 条新记录。")
         if not all_records:
-            # 【修改 5】：优化日志输出，明确数据已是最新
             if latest_date:
-                # 简单判断：如果 API 返回的最新日期与本地最新日期是同一天，且没有新记录，则数据已最新。
                 if latest_api_date and latest_date >= latest_api_date:
                      return fund_code, f"数据已是最新 ({latest_date.strftime('%Y-%m-%d')})，无新数据"
                 else:
@@ -305,7 +276,7 @@ def save_to_csv(fund_code, data):
     new_df = pd.DataFrame(data)
 
     try:
-        # 数据类型转换和清洗 (与原代码一致)
+        # 数据类型转换和清洗
         new_df['net_value'] = pd.to_numeric(new_df['net_value'], errors='coerce').round(4)
         new_df['cumulative_net_value'] = pd.to_numeric(new_df['cumulative_net_value'], errors='coerce').round(4)
         
@@ -342,12 +313,10 @@ def save_to_csv(fund_code, data):
                     parse_dates=['date'], 
                     encoding=encoding
                 )
-                # 确保读取的 DataFrame 包含有效的日期
                 if not existing_df.empty and 'date' in existing_df.columns:
                      existing_df.dropna(subset=['date'], inplace=True)
                 
                 if not existing_df.empty:
-                    # 成功读取，跳出循环
                     break 
                 else:
                     existing_df = None
@@ -357,7 +326,6 @@ def save_to_csv(fund_code, data):
         if existing_df is not None:
             try:
                 old_record_count = len(existing_df)
-                # 新数据在前 (new_df)，旧数据在后 (existing_df)
                 combined_df = pd.concat([new_df, existing_df], ignore_index=True)
             except Exception as e:
                 print(f"    基金 {fund_code} 读取旧数据成功但合并失败: {e}。仅保存新数据。")
@@ -368,7 +336,7 @@ def save_to_csv(fund_code, data):
     else:
         combined_df = new_df
         
-    # 去重和排序逻辑 (与原代码一致)
+    # 去重和排序逻辑
     combined_df['date'] = pd.to_datetime(combined_df['date'], errors='coerce')
     combined_df.dropna(subset=['date'], inplace=True)
 
@@ -395,45 +363,36 @@ async def fetch_all_funds(fund_codes):
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     loop = asyncio.get_event_loop()
     
-    # 优化 4: 创建线程池执行器，用于加速本地 I/O 操作 (读取和写入 CSV)
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() * 2 + 1) as executor:
 
-        # aiohttp 连接器设置：限制并发连接数，与 semaphore 配合
         connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT + 5) 
 
         async with ClientSession(connector=connector) as session:
-            # 传递 executor 给 fetch_net_values
             fetch_tasks = [fetch_net_values(fund_code, session, semaphore, executor) for fund_code in fund_codes]
             
             success_count = 0
             total_new_records = 0
-            # 使用集合存储，避免重复记录失败的基金代码
             failed_codes = set() 
             
-            # 使用 loop.run_in_executor 包装 save_to_csv
             save_executor = partial(loop.run_in_executor, executor, save_to_csv)
 
             for future in asyncio.as_completed(fetch_tasks):
                 print("-" * 30)
                 fund_code = "UNKNOWN"
                 try:
-                    # 统一捕获 fetch_net_values 的返回
                     result = await future
                     if isinstance(result, tuple) and len(result) == 2:
                         fund_code, net_values = result
                     else:
                         raise Exception("Fetch task returned unexpected format.")
                 except Exception as e:
-                    # 捕获任务执行中的异常
                     print(f"[错误] 处理基金数据时发生顶级异步错误: {e}")
-                    # 如果 fund_code 无法确定，则无法加入失败列表，但可以记录异常
                     failed_codes.add(fund_code if fund_code != "UNKNOWN" else "UNKNOWN_ERROR")
                     continue
 
 
                 if isinstance(net_values, list):
                     try:
-                        # 优化 4: 在线程池中执行耗时的保存操作，避免阻塞主循环
                         success, new_records = await save_executor(fund_code, net_values) 
                         if success:
                             success_count += 1
@@ -444,14 +403,13 @@ async def fetch_all_funds(fund_codes):
                         print(f"[错误] 基金 {fund_code} 的保存任务在线程中发生错误: {e}")
                         failed_codes.add(fund_code)
                 else:
-                    # 抓取失败或跳过 (数据已最新)
                     if not str(net_values).startswith('数据已是最新'):
                         failed_codes.add(fund_code)
 
-        return success_count, total_new_records, list(failed_codes) # 转换为列表返回
+        return success_count, total_new_records, list(failed_codes) 
 
 def main():
-    """主函数：现在只执行动态净值抓取"""
+    """主函数：执行动态净值抓取"""
     print(f"加速设置：并发数={MAX_CONCURRENT}，基础延迟={REQUEST_DELAY}秒")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     print(f"确保输出目录存在: {OUTPUT_DIR}")
@@ -471,13 +429,11 @@ def main():
     print(f"本次处理 {len(processed_codes)} 个基金。")
 
     try:
-        # Windows 环境下推荐使用 ProactorEventLoop
         if os.name == 'nt':
             try:
                 loop = asyncio.ProactorEventLoop()
                 asyncio.set_event_loop(loop)
             except Exception:
-                # 兼容旧版本 Python/Windows
                 loop = asyncio.get_event_loop()
         else:
              loop = asyncio.get_event_loop()
