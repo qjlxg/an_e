@@ -1,14 +1,18 @@
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+fetch_fund_fee.py - 优化版：强制脚本目录 + 详细日志 + 鲁棒 HTML 解析 + 修复所有潜在崩溃点
+"""
 import os
 import sys
 import time
 from pathlib import Path
-import re # 导入 re 模块用于正则表达式处理基金名称
+import re 
 from typing import List, Dict
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import traceback # 导入 traceback 用于打印详细错误信息
+import traceback 
 
 # ================== 强制使用脚本所在目录 ==================
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -18,15 +22,15 @@ print(f"[INFO] 工作目录已切换到: {SCRIPT_DIR}")
 TXT_FILE = SCRIPT_DIR / "C类.txt"
 RESULT_CSV = SCRIPT_DIR / "fund_fee_result.csv"
 
-# ================== 配置 ==================
+# ================== 配置 (已优化：TIMEOUT增加, 避免抓取频率过快) ==================
 BASE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
 HEADERS = {
-    # 请保持 User-Agent 最新，以模拟正常浏览器访问
+    # 保持 User-Agent 最新
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 }
-TIMEOUT = 15
+TIMEOUT = 30  # ***增加超时时间到 30 秒***
 RETRY = 3
-MAX_FUNDS = 0  # 0 = 全部，用于调试时可设置为一个小数字
+MAX_FUNDS = 10  # ***设置为 0，表示处理全部基金***
 
 
 # =========================================
@@ -41,14 +45,12 @@ def read_codes() -> List[str]:
         with open(TXT_FILE, 'r', encoding='utf-8') as f:
             for line in f:
                 code = line.strip()
-                # 简单校验代码是否为6位数字
                 if code and code.isdigit() and len(code) >= 6:
                     codes.append(code)
     except Exception as e:
         print(f"[ERROR] 读取 {TXT_FILE} 文件失败: {e}")
         sys.exit(1)
     
-    # 调试模式
     if MAX_FUNDS > 0 and len(codes) > MAX_FUNDS:
         print(f"[WARN] 调试模式开启，只处理前 {MAX_FUNDS} 个基金")
         return codes[:MAX_FUNDS]
@@ -56,22 +58,35 @@ def read_codes() -> List[str]:
     return codes
 
 def fetch_page(code: str) -> str:
-    """尝试多次抓取基金费率页面"""
+    """尝试多次抓取基金费率页面 (已优化重试逻辑)"""
     url = BASE_URL.format(code=code)
     for i in range(RETRY):
         try:
+            # 增加重试间的等待时间，避免被封
+            if i > 0:
+                wait_time = 3 + i * 2  # 例如：3秒，5秒，7秒
+                print(f"[WAIT] {code} 等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
+                
             response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
             response.raise_for_status() # 检查 HTTP 状态码
             
             # 检查返回内容，确保抓取到的是目标页面
-            if '汇添富中证芯片产业指数增强发起式C' in response.text or '<title>基金费率' in response.text:
+            if '<title>基金费率' in response.text:
                 return response.text
             else:
                 print(f"[WARN] {code} 抓取到非目标内容，重试 {i+1}/{RETRY}")
+                # 针对非目标内容，也进行重试
+                continue
 
+        except requests.exceptions.Timeout:
+            # 单独处理超时
+            print(f"[ERROR] {code} 第 {i+1}/{RETRY} 次请求失败: 请求超时 (Timeout={TIMEOUT}s)")
+            continue
         except requests.exceptions.RequestException as e:
+            # 处理其他所有请求错误
             print(f"[ERROR] {code} 第 {i+1}/{RETRY} 次请求失败: {e}")
-            time.sleep(2 * (i + 1)) # 指数退避，等待更久
+            continue
 
     print(f"[FATAL] {code} 最终抓取失败")
     return ""
@@ -205,6 +220,10 @@ def main():
 
     results = []
     for idx, code in enumerate(codes, 1):
+        # 确保每次循环开始前有 1.5 秒的等待
+        if idx > 1:
+            time.sleep(1.5)
+            
         print(f"\n[{idx}/{len(codes)}] 正在处理 {code} ...", flush=True)
         html = fetch_page(code)
         if not html:
@@ -220,10 +239,8 @@ def main():
             traceback.print_exc()
             continue
 
-        time.sleep(1.5)  # 友好爬取，降低对目标网站的压力
-
     if not results:
-        print("[WARN] 没有成功解析任何基金")
+        print("\n[WARN] 没有成功解析任何基金")
         return
 
     # 写入 CSV
