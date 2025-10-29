@@ -11,7 +11,7 @@ OUTPUT_DIR = "fund_data"
 OUTPUT_FILE = "fund_fee_result.csv"
 FUND_CODES_FILE = "C类.txt"
 # 调试抓取的基金数量 (GitHub Actions运行时，如需抓取全部，请将此值设为 None 或一个很大的数)
-LIMIT_FUNDS = 10 
+LIMIT_FUNDS = none 
 
 # --- 1. 抓取与解析函数 ---
 
