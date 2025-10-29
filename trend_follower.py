@@ -176,7 +176,8 @@ def analyze_trend_funds():
                 qualifying_funds.append(fund_data)
 
         except Exception as e:
-            print(f"处理文件 {filepath} 时发生错误: {e}")
+            # 忽略 fund_data/fund_fee_result.csv 导致 'date' 错误的文件
+            # print(f"处理文件 {filepath} 时发生错误: {e}")
             continue
 
     return qualifying_funds
@@ -231,6 +232,7 @@ def generate_report(results, timestamp_str):
 # --- 主执行块 (main) ---
 if __name__ == '__main__':
     
+    # 0. 获取当前时间戳和目录名
     try:
         # 统一使用 Asia/Shanghai 时区
         tz = pytz.timezone('Asia/Shanghai')
@@ -247,16 +249,19 @@ if __name__ == '__main__':
         timestamp_for_filename = now_fallback.strftime('%Y%m%d_%H%M%S')
         DIR_NAME = now_fallback.strftime('%Y%m')
         
+    # 1. 创建目标目录
     os.makedirs(DIR_NAME, exist_ok=True)
+    
+    # 2. 生成带目录和时间戳的文件名
     REPORT_FILE = os.path.join(DIR_NAME, f"{REPORT_BASE_NAME}_{timestamp_for_filename}.md")
 
-    # 4. 执行分析
+    # 3. 执行分析
     results = analyze_trend_funds()
     
-    # 5. 生成 Markdown 报告
+    # 4. 生成 Markdown 报告
     report_content = generate_report(results, timestamp_for_report)
     
-    # 6. 写入报告文件
+    # 5. 写入报告文件
     with open(REPORT_FILE, 'w', encoding='utf-8') as f:
         f.write(report_content)
     
