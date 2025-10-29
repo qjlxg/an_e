@@ -168,6 +168,9 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 
                 text = await fetch_page(session, url)
                 
+                # ****** 新增的全局异常捕获，处理API返回结构异常，修复 015750 错误 ******
+                soup = BeautifulSoup(text, 'lxml')
+                
                 if first_run:
                     total_pages_match = re.search(r'pages:(\d+)', text)
                     total_pages = int(total_pages_match.group(1)) if total_pages_match else 1
@@ -181,7 +184,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                         
                     first_run = False
                 
-                soup = BeautifulSoup(text, 'lxml')
+                
                 # 检查 HTML 结构是否包含表格
                 table = soup.find('table')
                 if not table:
@@ -271,14 +274,21 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 print(f"    基金 {fund_code} [错误]：请求 API 时发生网络错误 (超时/连接) 在第 {page_index} 页: {e}")
                 return fund_code, f"网络错误: {e}"
             except Exception as e:
+                # 【修改 4】 捕获处理数据时的所有意外错误，例如 015750 的错误
                 print(f"    基金 {fund_code} [错误]：处理数据时发生意外错误在第 {page_index} 页: {e}")
                 return fund_code, f"数据处理错误: {e}"
             
         print(f"-> [COMPLETE] 基金 {fund_code} 数据抓取完毕，共获取 {len(all_records)} 条新记录。")
         if not all_records:
-            # 【修改 3】：明确日志输出
+            # 【修改 5】：优化日志输出，明确数据已是最新
             if latest_date:
-                return fund_code, f"数据已是最新 ({latest_date.strftime('%Y-%m-%d')})，无新数据"
+                # 只有在本地日期是最新日期（如 10-29）时，才应该输出“数据已是最新”
+                # 如果 latest_date 是 10-20，但 API 返回最新日期是 10-29，则不应输出此信息。
+                # 简单判断：如果 API 返回的最新日期与本地最新日期是同一天，且没有新记录，则数据已最新。
+                if latest_api_date and latest_date >= latest_api_date:
+                     return fund_code, f"数据已是最新 ({latest_date.strftime('%Y-%m-%d')})，无新数据"
+                else:
+                    return fund_code, "未获取到新数据（可能是API未更新或基金已停售）"
             else:
                 return fund_code, "未获取到新数据"
 
@@ -392,11 +402,19 @@ async def fetch_all_funds(fund_codes):
                 print("-" * 30)
                 fund_code = "UNKNOWN"
                 try:
-                    fund_code, net_values = await future
+                    # 统一捕获 fetch_net_values 的返回
+                    result = await future
+                    if isinstance(result, tuple) and len(result) == 2:
+                        fund_code, net_values = result
+                    else:
+                        raise Exception("Fetch task returned unexpected format.")
                 except Exception as e:
+                    # 捕获任务执行中的异常
                     print(f"[错误] 处理基金数据时发生顶级异步错误: {e}")
-                    failed_codes.add("UNKNOWN")
+                    # 如果 fund_code 无法确定，则无法加入失败列表，但可以记录异常
+                    failed_codes.add(fund_code if fund_code != "UNKNOWN" else "UNKNOWN_ERROR")
                     continue
+
 
                 if isinstance(net_values, list):
                     try:
