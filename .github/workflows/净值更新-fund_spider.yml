@@ -64,5 +64,5 @@ jobs:
       with:
         commit_message: "🤖 自动更新：抓取最新的基金净值数据"
         # 自动添加 fund_data 目录下的所有 CSV 文件，以及 C类.txt 
-        file_pattern: 'fund_data/*.csv C类.txt'
+        file_pattern: 'fund_fee_result.csv C类.txt'
         commit_options: '--allow-empty'
