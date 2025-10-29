@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- 配置常量 ---
 BASE_URL = "http://fundf10.eastmoney.com/jjfl_{}.html"
-OUTPUT_DIR = "fund_data"
+OUTPUT_DIR = ""
 OUTPUT_FILE = "fund_fee_result.csv"
 FUND_CODES_FILE = "C类.txt"
 # 调试抓取的基金数量 (GitHub Actions运行时，如需抓取全部，请将此值设为 None 或一个很大的数)
