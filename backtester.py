@@ -25,13 +25,12 @@ PURCHASE_FEE_RATE = 0.0           # 申购费（买入费）：0%
 REDEMPTION_FEE_RATE_SHORT = 0.015 # 赎回费：<= 7天 (1.5%)
 REDEMPTION_FEE_RATE_LONG = 0.005  # 赎回费：> 7天 (0.5%)
 
-# --- 从 analyzer.py 引入的关键计算函数 ---
+# --- 从 analyzer.py 引入的关键计算函数 (保持不变) ---
 
 def calculate_consecutive_drops(series):
     """计算时间窗口内的最长连续下跌天数"""
     if series.empty or len(series) < 2:
         return 0
-    # 净值下跌：当前值 < 前一个值
     drops = (series.iloc[1:].values < series.iloc[:-1].values)
     drops_int = drops.astype(int)
     max_drop_days = 0
@@ -57,7 +56,7 @@ def calculate_max_drawdown(series):
 def calculate_technical_indicators(df):
     """
     计算基金净值的RSI(14)、MACD、MA50。
-    要求df必须按日期降序排列。
+    要求df必须按日期降序排列，且包含 'value' 列。
     """
     if 'value' not in df.columns or len(df) < 50:
         return {'RSI': np.nan, 'MACD信号': '数据不足', '最新净值': df['value'].iloc[0] if not df.empty else np.nan, '当日跌幅': np.nan}
@@ -111,38 +110,56 @@ def calculate_technical_indicators(df):
     }
 
 def load_all_fund_data():
-    """加载所有基金数据并整理成 {代码: DataFrame} 字典，并限制数量。"""
+    """
+    【基金净值严格模式】
+    只加载包含 'date' 和 'net_value' 列的文件。
+    """
     all_funds_data = {}
-    # 使用 sorted() 确保每次调试时加载的基金列表是固定的，方便比较
     csv_files = sorted(glob.glob(os.path.join(FUND_DATA_DIR, '*.csv')))
     
-    # 【重点修改】限制文件数量
+    # 【调试限制】限制文件数量
     files_to_load = csv_files[:MAX_FUNDS_FOR_DEBUG]
-    print(f"检测到 {len(csv_files)} 个基金文件，调试模式下仅加载前 {len(files_to_load)} 个文件。")
+    print(f"检测到 {len(csv_files)} 个数据文件，调试模式下将尝试加载其中 {len(files_to_load)} 个文件。")
+    print("模式: 基金净值严格模式 (要求 'date' 和 'net_value' 列)")
     
+    loaded_count = 0
     for filepath in files_to_load:
+        if loaded_count >= MAX_FUNDS_FOR_DEBUG:
+            break
+            
         try:
             fund_code = os.path.splitext(os.path.basename(filepath))[0]
             df = pd.read_csv(filepath)
+
+            # --- 严格检查基金净值列 ---
+            if 'date' not in df.columns or 'net_value' not in df.columns:
+                # 忽略不符合格式的文件
+                print(f"  跳过 {fund_code}.csv: 缺少 'date' 或 'net_value' 列。")
+                continue
+            
             df['date'] = pd.to_datetime(df['date'])
             df = df.rename(columns={'net_value': 'value'})
+
             df = df.set_index('date').sort_index()
             all_funds_data[fund_code] = df
+            print(f"  ✅ 成功加载基金: {fund_code}")
+            loaded_count += 1
+
         except Exception as e:
-            print(f"加载文件 {filepath} 错误: {e}")
+            print(f"  处理文件 {filepath} 时发生错误 (可能数据格式问题): {e}")
             continue
             
     return all_funds_data
 
-# --- 核心回测逻辑 ---
+# --- 核心回测逻辑 (保持不变) ---
 
 def run_backtest():
     """执行高弹性策略回测"""
-    print("--- 启动高弹性策略回测 (调试模式: 限制基金数量, 严格费用计算) ---")
+    print("--- 启动高弹性策略回测 (基金模式, 调试限制) ---")
     all_funds_data = load_all_fund_data()
     
     if not all_funds_data:
-        print("没有可用的基金数据，回测中止。")
+        print("\n**❌ 错误: 没有可用的基金净值数据，回测中止。**")
         return
 
     # 获取所有基金的交易日集合
@@ -157,12 +174,12 @@ def run_backtest():
     # 初始化账户
     account = {
         'cash': INITIAL_CAPITAL,
-        # 'purchase_date' 字段用于计算持有天数
         'holdings': {},  # {code: {'units': float, 'cost': float, 'purchase_date': date}}
         'nav_history': {start_dt: INITIAL_CAPITAL},
         'portfolio_value': INITIAL_CAPITAL
     }
     
+    print(f"\n回测基金数量: {len(all_funds_data)} 支")
     print(f"回测日期范围: {trade_dates[0].strftime('%Y-%m-%d')} 到 {trade_dates[-1].strftime('%Y-%m-%d')}")
     print(f"费用配置: 申购费 {PURCHASE_FEE_RATE:.2%}, 赎回费 <=7天 {REDEMPTION_FEE_RATE_SHORT:.2%}, >7天 {REDEMPTION_FEE_RATE_LONG:.2%}")
     
@@ -371,7 +388,7 @@ def run_backtest():
     else:
         print("**回测结束时无持仓。**")
         
-    print("\n--- 注意: 本回测脚本已严格按照用户要求设置了交易费用和基金数量限制。 ---")
+    print("\n--- 模式: 基金净值严格模式 (只使用包含 'net_value' 的文件) ---")
     
 if __name__ == '__main__':
     run_backtest()
