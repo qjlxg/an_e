@@ -43,15 +43,12 @@ jobs:
           pip install pandas numpy pytz
 
       - name: ⚙️ Run Deep Value Strategy (超跌反弹)
-        # 运行 analyzer.py
         run: python analyzer.py
 
       - name: 📈 Run Trend Follow Strategy (趋势跟随)
-        # 运行 trend_follower.py
         run: python trend_follower.py
         
       # --- 将生成的新文件提交回仓库 ---
-      # 报告文件已由脚本生成在年月目录中 (例如 202410/...)
       - name: ⬆️ Commit and Push Report Files
         # 使用 git-auto-commit-action 自动提交更改
         uses: stefanzweifel/git-auto-commit-action@v5
