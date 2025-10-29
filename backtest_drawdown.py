@@ -6,11 +6,11 @@
     backtest_results/YYYYMM/backtest_summary_*.csv
     backtest_results/YYYYMM/backtest_report_*.md
 核心修改：
-1. 在 backtest_single_fund 函数中，根据持有天数（d）应用阶梯式交易成本。
+1. 根据持有天数（d）应用阶梯式交易成本：
    - d <= 7 天：扣除 1.5%
    - d > 7 天：扣除 0.5%
-2. 成本在止损和最终收益计算后扣除，确保收益是“净收益”。
-【重要修正】：修复了交易成本重复扣除导致止损亏损被放大的逻辑错误。
+2. 成本在止损和最终收益计算后扣除，确保收益为“净收益”。
+【重要修正】：修复了交易成本在止损和正常退出时的准确扣除逻辑。
 """
 import os
 import glob
@@ -108,7 +108,7 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
             '布林带位置': '数据不足', '最新净值': np.nan, '当日跌幅': np.nan
         }
 
-    df_asc = df.iloc[::-1].copy()  # 转为升序计算
+    df_asc = df.iloc[::-1].copy()  # 转为升序
     value_series = df_asc['value']
 
     # RSI (14)
@@ -193,7 +193,7 @@ def generate_signal(row: pd.Series) -> str:
 
 
 # ================================
-# 单基金回测（已加入交易成本 + 止损）
+# 单基金回测（修正：止损后扣成本，不放大亏损）
 # ================================
 def backtest_single_fund(filepath: str) -> List[Dict]:
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
@@ -221,7 +221,6 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
         COST_7_DAYS_OR_LESS = 0.015  # 1.5%
         COST_OVER_7_DAYS = 0.005     # 0.5%
 
-        # 滚动窗口：从第30天开始
         for i in range(30, len(df)):
             window_df = df.iloc[i-30:i].copy()
             week_df = window_df.iloc[-5:].copy()
@@ -250,7 +249,7 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
                 }
                 row['信号'] = generate_signal(pd.Series(row))
 
-                base_price = df.iloc[i-1]['value']  # 买入价（T-1日收盘）
+                base_price = df.iloc[i-1]['value']
                 max_hold_days = max(FORWARD_DAYS)
                 future_series = df.iloc[i: i + max_hold_days + 1]['value']
                 returns_from_entry = (future_series - base_price) / base_price
@@ -262,25 +261,25 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
                         continue
 
                     hold_period_returns = returns_from_entry.head(d)
-                    final_return = np.nan
-                    cost = COST_7_DAYS_OR_LESS if d <= 7 else COST_OVER_7_DAYS # <--- 成本提前确定
+                    cost = COST_7_DAYS_OR_LESS if d <= 7 else COST_OVER_7_DAYS
 
-                    # 止损判断
                     min_return_in_period = hold_period_returns.min()
+                    
+                    # --- 修正后的核心逻辑：计算净收益 ---
                     if min_return_in_period <= -SL_THRESHOLD:
-                        # 【修正】：止损时，最终净收益 = 止损阈值 - 成本
+                        # 触发止损：毛收益被限制在 -SL_THRESHOLD，净收益需扣除成本
                         final_return = -SL_THRESHOLD - cost
                         
                         if pd.isna(row['止损退出天数']):
-                            # 确定止损发生在哪一天
+                            # 记录首次触及止损的天数
                             sl_hit_idx = (returns_from_entry <= -SL_THRESHOLD).idxmax()
                             sl_days = sl_hit_idx - i + 1
                             row['止损退出天数'] = sl_days
                     else:
-                        # 【修正】：正常退出时，最终净收益 = 到期收益 - 成本
+                        # 正常持有到期：毛收益为到期时的收益，净收益需扣除成本
                         final_return = hold_period_returns.iloc[-1] - cost
-
-                    # 统一赋值
+                    # ----------------------------------------
+                        
                     row[col] = final_return
 
                 records.append(row)
@@ -305,7 +304,6 @@ def run_backtest():
     summary_path = os.path.join(out_dir, f"backtest_summary_{timestamp}.csv")
     report_path = os.path.join(out_dir, f"backtest_report_{timestamp}.md")
 
-    # 获取并过滤 CSV 文件
     all_csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
     csv_files = [f for f in all_csv_files if '持仓_' not in os.path.basename(f)]
 
@@ -315,8 +313,7 @@ def run_backtest():
         logger.info(f"已过滤 {initial_count - filtered_count} 个包含 '持仓_' 的文件。")
 
     # === 调试模式：限制为前 5 个基金 ===
-    # 注意：在生产环境中运行此脚本时，请移除或注释掉此块代码
-    DEBUG_LIMIT = 15
+    DEBUG_LIMIT = 5
     if csv_files:
         total_files = len(csv_files)
         csv_files = csv_files[:DEBUG_LIMIT]
@@ -354,6 +351,9 @@ def run_backtest():
         "---\n"
     ]
 
+    COST_7_DAYS_OR_LESS = 0.015
+    COST_OVER_7_DAYS = 0.005
+
     for signal_name, group in signal_groups:
         if signal_name == "无信号":
             continue
@@ -367,12 +367,10 @@ def run_backtest():
             if len(valid) == 0:
                 continue
 
-            # 止损判断：由于成本已提前扣除，止损阈值需考虑成本。
-            # 但在这里统计止损次数，我们仍使用原始阈值（10%），因为我们假设 -10% 是风控点。
-            cost_for_day = COST_7_DAYS_OR_LESS if d <= 7 else COST_OVER_7_DAYS
-            # 检查净收益是否低于止损点（即：跌幅达到止损阈值 + 成本）
-            stop_loss_return = -(TH.get("stop_loss_threshold", 0.10)) - cost_for_day
-            stop_loss_count = (valid <= stop_loss_return + 1e-6).sum()
+            # 统计止损次数：检查净收益是否低于止损点（即：跌幅达到止损阈值 + 成本）
+            cost = COST_7_DAYS_OR_LESS if d <= 7 else COST_OVER_7_DAYS
+            stop_loss_net = -TH.get("stop_loss_threshold", 0.10) - cost
+            stop_loss_count = (valid <= stop_loss_net + 1e-6).sum()
 
             win_rate = (valid > 0).mean()
             avg_ret = valid.mean()
