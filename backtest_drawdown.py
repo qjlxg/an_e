@@ -2,15 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 回测模块：滚动30天窗口回测所有基金
-输出：
-    backtest_results/YYYYMM/backtest_summary_*.csv
-    backtest_results/YYYYMM/backtest_report_*.md
 核心修改：
-1. 根据持有天数（d）应用阶梯式交易成本：
-    - d <= 7 天：扣除 1.5%
-    - d > 7 天：扣除 0.5%
+1. 根据持有天数（d）应用阶梯式交易成本。
 2. 成本在止损和最终收益计算后扣除，确保收益为“净收益”。
 【重要修正】：修复了交易成本在止损和正常退出时的准确扣除逻辑。
+【本次修正】：将信号生成逻辑与实盘预警脚本 (analyzer.py) 保持一致，移除 '当日跌幅' 限制，采用 RSI 阶梯式判断。
 """
 import os
 import glob
@@ -74,7 +70,7 @@ MIN_HISTORY = cfg["min_history_days"]
 MAX_WORKERS = cfg.get("max_workers", 4)
 
 # ================================
-# 核心指标函数
+# 核心指标函数 (省略，与原脚本一致)
 # ================================
 def calculate_consecutive_drops(series: pd.Series) -> int:
     """从最新一天开始连续下跌天数（包含今天）。series 为降序（最新在前）。"""
@@ -176,24 +172,30 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         '当日跌幅': round(daily_drop, 4)
     }
 
-
+# ================================
+# 修正位置：与 analyzer.py 保持一致
+# ================================
 def generate_signal(row: pd.Series) -> str:
-    """生成信号等级"""
+    """生成信号等级，使用纯RSI阶梯判断，与实盘预警脚本一致。"""
+    # 必须满足基础回撤和连跌条件
     if (row['最大回撤'] >= TH["high_elasticity_min_drawdown"] and
         row['近一周连跌'] == 1 and
         not pd.isna(row['RSI'])):
-        if row['RSI'] < TH.get("rsi_extreme_oversold", 30) and row['当日跌幅'] >= TH["min_daily_drop_percent"]:
+        
+        # 第一优先级：极度超卖 (RSI < 30)
+        if row['RSI'] < TH.get("rsi_extreme_oversold", 30):
             return "第一优先级 即时买入"
-        if row['RSI'] < TH.get("rsi_oversold", 35) and row['当日跌幅'] >= TH["min_daily_drop_percent"]:
-            return "第一优先级 即时买入"
+        
+        # 第二优先级：超卖 (RSI < 35, 且前面未满足)
         if row['RSI'] < TH.get("rsi_oversold", 35):
             return "第二优先级 技术建仓"
+
+        # 第三优先级：观察（满足高回撤、连跌，但RSI >= 35）
         return "第三优先级 观察池"
+        
     return "无信号"
-
-
 # ================================
-# 单基金回测（修正：止损后扣成本，不放大亏损）
+# 单基金回测（修正：止损后扣成本，不放大亏损） (省略，与原脚本一致)
 # ================================
 def backtest_single_fund(filepath: str) -> List[Dict]:
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
@@ -247,7 +249,7 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
                     '当日跌幅': tech['当日跌幅'],
                     '止损退出天数': np.nan
                 }
-                row['信号'] = generate_signal(pd.Series(row))
+                row['信号'] = generate_signal(pd.Series(row)) # 调用新的信号生成函数
 
                 base_price = df.iloc[i-1]['value']
                 max_hold_days = max(FORWARD_DAYS)
@@ -291,7 +293,7 @@ def backtest_single_fund(filepath: str) -> List[Dict]:
 
 
 # ================================
-# 主流程
+# 主流程 (省略，与原脚本一致)
 # ================================
 def run_backtest():
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
