@@ -6,7 +6,7 @@ on:
     branches: [ main ]
     paths:
       - 'fetch_fund_fee.py'
-      - '.github/workflows/fund-fee.yml'
+      - '.github/workflows/fund-scraper.yml'
       - 'C类.txt'
   schedule:
     # 每天上海时间 09:30（UTC 01:30）
