@@ -2,73 +2,77 @@
 name: Fund Drawdown Backtest
 
 on:
-  schedule:
-    - cron: '0 16 * * *'  # 北京时间 00:00 (UTC 16:00)
-  workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - 'fund_data/**'
-      - 'backtest_drawdown.py'
-      - 'config_backtest.yaml'
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'fund_data/**'
+      - 'backtest_drawdown.py'
+      - 'config_backtest.yaml'
 
 jobs:
-  backtest-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write  # 必须：允许 push
+  backtest-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 必须：允许 push
 
-    steps:
-      # 1. 拉取代码
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # 1. 拉取代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 设置 Python
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+      # 2. 设置 Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-      # 3. 安装依赖
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy pyyaml
+      # 3. 安装依赖
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy pyyaml
 
-      # 4. 检查 fund_data 是否存在
-      - name: Validate fund data
-        run: |
-          if [ ! -d "fund_data" ] || [ -z "$(ls -A fund_data/*.csv 2>/dev/null)" ]; then
-            echo "Warning: No CSV files in fund_data/, skipping backtest."
-            exit 0
-          fi
+      # 4. 检查 fund_data 是否存在
+      - name: Validate fund data
+        run: |
+          if [ ! -d "fund_data" ] || [ -z "$(ls -A fund_data/*.csv 2>/dev/null)" ]; then
+            echo "Warning: No CSV files in fund_data/, skipping backtest."
+            exit 0
+          fi
 
-      # 5. 运行回测
-      - name: Run backtest
-        run: |
-          python backtest_drawdown.py
+      # 5. 运行回测
+      - name: Run backtest
+        run: |
+          python backtest_drawdown.py
 
-      # 6. 提交并推送结果 (已修复 Rejected 错误)
-      - name: Commit and push backtest results
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # 6. 提交并推送结果 (已修复 Rejected 错误和 Index 错误)
+      - name: Commit and push backtest results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add backtest_results/
-          git status
+          # 暂存新生成的结果文件
+          git add backtest_results/
+          git status
 
-          # 检查是否有变更
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
+          # 检查是否有变更需要提交
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
 
-          # 【修复：先拉取远程变更，再提交】
-          git pull --rebase origin main 
-          
-          git commit -m "Backtest results: $(date '+%Y-%m-%d %H:%M:%S')"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 【关键修正：先提交本地变更】
+          git commit -m "Backtest results: $(date '+%Y-%m-%d %H:%M:%S')"
+          
+          # 【解决 Rejected 错误：提交后拉取远程变更并 rebase】
+          git pull --rebase origin main  
+          
+          # 推送最终结果
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
