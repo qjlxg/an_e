@@ -37,7 +37,7 @@ REQUEST_TIMEOUT = 30
 REQUEST_DELAY = 3.5 
 # 优化 1: 增加最大并发数 (原 5)
 MAX_CONCURRENT = 15 
-MAX_FUNDS_PER_RUN = 0 #限制0个
+MAX_FUNDS_PER_RUN = 10 #限制0个
 PAGE_SIZE = 20
 
 # --------------------------------------------------------------------------------------
@@ -282,8 +282,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
         if not all_records:
             # 【修改 5】：优化日志输出，明确数据已是最新
             if latest_date:
-                # 只有在本地日期是最新日期（如 10-29）时，才应该输出“数据已是最新”
-                # 如果 latest_date 是 10-20，但 API 返回最新日期是 10-29，则不应输出此信息。
                 # 简单判断：如果 API 返回的最新日期与本地最新日期是同一天，且没有新记录，则数据已最新。
                 if latest_api_date and latest_date >= latest_api_date:
                      return fund_code, f"数据已是最新 ({latest_date.strftime('%Y-%m-%d')})，无新数据"
@@ -296,74 +294,91 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
 
 def save_to_csv(fund_code, data):
     """
-    【修改】将历史净值数据以增量更新方式保存为 CSV 文件
-    - 确保新数据转换的鲁棒性。
-    - 优化老数据的读取和合并。
+    【修复后的 save_to_csv 函数】
+    - 增强读取现有数据的编码鲁棒性，解决文件未更新的问题。
+    - 确保数据合并和去重逻辑的正确性。
     """
     output_path = os.path.join(OUTPUT_DIR, f"{fund_code}.csv")
     if not isinstance(data, list) or not data:
-        # print(f"    基金 {fund_code} 无新数据可保存。")
         return False, 0
 
     new_df = pd.DataFrame(data)
 
     try:
-        # 数据类型转换和清洗
+        # 数据类型转换和清洗 (与原代码一致)
         new_df['net_value'] = pd.to_numeric(new_df['net_value'], errors='coerce').round(4)
         new_df['cumulative_net_value'] = pd.to_numeric(new_df['cumulative_net_value'], errors='coerce').round(4)
         
-        # 【修改 2】：使用更健壮的 apply 函数处理 daily_growth_rate
         def clean_growth_rate(rate_str):
             rate_str = str(rate_str).strip()
             if rate_str in ['--', '']:
                 return 0.0
             try:
-                # 去除 % 并转换为浮点数，然后除以 100
                 return float(rate_str.rstrip('%')) / 100.0
             except ValueError:
-                return None # 标记为无效数据
+                return None 
         
         new_df['daily_growth_rate'] = new_df['daily_growth_rate'].apply(clean_growth_rate)
-        
         new_df['date'] = pd.to_datetime(new_df['date'], errors='coerce', format='%Y-%m-%d')
-        
-        # 丢弃无效的核心记录
         new_df.dropna(subset=['date', 'net_value', 'daily_growth_rate'], inplace=True)
+        
         if new_df.empty:
-            # print(f"    基金 {fund_code} 数据无效或为空，跳过保存。")
             return False, 0
     except Exception as e:
         print(f"    基金 {fund_code} 数据转换失败: {e}")
         return False, 0
     
     old_record_count = 0
+    existing_df = None
+
     if os.path.exists(output_path):
-        try:
-            # 读取老数据时，同样使用 robust 的日期解析，确保一致性
-            existing_df = pd.read_csv(
-                output_path, 
-                parse_dates=['date'], 
-                # 这里不需要显式的 date_parser，pd 默认的行为已经很好了
-                encoding='utf-8' # 保持与保存时一致的编码
-            )
-            old_record_count = len(existing_df)
-            combined_df = pd.concat([new_df, existing_df])
-        except Exception as e:
-            print(f"    读取现有 CSV 文件 {output_path} 失败: {e}。仅保存新数据。")
+        # **【修复点】增强读取现有数据的编码鲁棒性**
+        encodings_to_try = ['utf-8', 'gbk', 'utf-8-sig'] 
+        
+        for encoding in encodings_to_try:
+            try:
+                existing_df = pd.read_csv(
+                    output_path, 
+                    parse_dates=['date'], 
+                    encoding=encoding
+                )
+                # 确保读取的 DataFrame 包含有效的日期
+                if not existing_df.empty and 'date' in existing_df.columns:
+                     existing_df.dropna(subset=['date'], inplace=True)
+                
+                if not existing_df.empty:
+                    # 成功读取，跳出循环
+                    break 
+                else:
+                    existing_df = None
+            except Exception:
+                continue
+
+        if existing_df is not None:
+            try:
+                old_record_count = len(existing_df)
+                # 新数据在前 (new_df)，旧数据在后 (existing_df)
+                combined_df = pd.concat([new_df, existing_df], ignore_index=True)
+            except Exception as e:
+                print(f"    基金 {fund_code} 读取旧数据成功但合并失败: {e}。仅保存新数据。")
+                combined_df = new_df
+        else:
+            print(f"    基金 {fund_code} [警告]：无法读取现有 CSV 文件，可能是编码或格式问题。仅保存新数据。")
             combined_df = new_df
     else:
         combined_df = new_df
         
-    # 去重：以日期为准，保留最新的记录 (新数据在前，所以 keep='first')
+    # 去重和排序逻辑 (与原代码一致)
+    combined_df['date'] = pd.to_datetime(combined_df['date'], errors='coerce')
+    combined_df.dropna(subset=['date'], inplace=True)
+
     final_df = combined_df.drop_duplicates(subset=['date'], keep='first')
-    # 排序：按日期降序
     final_df = final_df.sort_values(by='date', ascending=False)
-    # 格式化日期为字符串，以便保存
     final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
     
     try:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        # 写入时使用 UTF-8 编码
+        # 写入时使用 UTF-8 编码，以保证跨平台兼容性
         final_df.to_csv(output_path, index=False, encoding='utf-8') 
         new_record_count = len(final_df)
         newly_added = new_record_count - old_record_count
