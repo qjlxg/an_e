@@ -34,11 +34,11 @@ HEADERS = {
 REQUEST_TIMEOUT = 30
 REQUEST_DELAY = 3.5 
 MAX_CONCURRENT = 15 
-MAX_FUNDS_PER_RUN = 10 # 限制为 10 个，与您的运行日志保持一致
+MAX_FUNDS_PER_RUN = 0 # 
 PAGE_SIZE = 20
 
 # --------------------------------------------------------------------------------------
-# 文件和代码读取 (保留)
+# 文件和代码读取 
 # --------------------------------------------------------------------------------------
 
 def get_all_fund_codes(file_path):
@@ -181,7 +181,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                     break
 
                 page_records = []
-                stop_paging = False # 标志是否应该停止翻页
+                stop_paging = False 
                 
                 for row in rows:
                     cols = row.find_all('td')
@@ -206,7 +206,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                         
                         # 增量停止逻辑：如果当前记录日期 <= 本地最新日期
                         if latest_date and date <= latest_date:
-                            # 找到停止点，标记停止翻页，并结束当前页的遍历
                             stop_paging = True
                             break
                             
@@ -229,7 +228,6 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 all_records.extend(page_records)
                 
                 if stop_paging:
-                    # 修复后的日志：明确是停止翻页，但已收集到新数据
                     print(f"    基金 {fund_code} [增量停止]：页面 {page_index} 遇到旧数据 ({latest_date.strftime('%Y-%m-%d')})，停止翻页。")
                     break
                 
@@ -248,7 +246,10 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
                 print(f"    基金 {fund_code} [错误]：请求 API 时发生网络错误 (超时/连接) 在第 {page_index} 页: {e}")
                 return fund_code, f"网络错误: {e}"
             except Exception as e:
+                # ----------------------- 【修改点：增加详细日志】 -----------------------
                 print(f"    基金 {fund_code} [错误]：处理数据时发生意外错误在第 {page_index} 页: {e}")
+                logger.exception(f"    基金 {fund_code} [详细错误]：数据处理或解析失败在第 {page_index} 页。") 
+                # ----------------------------------------------------------------------
                 return fund_code, f"数据处理错误: {e}"
             
         print(f"-> [COMPLETE] 基金 {fund_code} 数据抓取完毕，共获取 {len(all_records)} 条新记录。")
@@ -266,7 +267,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
 def save_to_csv(fund_code, data):
     """
     【修复后的 save_to_csv 函数】
-    - 增强读取现有数据的编码鲁棒性，解决文件未更新的问题。
+    - 增强读取现有数据的编码鲁棒性。
     - 确保数据合并和去重逻辑的正确性。
     """
     output_path = os.path.join(OUTPUT_DIR, f"{fund_code}.csv")
