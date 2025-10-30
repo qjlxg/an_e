@@ -1,0 +1,20 @@
+# --- holdings_config.yaml ---
+
+parameters:
+  rsi_window: 14
+  ma_window: 50
+  bb_window: 20
+  rsi_overbought_threshold: 80
+  consecutive_days_threshold: 3
+  profit_lock_days: 14
+  volatility_window: 7
+  volatility_threshold: 0.03
+  decline_days_threshold: 5
+  trailing_stop_loss_pct: 0.08
+  macd_divergence_window: 60
+  adx_window: 14
+  adx_threshold: 30
+
+
+"019548": 1.3829 # 
+"A10203": 1.1000 # 
