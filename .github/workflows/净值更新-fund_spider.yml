@@ -13,7 +13,7 @@ on:
     branches:
       - main
     paths:
-      - '.github/workflows/fund_spider.yml'
+      - '.github/workflows/净值更新-fund_spider.yml'
       - 'fund_spider.py'
       - 'C类.txt'
 
@@ -51,7 +51,7 @@ jobs:
         # 运行爬虫脚本，抓取并更新数据
         python fund_spider.py
         
-    - name: ⭐ 解决推送冲突：暂存、拉取、恢复 (修复第一次失败)
+    - name: ⭐ 解决推送冲突：暂存、拉取、恢复 (Git Stash/Pull 修复)
       run: |
         # 配置 Git 用户信息
         git config user.name "github-actions[bot]"
@@ -60,7 +60,6 @@ jobs:
         # 1. 检查是否有本地更改（爬虫脚本的输出）
         if ! git diff-index --quiet HEAD --; then
           echo "发现本地更改，正在暂存..."
-          # 2. 暂存本地所有修改 (爬虫脚本的更改)
           git stash
           STASHED=true
         else
@@ -68,26 +67,21 @@ jobs:
           STASHED=false
         fi
         
-        # 3. 拉取并合并远程 main 分支的最新更改
+        # 2. 拉取并合并远程 main 分支的最新更改
         echo "拉取远程最新更改..."
         git pull origin main
         
-        # 4. 如果之前有暂存，则恢复暂存的更改
+        # 3. 如果之前有暂存，则恢复暂存的更改
         if [ "$STASHED" = true ]; then
           echo "恢复暂存的更改..."
-          # 恢复暂存，并忽略潜在的非致命冲突
           git stash pop || true
-          # 强制添加所有 fund_data 目录下的文件，确保它们进入暂存区
           git add fund_data/*.csv || true 
         fi
         
-    - name: 检查并提交更改 (Commit and Push changes) (修复第二次失败)
+    - name: 检查并提交更改 (Commit and Push changes)
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "🤖 自动更新：抓取最新的基金净值数据"
-        # 核心修复：添加 --force 选项，允许 git add 忽略找不到的文件 (如 fund_fee_result.csv) 
-        # 从而解决 'pathspec did not match any files' 错误。
-        add_options: '--force' 
-        # 自动添加所有相关文件
-        file_pattern: 'fund_fee_result.csv C类.txt fund_data/*.csv'
+        # 最终修复：移除不存在的 'fund_fee_result.csv' 以避免 pathspec 错误。
+        file_pattern: 'C类.txt fund_data/*.csv'
         commit_options: '--allow-empty'
