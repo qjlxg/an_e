@@ -40,19 +40,17 @@ jobs:
         with:
           python-version: '3.x'
 
-      # 步骤 3: 安装依赖 (TA-Lib需要系统依赖)
+      # 步骤 3: 安装依赖 (移除了 apt-get 命令)
       - name: Install dependencies (AkShare, TA-Lib)
         run: |
           python -m pip install --upgrade pip
           pip install pandas akshare
           
-          # 安装 TA-Lib: 需要系统依赖
-          sudo apt-get update
-          sudo apt-get install -y libta-lib-dev
+          # 尝试直接安装 ta-lib
+          # 如果直接安装失败，用户可能需要使用特定的预编译 wheel 文件
           pip install ta-lib
 
-      # 步骤 4: 运行指数分析脚本 (生成 index_analysis_report_YYYYMMDDHHMMSS.txt)
-      # ⚠️ 注意: 脚本输出时间戳仍是UTC，但文件命名时间戳是上海时间
+      # 步骤 4: 运行指数分析脚本 (生成 index_analysis_report.txt)
       - name: Run index analysis script and save report
         run: python -u index_analysis.py > index_analysis_report.txt
 
