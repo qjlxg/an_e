@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import os
 import time
-import concurrent.futures # 引入并发模块
+import concurrent.futures
 
 # 定义请求头，模拟浏览器访问，提高成功率
 HEADERS = {
@@ -34,15 +34,12 @@ def scrape_fund_info(fund_code):
     base_url = "https://fundf10.eastmoney.com/jbgk_{}.html"
     url = base_url.format(fund_code)
     
-    # 并发模式下，实时打印日志有助于追踪，但可能会被交错
     print(f"-> 正在抓取基金代码: {fund_code}")
     
     try:
-        # 在并发模式下，不再需要显式的 time.sleep(1)
         response = requests.get(url, headers=HEADERS, timeout=15)
         
         if response.status_code != 200:
-            # 网站可能拒绝访问或基金代码无效
             print(f"   警告: 基金 {fund_code} 状态码 {response.status_code}. 跳过.")
             return None
 
@@ -57,12 +54,11 @@ def scrape_fund_info(fund_code):
 
         fund_data = {'基金代码': fund_code}
         
-        # 表格结构是 <th>Key</th><td>Value</td><th>Key</th><td>Value</td>...
         cells = [elem.get_text(strip=True) for elem in info_table.find_all(['th', 'td'])]
         
         for i in range(0, len(cells), 2):
             if i + 1 < len(cells):
-                key = cells[i].strip('：') # 移除键后面的冒号
+                key = cells[i].strip('：')
                 value = cells[i+1]
                 
                 # 清理冗余信息
@@ -83,7 +79,6 @@ def scrape_fund_info(fund_code):
 
     except requests.RequestException as e:
         print(f"   错误: 基金 {fund_code} 抓取请求失败: {e}. 跳过.")
-        # 在并发模式下，直接抛出 RequestException，由 main 函数的 try-except 捕获
         raise e
     except Exception as e:
         print(f"   错误: 基金 {fund_code} 抓取过程中发生未知错误: {e}. 跳过.")
@@ -97,18 +92,14 @@ def main():
 
     print(f"共找到 {len(fund_codes)} 个基金代码，开始并发抓取...")
     
-    # 设置最大并发线程数。20个线程对于大多数网站是安全且高效的。
     MAX_WORKERS = 20 
     all_fund_data = []
 
-    # 记录开始时间
     start_time = time.time()
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # 将所有基金代码提交给线程池执行
         future_to_code = {executor.submit(scrape_fund_info, code): code for code in fund_codes}
         
-        # 遍历已完成的任务，获取结果
         for future in concurrent.futures.as_completed(future_to_code):
             code = future_to_code[future]
             try:
@@ -116,14 +107,11 @@ def main():
                 if data:
                     all_fund_data.append(data)
             except requests.RequestException:
-                # 捕获 scrape_fund_info 中抛出的网络异常
                 print(f"   严重错误: 基金 {code} 抓取请求失败，可能是网络问题或被反爬。")
             except Exception as exc:
-                # 捕获其他未知异常
                 print(f"   致命错误: 基金 {code} 抓取过程中发生未预料的异常: {exc}")
 
 
-    # 记录结束时间
     end_time = time.time()
     total_time = end_time - start_time
     
@@ -131,15 +119,15 @@ def main():
         print("未成功抓取任何基金数据，未生成CSV文件。")
         return
 
-    # 将数据转换为DataFrame
     df = pd.DataFrame(all_fund_data)
     
-    # 确保'基金代码'是第一列
     cols = ['基金代码'] + [col for col in df.columns if col != '基金代码']
     df = df[cols]
 
-    # 保存为CSV文件，使用 utf_8_sig 编码以确保 Excel 中文显示正常
-    output_filename = 'fund_data.csv'
+    # --- 关键修改点：新的输出文件名 ---
+    output_filename = 'fund_basic_data_c_class.csv'
+    # --------------------------------
+
     df.to_csv(output_filename, index=False, encoding='utf_8_sig')
     
     print(f"\n✅ 数据抓取完成，已保存到文件: {output_filename}")
