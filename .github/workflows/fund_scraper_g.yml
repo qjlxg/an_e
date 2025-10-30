@@ -11,9 +11,9 @@ on:
     branches:
       - main  # 请确保这里是您的主分支名称
     paths:
-      - 'fund_scraper.py' 
+      - 'fund_scraper_g.py' 
       - 'C类.txt'         
-      - '.github/workflows/scrape_fund_data.yml' 
+      - '.github/workflows/fund_scraper_g.yml' 
 
 # 【可选定时任务配置】
 # 如果需要定时运行，请取消下方 schedule 的注释，
