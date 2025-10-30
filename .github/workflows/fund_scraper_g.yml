@@ -1,92 +1,67 @@
+# .github/workflows/scrape_fund_data.yml
 name: 📈 Scrape Fund Basic Data and Push CSV
 
 # 触发条件配置
 on:
-  # 允许手动触发
   workflow_dispatch:
-  # 脚本和数据文件变动时自动触发
   push:
     branches:
       - main
     paths:
-      - 'fund_scraper_g.py'
-      - 'C类.txt'
-      - '.github/workflows/fund_scraper_g.yml'
-  # 每天定时自动运行（上海时间早上 8:00）
-  schedule:
-    # cron表达式: 分 时 日 月 周
-    # 0 0 * * * 是 UTC 0:00，相当于北京时间/上海时间 8:00
-    - cron: '0 0 * * *'
+      - 'fund_scraper_g.py' 
+      - 'C类.txt'         
+      - '.github/workflows/fund_scraper_g.yml' 
 
 jobs:
   scrape_and_push:
     runs-on: ubuntu-latest
     
-    # 确保有写入权限来提交文件
     permissions:
       contents: write
 
     steps:
-      # 步骤 1: 设置工作流时区为上海，确保 cron 调度和日志时间正确
-      - name: Set Time Zone to Shanghai
-        uses: sergeysova/boilerplate-action@v1.0.0
-        with:
-          timezone: Asia/Shanghai
-
-      # 步骤 2: 检出仓库代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 步骤 3: 设置 Python 环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # 步骤 4: 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas
 
-      # 步骤 5: 运行数据抓取脚本
+      # 步骤 4: 运行数据抓取脚本
       - name: Run fund scraper script
         # 使用 -u 选项强制 Python 不缓冲输出
-        run: python -u fund_scraper_g.py
+        run: python -u fund_scraper_g.py 
 
-      # 步骤 6: 配置 Git 提交信息
+      # 步骤 5: 配置 Git 提交信息
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-      # 步骤 7: 检查并提交/推送更改 (已修正逻辑)
-      - name: Commit and push changes (Logic Fixed)
+      # 步骤 6: 检查并提交/推送更改
+      - name: Commit and push changes
         id: commit_push
         run: |
-          # 1. 将新生成的文件添加到暂存区
           git add fund_basic_data_c_class.csv
           
-          # 2. 检查暂存区是否有变动 (0:无变动, 1:有变动)
-          # --quiet 确保不输出差异内容，仅返回退出码
-          git diff --cached --exit-code --quiet
-          GIT_DIFF_STATUS=$?
-          
-          # 3. 基于 $GIT_DIFF_STATUS 进行判断：
-          if [ "$GIT_DIFF_STATUS" -eq 0 ]; then
-            # 退出码 0: 无变动。执行跳过。
+          if git diff --cached --exit-code; then
             echo "::notice file=fund_basic_data_c_class.csv::fund_basic_data_c_class.csv 没有内容变动，跳过提交和推送。"
             echo "push_status=no_change" >> $GITHUB_OUTPUT
           else
-            # 退出码 1: 有变动。执行提交和推送。
             git commit -m "📈 Update fund_basic_data_c_class.csv (Automated by GitHub Actions)"
             git push
             echo "push_status=success" >> $GITHUB_OUTPUT
           fi
-
-      # 步骤 8: 打印推送结果（可选）
+          
+      # 步骤 7: 打印推送结果（可选）
       - name: Check push status
         if: steps.commit_push.outputs.push_status == 'success'
         run: echo "🎉 fund_basic_data_c_class.csv 已成功更新并推送到仓库。"
