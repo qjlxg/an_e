@@ -1,16 +1,16 @@
 import pandas as pd
 import numpy as np
 import os
-import json
+import yaml
 from datetime import datetime, timedelta
 
 # 加载配置文件
-# 注意：确保 'holdings_config.json' 存在于运行目录
+# 注意：确保 'holdings_config.yaml' 存在于运行目录
 try:
-    with open('holdings_config.json', 'r', encoding='utf-8') as f:
-        holdings_config = json.load(f)
+    with open('holdings_config.yaml', 'r', encoding='utf-8') as f:
+        holdings_config = yaml.safe_load(f)
 except FileNotFoundError:
-    print("错误：holdings_config.json 文件未找到。请确保文件已上传或存在于运行目录。")
+    print("错误：holdings_config.yaml  文件未找到。请确保文件已上传或存在于运行目录。")
     exit()
 
 # 获取可配置参数
