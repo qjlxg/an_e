@@ -1,5 +1,5 @@
 # .github/workflows/scrape_fund_data.yml
-name: 📈 Scrape Fund Basic Data and Push CSV
+name: 📈 基本资料 CSV
 
 # 触发条件配置
 on:
