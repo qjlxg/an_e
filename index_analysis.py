@@ -7,7 +7,8 @@ import talib
 import re
 import time
 import random
-import requests # 新增：用于处理网络请求错误
+import requests 
+from requests.exceptions import ConnectionError, Timeout # 明确导入需要的异常类型
 
 # --- 配置 ---
 # 补充后的指数名称到 AkShare 代码的映射
@@ -32,19 +33,20 @@ INDEX_MAP = {
     '深圳科技创新主题指数': '399668',
     
     # --- 补充新增跳过的指数 ---
-    '中证1000指数': '000852',  # 补充
-    '中证科创创业50指数': '931448', # 补充
-    '上证科创板50成份指数': '000688', # 别名，确保匹配
-    '中证全指信息技术指数': '000993', # 补充
-    '中证500信息技术指数': '000993', # 补充
-    '中证全指半导体产品与设备指数': 'H30184', # 补充 (指数代码可能需要验证)
-    '中证科技100指数': '931201', # 补充
-    '中证5G通信主题指数': '931079', # 补充
-    '中证芯片产业指数': '931071', # 补充
-    '中证云计算与大数据主题指数': '000992', # 补充
-    '国证半导体芯片指数': '980017', # 补充
-    '中证海外中国互联网50人民币指数': 'H30566' # 补充
-    # 注：像 '上海金', '有色金属' 等非指数名称的，暂时仍跳过，专注于主要的股票指数
+    '中证1000指数': '000852',  
+    '中证科创创业50指数': '931448', 
+    '上证科创板50成份指数': '000688', 
+    '中证全指信息技术指数': '000993', 
+    '中证500信息技术指数': '000993', 
+    '中证全指半导体产品与设备指数': 'H30184', 
+    '中证科技100指数': '931201', 
+    '中证5G通信主题指数': '931079', 
+    '中证芯片产业指数': '931071', 
+    '中证云计算与大数据主题指数': '000992', 
+    '国证半导体芯片指数': '980017', 
+    '中证海外中国互联网50人民币指数': 'H30566',
+    '中证消费电子主题指数': '931098'
+    # 注：其他非指数名称或难以匹配的指数暂不添加
 }
 
 # MACD 参数
@@ -52,7 +54,7 @@ SHORT_PERIOD = 12
 LONG_PERIOD = 26
 SIGNAL_PERIOD = 9
 # 最大重试次数
-MAX_RETRIES = 3
+MAX_RETRIES = 5 # 增加到 5 次
 # --- 配置结束 ---
 
 
@@ -73,12 +75,13 @@ def fetch_index_data(index_code, start_date):
                 df.rename(columns={'日期': 'date', '收盘': 'close'}, inplace=True)
                 return df[['date', 'close']].set_index('date')
 
-        except (requests.exceptions.ConnectionError, requests.exceptions.RemoteDisconnected) as e:
+        # 仅捕获 ConnectionError 或 Timeout，它足以覆盖 RemoteDisconnected
+        except (ConnectionError, Timeout) as e:
             # AkShare 常见数据源错误，进行重试
-            print(f"   警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: {e}")
+            print(f"   警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: 连接错误或超时 ({e.__class__.__name__})")
             if attempt < MAX_RETRIES - 1:
                 # 随机延迟，防止被数据源封禁
-                sleep_time = random.uniform(2, 5) 
+                sleep_time = random.uniform(3, 7) # 增加延迟时间
                 print(f"   等待 {sleep_time:.2f} 秒后重试...")
                 time.sleep(sleep_time)
             else:
@@ -86,14 +89,13 @@ def fetch_index_data(index_code, start_date):
                 return pd.DataFrame()
         
         except Exception as e:
-            print(f"   错误: 发生未知错误，无法获取 {index_code} 数据: {e}")
+            # 捕获其他未知错误
+            print(f"   错误: 发生未知错误，无法获取 {index_code} 数据: {e.__class__.__name__} - {e}")
             return pd.DataFrame()
 
-    return pd.DataFrame() # 应该不会执行到这里
-
+    return pd.DataFrame() # 兜底返回
 
 def analyze_and_suggest(df_data, index_name, fund_name):
-    # ... (analyze_and_suggest 函数代码保持不变) ...
     """
     对单一指数应用 MACD 指标，并输出买卖信号。
     """
@@ -102,8 +104,9 @@ def analyze_and_suggest(df_data, index_name, fund_name):
 
     # 计算 MACD 指标
     df_nav = df_data.copy()
+    # TA-Lib 依赖于 numpy 数组
     df_nav['MACD'], df_nav['MACD_Signal'], df_nav['MACD_Hist'] = \
-        talib.MACD(df_nav['close'].values, 
+        talib.MACD(df_nav['close'].values.astype(float), 
                    fastperiod=SHORT_PERIOD, 
                    slowperiod=LONG_PERIOD, 
                    signalperiod=SIGNAL_PERIOD)
@@ -127,18 +130,19 @@ def analyze_and_suggest(df_data, index_name, fund_name):
     report_output.append(f"   当前状态 ({df_nav.index[-1]}): {current_position}")
     
     return "\n".join(report_output)
-    # ... (analyze_and_suggest 函数代码结束) ...
 
 
 def main_analysis():
     # 1. 读取 fund_basic_data_c_class.csv
     try:
+        # 使用 utf-8-sig 应对可能存在的 BOM
         df_funds = pd.read_csv('fund_basic_data_c_class.csv', encoding='utf_8_sig')
     except FileNotFoundError:
         return "错误：未找到 fund_basic_data_c_class.csv 文件。请确保您的数据抓取工作流已运行。"
     except Exception as e:
         return f"读取 CSV 文件出错: {e}"
 
+    # 设置分析数据的起始日期为一年前
     start_date = (pd.Timestamp.today() - pd.DateOffset(years=1)).strftime('%Y%m%d')
     full_report = [f"【基金跟踪标的量化分析报告】\n生成时间：{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n--------------------------------------------------"]
 
@@ -157,11 +161,13 @@ def main_analysis():
 
         # 4. 尝试从跟踪标的字符串中匹配指数名称 (匹配逻辑优化：忽略大小写、括号)
         matched_index_name = None
-        cleaned_tracking_str = re.sub(r'[\(\（].*?[\)\）]', '', tracking_index_str).strip().lower() # 移除括号内容并转小写
+        # 移除括号内容、空格并转小写
+        cleaned_tracking_str = re.sub(r'[\(\（].*?[\)\）]', '', tracking_index_str).strip().lower().replace('指数', '').replace('主题', '')
 
         # 尝试通过完全或部分匹配查找
         for name in INDEX_MAP.keys():
-            if name.lower() in cleaned_tracking_str or cleaned_tracking_str in name.lower():
+            cleaned_map_name = name.lower().replace('指数', '').replace('主题', '')
+            if cleaned_map_name in cleaned_tracking_str or cleaned_tracking_str in cleaned_map_name:
                 matched_index_name = name
                 break
         
@@ -194,7 +200,6 @@ if __name__ == '__main__':
         import talib
         import pandas as pd
     except ImportError as e:
-        # 如果缺少 requests，也应该在这里提示
         print(f"致命错误：请确保已安装 akshare, talib, pandas, requests 库。缺少: {e}")
         exit(1)
     
