@@ -3,9 +3,11 @@
 
 import csv
 import time
+import random  # 用于随机 sleep
 import requests
 from bs4 import BeautifulSoup
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- 配置 ----------
 INPUT_TXT = "C类.txt"          # 代码列表文件
@@ -15,8 +17,11 @@ HEADERS = {
     "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
 }
-# 每抓一个页面稍作休息，防止被封
-SLEEP_SECONDS = 1.0
+# 随机 sleep 范围，防封
+SLEEP_MIN = 0.5
+SLEEP_MAX = 1.5
+# 并行线程数（根据网站承受力调整，过高可能被封）
+MAX_WORKERS = 10
 
 # ---------- 需要提取的字段（顺序固定，CSV 列顺序） ----------
 FIELD_ORDER = [
@@ -61,22 +66,16 @@ def scrape_one(code: str) -> dict:
     for tr in rows:
         ths = tr.find_all("th")
         tds = tr.find_all("td")
-        # 每行通常是 1~2 个 <th> + 对应 <td>
         for th, td in zip(ths, tds):
             key = th.get_text(strip=True).rstrip("：")
             val = td.get_text(strip=True)
-            # 有的单元格跨列（如“业绩比较基准”），直接取 td 文本
             data[key] = val
 
-    # 有的字段在 <td> 里跨列，需要补全
-    # 例如：资产规模、份额规模 可能在同一行
-    # 这里直接用已经收集的 key 即可
-
-    # 统一字段名（防止页面小改动导致 key 不一致）
+    # 统一字段名
     rename_map = {
         "基金全称": "基金全称",
         "基金简称": "基金简称",
-        "基金代码": "基金代码",      # 已经在前面写入了
+        "基金代码": "基金代码",
         "基金类型": "基金类型",
         "发行日期": "发行日期",
         "成立日期/规模": "成立日期/规模",
@@ -110,11 +109,21 @@ def main():
     print(f"共读取 {len(codes)} 只基金代码")
 
     results = []
-    for i, code in enumerate(codes, 1):
-        print(f"[{i}/{len(codes)}] 正在抓取 {code} ...")
-        row = scrape_one(code)
-        results.append(row)
-        time.sleep(SLEEP_SECONDS)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # 提交任务
+        futures = {executor.submit(scrape_one, code): code for code in codes}
+        
+        # 等待完成，按顺序收集（可选：如果不需顺序，用 list(as_completed)）
+        for future in as_completed(futures):
+            try:
+                row = future.result()
+                results.append(row)
+            except Exception as e:
+                code = futures[future]
+                print(f"[{code}] 并发错误: {e}")
+                results.append({"基金代码": code, "错误": str(e)})
+            # 随机 sleep（在并发中，整体已分散）
+            time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
     # ---------- 写入 CSV ----------
     out_path = Path(OUTPUT_CSV)
