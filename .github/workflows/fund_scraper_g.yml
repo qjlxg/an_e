@@ -50,13 +50,13 @@ jobs:
       - name: Commit and push changes
         id: commit_push
         run: |
-          git add fund_data.csv
+          git add fund_basic_data_c_class.csv
           
           if ! git diff --cached --exit-code; then
-            echo "::notice file=fund_data.csv::fund_data.csv 没有内容变动，跳过提交和推送。"
+            echo "::notice file=fund_basic_data_c_class.csv::fund_basic_data_c_class.csv 没有内容变动，跳过提交和推送。"
             echo "push_status=no_change" >> $GITHUB_OUTPUT
           else
-            git commit -m "📈 Update fund_data.csv (Automated by GitHub Actions)"
+            git commit -m "📈 Update fund_basic_data_c_class.csv (Automated by GitHub Actions)"
             git push
             echo "push_status=success" >> $GITHUB_OUTPUT
           fi
@@ -64,4 +64,4 @@ jobs:
       # 步骤 7: 打印推送结果（可选）
       - name: Check push status
         if: steps.commit_push.outputs.push_status == 'success'
-        run: echo "🎉 fund_data.csv 已成功更新并推送到仓库。"
+        run: echo "🎉 fund_basic_data_c_class.csv 已成功更新并推送到仓库。"
