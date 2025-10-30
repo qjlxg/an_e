@@ -3,63 +3,46 @@ name: 📈 Scrape Fund Basic Data and Push CSV
 
 # 触发条件配置
 on:
-  # 1. 允许通过 GitHub 界面手动触发运行
   workflow_dispatch:
-  
-  # 2. 当以下文件有变动并被推送到 'main' 分支时自动触发
   push:
     branches:
-      - main  # 请确保这里是您的主分支名称
+      - main
     paths:
       - 'fund_scraper_g.py' 
       - 'C类.txt'         
-      - '.github/workflows/fund_scraper_g.yml' 
-
-# 【可选定时任务配置】
-# 如果需要定时运行，请取消下方 schedule 的注释，
-# CRON_TZ: Asia/Shanghai 用于设置上海时区（UTC 1:00 AM 对应上海时间 9:00 AM）
-#   schedule:
-#     - cron: '0 1 * * *'
-#       env:
-#         CRON_TZ: 'Asia/Shanghai'
+      - '.github/workflows/scrape_fund_data.yml' 
 
 jobs:
   scrape_and_push:
     runs-on: ubuntu-latest
     
-    # 授予工作流写入权限，以便能够将 CSV 文件推送到仓库
     permissions:
       contents: write
 
     steps:
-      # 步骤 1: 检出仓库代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # 确保获取完整历史记录，以便 Git 提交
           fetch-depth: 0
 
-      # 步骤 2: 设置 Python 环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # 步骤 3: 安装依赖库
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 安装 requests (抓取), beautifulsoup4 (解析), pandas (数据处理)
           pip install requests beautifulsoup4 pandas
 
       # 步骤 4: 运行数据抓取脚本
       - name: Run fund scraper script
-        run: python fund_scraper_g.py
+        # 使用 -u 选项强制 Python 不缓冲输出
+        run: python -u fund_scraper_g.py 
 
       # 步骤 5: 配置 Git 提交信息
       - name: Configure Git
         run: |
-          # 配置 Git 用户名和邮箱，使用 GitHub Actions 机器人身份
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
@@ -69,13 +52,10 @@ jobs:
         run: |
           git add fund_data.csv
           
-          # 检查暂存区是否有变动 (即 fund_data.csv 是否有变化)
-          # git diff --cached --exit-code 返回非0表示有变动
           if ! git diff --cached --exit-code; then
             echo "::notice file=fund_data.csv::fund_data.csv 没有内容变动，跳过提交和推送。"
             echo "push_status=no_change" >> $GITHUB_OUTPUT
           else
-            # 提交并推送到当前分支
             git commit -m "📈 Update fund_data.csv (Automated by GitHub Actions)"
             git push
             echo "push_status=success" >> $GITHUB_OUTPUT
