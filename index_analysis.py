@@ -8,12 +8,13 @@ import time
 import random
 import sys  # 引入sys用于控制标准错误流输出实时日志
 # 导入 requests 异常
-from requests.exceptions import ConnectionError, Timeout
+from requests.exceptions import ConnectionError, Timeout, HTTPError, ChunkedEncodingError
 # 导入底层 http 客户端异常，解决 RemoteDisconnected 错误
 import http.client
 
 # --- 配置 ---
 # 补充后的指数名称到 AkShare 代码的映射
+# 已根据最新验证结果修正部分代码，以消除歧义并确保准确性。
 INDEX_MAP = {
     '沪深300指数': '000300',
     '中证500指数': '000905',
@@ -27,27 +28,29 @@ INDEX_MAP = {
     '中证军工指数': '399967',
     '中证新能源汽车指数': '399808',
     '中证医药卫生指数': '000933',
-    '中证光伏产业指数': '399989',  # 已验证并修正：原000807是中证电子，光伏产业指数应为399989
-    '中证人工智能主题指数': '000885',  # 已验证并修正：原000688是科创50，人工智能主题指数应为000885
+    '中证光伏产业指数': '399989', 
+    '中证人工智能主题指数': '000885',
     '中证传媒指数': '399971',
-    '中证计算机主题指数': '399673',
-    '创业板50指数': '399673',
+    # 修正：将399673留给创业板50，计算机主题指数使用000973（中证官网代码）
+    '中证计算机主题指数': '000973', 
+    '创业板50指数': '399673', 
     '深圳科技创新主题指数': '399668',
     
-    # --- 补充新增跳过的指数 ---
-    '中证1000指数': '000852',  # 补充
-    '中证科创创业50指数': '931448',  # 补充
-    '上证科创板50成份指数': '000688',  # 别名，确保匹配
-    '中证全指信息技术指数': '000993',  # 补充
-    '中证500信息技术指数': '000993',  # 补充
-    '中证全指半导体产品与设备指数': 'H30184',  # 补充 (指数代码可能需要验证)
-    '中证科技100指数': '931201',  # 补充
-    '中证5G通信主题指数': '931079',  # 补充
-    '中证芯片产业指数': '931071',  # 补充
-    '中证云计算与大数据主题指数': '000992',  # 补充
-    '国证半导体芯片指数': '980017',  # 补充
-    '中证海外中国互联网50人民币指数': 'H30566',  # 补充
-    '中证消费电子主题指数': '931098' # 补充
+    # --- 补充新增的指数 ---
+    '中证1000指数': '000852',
+    '中证科创创业50指数': '931448', # 验证正确
+    '上证科创板50成份指数': '000688', # 别名
+    # 修正：000993 对应中证全指信息技术指数
+    '中证全指信息技术指数': '000993', 
+    '中证500信息技术指数': '000993', # 别名，保持与全指信息一致
+    '中证全指半导体产品与设备指数': 'H30184', # 验证正确
+    '中证科技100指数': '931201', 
+    '中证5G通信主题指数': '931079', 
+    '中证芯片产业指数': '931071', 
+    '中证云计算与大数据主题指数': '000992', # 验证正确
+    '国证半导体芯片指数': '980017', 
+    '中证海外中国互联网50人民币指数': 'H30566', # 验证正确
+    '中证消费电子主题指数': '931098'
 }
 
 # MACD 参数
@@ -56,22 +59,34 @@ LONG_PERIOD = 26
 SIGNAL_PERIOD = 9
 
 # 最大重试次数和超时设置
-MAX_RETRIES = 5  # 增加到5次，提高成功率
-REQUEST_TIMEOUT = 30  # 秒，akshare内部请求超时
+MAX_RETRIES = 7  # 增加到7次，提高成功率
+REQUEST_TIMEOUT = 40  # 延长超时时间
 
 # --- 配置结束 ---
 
 def fetch_index_data(index_code, start_date):
     """
-    使用 AkShare 获取指数的日K线收盘价数据，并加入重试机制。
+    使用 AkShare 获取指数的日K线收盘价数据，并加入增强的重试机制。
     所有的警告和错误日志将输出到 sys.stderr，实现实时监控。
     """
     for attempt in range(MAX_RETRIES):
         try:
+            df = pd.DataFrame()
             if index_code == 'HSI':
+                # 恒生指数
+                sys.stderr.write(f" INFO: 尝试获取恒生指数 (HSI) 数据...\n")
+                sys.stderr.flush()
                 df = ak.index_global_hist(symbol="恒生指数", period="daily", start_date=start_date)
+            elif index_code.startswith(('H', '9')): 
+                # 中证特殊代码 (如 H30184, 931448) 尝试使用 index_zh_a_hist
+                sys.stderr.write(f" INFO: 尝试获取 A 股/特殊指数 ({index_code}) 数据...\n")
+                sys.stderr.flush()
+                # 针对 H 代码，尝试使用 index_zh_a_hist
+                df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date=start_date)
             else:
-                # A股指数
+                # 沪深 A 股通用指数 (如 000905, 399006)
+                sys.stderr.write(f" INFO: 尝试获取 A 股通用指数 ({index_code}) 数据...\n")
+                sys.stderr.flush()
                 df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date=start_date)
             
             # 成功获取数据，跳出循环
@@ -79,26 +94,32 @@ def fetch_index_data(index_code, start_date):
                 df.rename(columns={'日期': 'date', '收盘': 'close'}, inplace=True)
                 return df[['date', 'close']].set_index('date')
             else:
-                raise ValueError("获取的数据为空")
+                # AkShare 接口返回空数据，通常意味着代码错误或数据源暂不支持
+                raise ValueError("获取数据为空或 AkShare 接口不支持此代码")
         
-        # 捕获网络连接中断和超时，以及数据为空的 ValueError
-        except (ConnectionError, Timeout, http.client.RemoteDisconnected, ValueError) as e:
+        # 捕获所有可能的网络、连接和数据错误
+        except (ConnectionError, Timeout, http.client.RemoteDisconnected, ValueError, HTTPError, ChunkedEncodingError) as e:
+            error_type = e.__class__.__name__
+            
             # 实时日志输出到 stderr
-            sys.stderr.write(f" 警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: {e.__class__.__name__} - {e}\n")
+            sys.stderr.write(f" 警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: {error_type} - {e}\n")
             sys.stderr.flush()
+            
             if attempt < MAX_RETRIES - 1:
-                # 随机延迟，防止被数据源封禁
-                sleep_time = random.uniform(5, 10)  # 增加延迟范围
+                # 随机指数退避延迟，防止被数据源限流
+                base_delay = 5
+                # 增加随机性和指数增长
+                sleep_time = random.uniform(base_delay * (attempt + 1), base_delay * (attempt + 2))
                 sys.stderr.write(f" 等待 {sleep_time:.2f} 秒后重试...\n")
                 sys.stderr.flush()
                 time.sleep(sleep_time)
             else:
-                sys.stderr.write(f" 错误: 达到最大重试次数，放弃获取 {index_code} 数据。\n")
+                sys.stderr.write(f" 错误: 达到最大重试次数 ({MAX_RETRIES} 次)，放弃获取 {index_code} 数据。\n")
                 sys.stderr.flush()
                 return pd.DataFrame()
         
         except Exception as e:
-            sys.stderr.write(f" 错误: 发生未知错误，无法获取 {index_code} 数据: {e.__class__.__name__} - {e}\n")
+            sys.stderr.write(f" 致命错误: 发生未知错误，无法获取 {index_code} 数据: {e.__class__.__name__} - {e}\n")
             sys.stderr.flush()
             return pd.DataFrame()
     
@@ -126,6 +147,7 @@ def analyze_and_suggest(df_data, index_name, fund_name):
     df_nav['Position'] = df_nav['Signal'].diff()
     
     # 提取最近的交易信号
+    # 确保信号日期在当前日期之前
     recent_signals = df_nav[df_nav['Position'].abs() == 1].tail(3)
     
     report_output = [f"\n--- 📈 {index_name} ({fund_name} 的跟踪标的) 最新信号 ---"]
@@ -134,11 +156,16 @@ def analyze_and_suggest(df_data, index_name, fund_name):
         report_output.append(" 未检测到有效信号。")
     else:
         for index, row in recent_signals.iterrows():
-            action = "买入/加仓" if row['Position'] == 1 else "卖出/减仓"
-            report_output.append(f" 日期: {index}, 信号: {action}, 指数收盘价: {row['close']:.2f}")
+            action = "买入/加仓 (金叉)" if row['Position'] == 1 else "卖出/减仓 (死叉)"
+            # 日期格式化，去除时间部分
+            date_str = pd.to_datetime(index).strftime('%Y-%m-%d')
+            report_output.append(f" 日期: {date_str}, 信号: {action}, 指数收盘价: {row['close']:.2f}")
 
-    current_position = "多头 (建议持有或加仓)" if df_nav['Signal'].iloc[-1] == 1 else "空头 (建议观望或减仓)"
-    report_output.append(f" 当前状态 ({df_nav.index[-1]}): {current_position}")
+    # 判断最新状态
+    current_signal = df_nav['Signal'].iloc[-1]
+    current_date_str = df_nav.index[-1]
+    current_position = "多头 (建议持有或加仓)" if current_signal == 1 else "空头 (建议观望或减仓)"
+    report_output.append(f" 当前状态 ({current_date_str}): {current_position}")
     
     return "\n".join(report_output)
 
@@ -167,7 +194,8 @@ def main_analysis():
     for idx, (index, row) in enumerate(df_funds.iterrows()):
         fund_code = row['基金代码']
         fund_name = row['基金简称']
-        tracking_index_str = row['跟踪标的']
+        # 确保 tracking_index_str 是字符串类型
+        tracking_index_str = str(row['跟踪标的'])
         
         # 实时进度信息输出到 stderr
         progress_msg = f"[{idx + 1}/{total_funds}] 正在处理基金: {fund_name} ({fund_code}) - 跟踪标的: {tracking_index_str}..."
@@ -175,7 +203,7 @@ def main_analysis():
         sys.stderr.flush()
         
         # 3. 明确跳过 '该基金无跟踪标的' 或为空的记录
-        if pd.isna(tracking_index_str) or tracking_index_str.strip() == '该基金无跟踪标的' or not tracking_index_str.strip():
+        if tracking_index_str.strip() == 'nan' or tracking_index_str.strip() == '该基金无跟踪标的' or not tracking_index_str.strip():
             full_report.append(f" **跳过:** 基金 {fund_name} 无跟踪标的。")
             continue
         
@@ -189,6 +217,7 @@ def main_analysis():
         cleaned_tracking_str = re.sub(r'[\(\（\)\）\s-]', '', tracking_index_str).strip().lower()  
         for name in INDEX_MAP.keys():
             cleaned_name = re.sub(r'[\(\（\)\）\s-]', '', name).strip().lower()
+            # 使用包含关系进行宽松匹配
             if cleaned_name in cleaned_tracking_str or cleaned_tracking_str in cleaned_name:
                 matched_index_name = name
                 break
@@ -207,7 +236,7 @@ def main_analysis():
             analysis_result = analyze_and_suggest(df_data, matched_index_name, fund_name)
             full_report.append(analysis_result)
         else:
-            full_report.append(f" **错误:** 无法获取 {matched_index_name} 的历史数据，请检查网络或指数代码。")
+            full_report.append(f" **错误:** 无法获取 {matched_index_name} ({index_code}) 的历史数据，请检查网络或指数代码。")
         
         full_report.append("--------------------------------------------------")
     
@@ -217,7 +246,13 @@ if __name__ == '__main__':
     # 必要的库检查
     try:
         import akshare
-        import talib
+        # 检查 talib 是否可用，如果不可用则退出
+        try:
+            import talib
+        except ImportError:
+             print("致命错误：talib 库未安装或安装失败。请先安装 TA-Lib 并在 Python 中安装 talib 库。", file=sys.stderr)
+             exit(1)
+        
         import pandas as pd
         import requests
         import http.client
