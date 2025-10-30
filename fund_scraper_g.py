@@ -1,4 +1,4 @@
-# fund_scraper_g.py
+# fund_scraper_g.py (Final version with sorting)
 
 import requests
 from bs4 import BeautifulSoup
@@ -121,12 +121,13 @@ def main():
 
     df = pd.DataFrame(all_fund_data)
     
+    # 🌟 关键修改点：按基金代码排序，确保文件内容稳定
+    df = df.sort_values(by='基金代码', ascending=True) 
+    
     cols = ['基金代码'] + [col for col in df.columns if col != '基金代码']
     df = df[cols]
 
-    # --- 关键修改点：新的输出文件名 ---
     output_filename = 'fund_basic_data_c_class.csv'
-    # --------------------------------
 
     df.to_csv(output_filename, index=False, encoding='utf_8_sig')
     
