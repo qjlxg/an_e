@@ -34,7 +34,7 @@ def scrape_fund_info(fund_code):
     base_url = "https://fundf10.eastmoney.com/jbgk_{}.html"
     url = base_url.format(fund_code)
     
-    # 并发模式下，实时打印日志可能会被交错，但仍然有助于追踪
+    # 并发模式下，实时打印日志有助于追踪，但可能会被交错
     print(f"-> 正在抓取基金代码: {fund_code}")
     
     try:
@@ -97,7 +97,7 @@ def main():
 
     print(f"共找到 {len(fund_codes)} 个基金代码，开始并发抓取...")
     
-    # 设置最大并发线程数
+    # 设置最大并发线程数。20个线程对于大多数网站是安全且高效的。
     MAX_WORKERS = 20 
     all_fund_data = []
 
@@ -115,7 +115,7 @@ def main():
                 data = future.result()
                 if data:
                     all_fund_data.append(data)
-            except requests.RequestException as exc:
+            except requests.RequestException:
                 # 捕获 scrape_fund_info 中抛出的网络异常
                 print(f"   严重错误: 基金 {code} 抓取请求失败，可能是网络问题或被反爬。")
             except Exception as exc:
@@ -138,7 +138,7 @@ def main():
     cols = ['基金代码'] + [col for col in df.columns if col != '基金代码']
     df = df[cols]
 
-    # 保存为CSV文件
+    # 保存为CSV文件，使用 utf_8_sig 编码以确保 Excel 中文显示正常
     output_filename = 'fund_data.csv'
     df.to_csv(output_filename, index=False, encoding='utf_8_sig')
     
