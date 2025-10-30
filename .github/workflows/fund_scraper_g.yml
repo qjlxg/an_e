@@ -11,7 +11,7 @@ on:
     paths:
       - 'fund_scraper_g.py'
       - 'C类.txt'
-      - '.github/workflows/scrape_fund_data.yml'
+      - '.github/workflows/fund_scraper_g.yml'
   # 每天定时自动运行（上海时间早上 8:00）
   schedule:
     # cron表达式: 分 时 日 月 周
