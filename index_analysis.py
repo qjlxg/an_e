@@ -6,6 +6,7 @@ import talib
 import re
 import time
 import random
+import sys  # 引入sys用于控制标准错误流输出实时日志
 # 导入 requests 异常
 from requests.exceptions import ConnectionError, Timeout
 # 导入底层 http 客户端异常，解决 RemoteDisconnected 错误
@@ -63,6 +64,7 @@ REQUEST_TIMEOUT = 30  # 秒，akshare内部请求超时
 def fetch_index_data(index_code, start_date):
     """
     使用 AkShare 获取指数的日K线收盘价数据，并加入重试机制。
+    所有的警告和错误日志将输出到 sys.stderr，实现实时监控。
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -81,20 +83,23 @@ def fetch_index_data(index_code, start_date):
         
         # 捕获网络连接中断和超时，以及数据为空的 ValueError
         except (ConnectionError, Timeout, http.client.RemoteDisconnected, ValueError) as e:
-            # ConnectionError 捕获 requests 级别的连接错误
-            # RemoteDisconnected 捕获底层 socket/http 级别的连接错误
-            print(f" 警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: {e.__class__.__name__} - {e}")
+            # 实时日志输出到 stderr
+            sys.stderr.write(f" 警告: 尝试 {attempt + 1}/{MAX_RETRIES} - 无法获取 {index_code} 数据: {e.__class__.__name__} - {e}\n")
+            sys.stderr.flush()
             if attempt < MAX_RETRIES - 1:
                 # 随机延迟，防止被数据源封禁
                 sleep_time = random.uniform(5, 10)  # 增加延迟范围
-                print(f" 等待 {sleep_time:.2f} 秒后重试...")
+                sys.stderr.write(f" 等待 {sleep_time:.2f} 秒后重试...\n")
+                sys.stderr.flush()
                 time.sleep(sleep_time)
             else:
-                print(f" 错误: 达到最大重试次数，放弃获取 {index_code} 数据。")
+                sys.stderr.write(f" 错误: 达到最大重试次数，放弃获取 {index_code} 数据。\n")
+                sys.stderr.flush()
                 return pd.DataFrame()
         
         except Exception as e:
-            print(f" 错误: 发生未知错误，无法获取 {index_code} 数据: {e.__class__.__name__} - {e}")
+            sys.stderr.write(f" 错误: 发生未知错误，无法获取 {index_code} 数据: {e.__class__.__name__} - {e}\n")
+            sys.stderr.flush()
             return pd.DataFrame()
     
     return pd.DataFrame()
@@ -143,24 +148,38 @@ def main_analysis():
         # 使用 utf-8-sig 应对可能存在的 BOM
         df_funds = pd.read_csv('fund_basic_data_c_class.csv', encoding='utf_8_sig')
     except FileNotFoundError:
-        return "错误：未找到 fund_basic_data_c_class.csv 文件。请确保您的数据抓取工作流已运行。"
+        error_msg = "错误：未找到 fund_basic_data_c_class.csv 文件。请确保您的数据抓取工作流已运行。"
+        print(error_msg, file=sys.stderr)
+        return error_msg
     except Exception as e:
-        return f"读取 CSV 文件出错: {e}"
+        error_msg = f"读取 CSV 文件出错: {e}"
+        print(error_msg, file=sys.stderr)
+        return error_msg
     
     # 设置分析数据的起始日期为一年前
     start_date = (pd.Timestamp.today() - pd.DateOffset(years=1)).strftime('%Y%m%d')
+    # 报告累加器，内容将最终输出到文件
     full_report = [f"【基金跟踪标的量化分析报告】\n生成时间：{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n--------------------------------------------------"]
     
+    total_funds = len(df_funds)
+    
     # 2. 遍历每只基金进行分析
-    for index, row in df_funds.iterrows():
+    for idx, (index, row) in enumerate(df_funds.iterrows()):
         fund_code = row['基金代码']
         fund_name = row['基金简称']
         tracking_index_str = row['跟踪标的']
         
+        # 实时进度信息输出到 stderr
+        progress_msg = f"[{idx + 1}/{total_funds}] 正在处理基金: {fund_name} ({fund_code}) - 跟踪标的: {tracking_index_str}..."
+        sys.stderr.write(progress_msg + '\n')
+        sys.stderr.flush()
+        
         # 3. 明确跳过 '该基金无跟踪标的' 或为空的记录
         if pd.isna(tracking_index_str) or tracking_index_str.strip() == '该基金无跟踪标的' or not tracking_index_str.strip():
+            full_report.append(f" **跳过:** 基金 {fund_name} 无跟踪标的。")
             continue
         
+        # 报告文件内容（输出到 stdout）
         header = f"\n==================================================\n🔬 正在分析指数基金: {fund_name} ({fund_code})\n 跟踪标的: {tracking_index_str}\n=================================================="
         full_report.append(header)
         
@@ -203,10 +222,11 @@ if __name__ == '__main__':
         import requests
         import http.client
     except ImportError as e:
-        print(f"致命错误：请确保已安装 akshare, talib, pandas, requests 库。缺少: {e}")
+        # 致命错误输出到 stderr
+        print(f"致命错误：请确保已安装 akshare, talib, pandas, requests 库。缺少: {e}", file=sys.stderr)
         exit(1)
     
     report_content = main_analysis()
     
-    # 直接将报告内容输出到标准输出，工作流会将其重定向到文件
+    # 最终将报告内容输出到标准输出 (会被重定向到文件)
     print(report_content)
