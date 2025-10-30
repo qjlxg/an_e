@@ -13,7 +13,7 @@ on:
     branches:
       - main
     paths:
-      - '.github/workflows/fund_spider.yml'
+      - '.github/workflows/净值更新-fund_spider.yml'
       - 'fund_spider.py'
       - 'C类.txt'
 
@@ -51,7 +51,7 @@ jobs:
         # 运行爬虫脚本，抓取并更新数据
         python fund_spider.py
         
-    - name: ⭐ 解决推送冲突：暂存、拉取、恢复
+    - name: ⭐ 解决推送冲突：暂存、拉取、恢复 (Git Stash/Pull 修复)
       run: |
         # 配置 Git 用户信息
         git config user.name "github-actions[bot]"
@@ -60,7 +60,6 @@ jobs:
         # 1. 检查是否有本地更改（爬虫脚本的输出）
         if ! git diff-index --quiet HEAD --; then
           echo "发现本地更改，正在暂存..."
-          # 2. 暂存本地所有修改 (爬虫脚本的更改)
           git stash
           STASHED=true
         else
@@ -68,17 +67,14 @@ jobs:
           STASHED=false
         fi
         
-        # 3. 拉取并合并远程 main 分支的最新更改
+        # 2. 拉取并合并远程 main 分支的最新更改
         echo "拉取远程最新更改..."
         git pull origin main
         
-        # 4. 如果之前有暂存，则恢复暂存的更改
+        # 3. 如果之前有暂存，则恢复暂存的更改
         if [ "$STASHED" = true ]; then
           echo "恢复暂存的更改..."
-          # 使用 git stash pop 恢复更改，并尝试合并
           git stash pop || true
-          # 强制添加所有 fund_data 目录下的文件，以确保它们被 git-auto-commit-action 捕获
-          # 即使 git stash pop 导致合并冲突（通常不会发生在数据更新上），我们也要确保下一阶段能处理
           git add fund_data/*.csv || true 
         fi
         
@@ -86,7 +82,6 @@ jobs:
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "🤖 自动更新：抓取最新的基金净值数据"
-        # 自动添加 fund_data 目录下的所有 CSV 文件，以及 C类.txt 和 fund_fee_result.csv 
-        # (确保 fund_data/*.csv 被包含进来，以处理爬虫产生的更改)
-        file_pattern: 'fund_fee_result.csv C类.txt fund_data/*.csv'
+        # 最终修复：移除不存在的 'fund_fee_result.csv' 以避免 pathspec 错误。
+        file_pattern: 'C类.txt fund_data/*.csv'
         commit_options: '--allow-empty'
