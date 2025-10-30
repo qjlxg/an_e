@@ -51,7 +51,7 @@ jobs:
         # 运行爬虫脚本，抓取并更新数据
         python fund_spider.py
         
-    - name: ⭐ 解决推送冲突：暂存、拉取、恢复
+    - name: ⭐ 解决推送冲突：暂存、拉取、恢复 (修复第一次失败)
       run: |
         # 配置 Git 用户信息
         git config user.name "github-actions[bot]"
@@ -75,18 +75,19 @@ jobs:
         # 4. 如果之前有暂存，则恢复暂存的更改
         if [ "$STASHED" = true ]; then
           echo "恢复暂存的更改..."
-          # 使用 git stash pop 恢复更改，并尝试合并
+          # 恢复暂存，并忽略潜在的非致命冲突
           git stash pop || true
-          # 强制添加所有 fund_data 目录下的文件，以确保它们被 git-auto-commit-action 捕获
-          # 即使 git stash pop 导致合并冲突（通常不会发生在数据更新上），我们也要确保下一阶段能处理
+          # 强制添加所有 fund_data 目录下的文件，确保它们进入暂存区
           git add fund_data/*.csv || true 
         fi
         
-    - name: 检查并提交更改 (Commit and Push changes)
+    - name: 检查并提交更改 (Commit and Push changes) (修复第二次失败)
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "🤖 自动更新：抓取最新的基金净值数据"
-        # 自动添加 fund_data 目录下的所有 CSV 文件，以及 C类.txt 和 fund_fee_result.csv 
-        # (确保 fund_data/*.csv 被包含进来，以处理爬虫产生的更改)
+        # 核心修复：添加 --force 选项，允许 git add 忽略找不到的文件 (如 fund_fee_result.csv) 
+        # 从而解决 'pathspec did not match any files' 错误。
+        add_options: '--force' 
+        # 自动添加所有相关文件
         file_pattern: 'fund_fee_result.csv C类.txt fund_data/*.csv'
         commit_options: '--allow-empty'
