@@ -54,7 +54,7 @@ jobs:
 
       # 步骤 4: 运行数据抓取脚本
       - name: Run fund scraper script
-        run: python fund_scraper.py
+        run: python fund_scraper_g.py
 
       # 步骤 5: 配置 Git 提交信息
       - name: Configure Git
