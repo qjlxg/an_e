@@ -37,7 +37,7 @@ REQUEST_TIMEOUT = 30
 REQUEST_DELAY = 3.5 
 # 优化 1: 增加最大并发数 (原 5)
 MAX_CONCURRENT = 15 
-MAX_FUNDS_PER_RUN = 200 #限制0个
+MAX_FUNDS_PER_RUN = 0 #限制0个
 PAGE_SIZE = 20
 
 # --------------------------------------------------------------------------------------
