@@ -53,6 +53,6 @@ jobs:
           
           git add "$ARCHIVED_FILE_PATH"
           git commit -m "Archive backtest report: $ARCHIVED_FILE_PATH [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No changes to commit"
-          git push
+          git push --force
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
