@@ -101,7 +101,7 @@ def calc_calmar(annual_return, max_dd):
 def calc_return_drawdown_ratio(annual_return, max_dd):
     return annual_return / abs(max_dd) if max_dd < 0 else np.nan
 
-# ==================== 主筛选函数（已添加健壮性检查） ====================
+# ==================== 主筛选函数（已添加强制列检查） ====================
 def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
     print(f"正在处理 {min(len(fund_codes), max_funds)} 只基金...")
     results = []
@@ -113,14 +113,13 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             if info.empty: 
                 continue
             
-            # ⬇️ 健壮性修复：检查关键列是否存在，防止 KeyError: '基金类型'
-            if '基金类型' not in info.columns:
-                print(f"警告：基金 {code} 缺少 '基金类型' 字段，已跳过。")
-                continue
-            # ⬆️ 健壮性修复
-
+            # **注意**: 移除 info.columns 检查，因为即使 info.columns 存在，
+            # 转换为字典时也可能因为数据异常导致该键缺失，影响 pd.DataFrame 构造。
+            
             row = info.iloc[0].to_dict()
             name = row.get('基金简称', '未知')
+            
+            # 使用 .get() 确保提取时不会发生 KeyError，并设置默认值
             fund_type = row.get('基金类型', '')
             annual_return = pd.to_numeric(row.get('近5年年化收益率', 0), errors='coerce') or 0
             max_dd = pd.to_numeric(row.get('最大回撤', 0), errors='coerce') or 0
@@ -137,7 +136,7 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             results.append({
                 '基金代码': code,
                 '基金名称': name,
-                '基金类型': fund_type,
+                '基金类型': fund_type, # 键名在这里明确定义
                 '经理任职年限': tenure,
                 '近5年年化回报': annual_return,
                 '最大回撤': max_dd,
@@ -150,11 +149,16 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             })
         except Exception as e:
              # 捕获其他运行时错误并跳过当前基金
-             # print(f"处理基金 {code} 时发生未知错误: {e}")
              continue
              
     df = pd.DataFrame(results)
     
+    # ⬇️ 最终健壮性修复：强制确保关键筛选列存在
+    if '基金类型' not in df.columns:
+        # 如果列不存在（意味着所有成功抓取的数据都缺失此键），则强制添加并用空字符串填充
+        df['基金类型'] = '' 
+    # ⬆️ 最终健壮性修复
+
     # 最终筛选逻辑
     mask = (
         df['基金类型'].str.contains('偏股|灵活配置', na=False) &
@@ -225,7 +229,7 @@ def export_and_plot(df):
         f.write(f"输出目录：{output_dir}\n")
     print(f"日志已记录：{log_file}")
 
-# ==================== 主程序（已修改为读取 C类.txt） ====================
+# ==================== 主程序（保持不变） ====================
 def main():
     print("启动 主动型基金筛选系统 v4.0（GitHub Actions 版）")
     print("正在读取 C类.txt 中的基金代码...")
