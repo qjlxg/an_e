@@ -1,0 +1,71 @@
+name: Fund Backtest Decision Workflow
+
+on:
+  push:
+    paths:
+      - 'backtest_module.py'
+      - 'sell_decision.py' # 因为 backtest 依赖它，所以 push 时也要触发
+      - 'holdings_config.yaml'
+      - '.github/workflows/backtest_workflow.yml'
+  workflow_dispatch:  # 手动触发，用于随时回测
+
+jobs:
+  run_fund_backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy tenacity tabulate lxml pyyaml
+          # 使用兼容版本，并假设您在 backtest_module.py 中已经导入了 pandas_ta (但目前是占位符)
+          pip install pandas_ta==0.3.14b || pip install pandas_ta # 兼容性尝试
+
+      - name: Run Backtest Decision Script
+        # 运行回测脚本，它会输出 backtest_decision_log.csv
+        run: |
+          python backtest_module.py || echo "Backtest script failed, check logs for details" >&2
+        continue-on-error: true  # 脚本失败不中止
+
+      - name: Rename and Archive Backtest Results 💾
+        run: |
+          TIMESTAMP=$(date -u +'%Y%m%d_%H%M%S')
+          ARCHIVE_DIR="backtest_reports"
+          NEW_FILE_NAME="backtest_decision_log_${TIMESTAMP}.csv"
+          NEW_FILE_PATH="${ARCHIVE_DIR}/${NEW_FILE_NAME}"
+
+          if [ -f backtest_decision_log.csv ]; then
+            mkdir -p "$ARCHIVE_DIR"
+            mv backtest_decision_log.csv "$NEW_FILE_PATH"
+            echo "Successfully archived CSV file as $NEW_FILE_PATH"
+            echo "ARCHIVED_FILE_PATH=$NEW_FILE_PATH" >> $GITHUB_ENV
+          else
+            echo "Backtest results CSV file (backtest_decision_log.csv) not found, skipping rename." >&2
+            # 允许流程继续，如果失败，可能是因为回测结果为空，但不能当作致命错误
+          fi
+
+      - name: Commit and push Backtest changes
+        if: success() && env.ARCHIVED_FILE_PATH  # 仅在脚本成功且有归档文件时运行
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [ -n "$ARCHIVED_FILE_PATH" ]; then
+            git add "$ARCHIVED_FILE_PATH"
+          else
+            echo "No backtest results to commit."
+            exit 0 # 正常退出
+          fi
+          
+          git commit -m "Archive backtest report: ${ARCHIVED_FILE_PATH} [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No new backtest results to commit"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
