@@ -47,7 +47,7 @@ def cache_set(key, value):
     if SETTINGS['enable_cache']:
         path = f"{CACHE_DIR}/{key}.pkl"
         with open(path, 'wb') as f:
-            pickle.dump(value, f)
+            pickle.dump(value, value)
 
 # ==================== 数据获取：经理年限 ====================
 def get_manager_tenure(fund_code):
@@ -105,6 +105,17 @@ def calc_return_drawdown_ratio(annual_return, max_dd):
 def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
     print(f"正在处理 {min(len(fund_codes), max_funds)} 只基金...")
     results = []
+    
+    # 定义所有期望的列及其安全的默认值（用于缺失时填充）
+    required_cols = {
+        '基金代码': '', '基金名称': '',
+        '基金类型': '', '经理任职年限': 0.0,
+        '近5年年化回报': 0.0, '最大回撤': 0.0,
+        '夏普比率': 0.0, '年换手率': 0.0,
+        '基金规模': 0.0, '同类排名百分位': 1.0, 
+        '卡玛比率': 0.0, '收益回撤比': 0.0
+    }
+
     for i, code in enumerate(fund_codes[:max_funds]):
         if i % 20 == 0 and i > 0:
             print(f"  已处理 {i} 只...")
@@ -112,9 +123,6 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             info = ak.fund_em_open_fund_info(fund=code)
             if info.empty: 
                 continue
-            
-            # **注意**: 移除 info.columns 检查，因为即使 info.columns 存在，
-            # 转换为字典时也可能因为数据异常导致该键缺失，影响 pd.DataFrame 构造。
             
             row = info.iloc[0].to_dict()
             name = row.get('基金简称', '未知')
@@ -136,7 +144,7 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             results.append({
                 '基金代码': code,
                 '基金名称': name,
-                '基金类型': fund_type, # 键名在这里明确定义
+                '基金类型': fund_type,
                 '经理任职年限': tenure,
                 '近5年年化回报': annual_return,
                 '最大回撤': max_dd,
@@ -153,13 +161,21 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
              
     df = pd.DataFrame(results)
     
-    # ⬇️ 最终健壮性修复：强制确保关键筛选列存在
-    if '基金类型' not in df.columns:
-        # 如果列不存在（意味着所有成功抓取的数据都缺失此键），则强制添加并用空字符串填充
-        df['基金类型'] = '' 
-    # ⬆️ 最终健壮性修复
+    # ⬇️ 最终健壮性修复：强制确保所有用于筛选的列都存在且类型正确
+    for col, default_val in required_cols.items():
+        if col not in df.columns:
+            # 如果列不存在，则添加该列并填充默认值
+            df[col] = default_val
+            
+    # 强制将数值列转换为float类型，以防出现字符串导致比较失败
+    for col in ['经理任职年限', '近5年年化回报', '最大回撤', '夏普比率', '卡玛比率', 
+                '收益回撤比', '年换手率', '基金规模', '同类排名百分位']:
+        if col in df.columns:
+            # 使用 errors='coerce' 将不能转换为数字的值设为 NaN，然后用默认值填充
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(required_cols[col])
 
-    # 最终筛选逻辑
+
+    # 最终筛选逻辑 (现在是安全的)
     mask = (
         df['基金类型'].str.contains('偏股|灵活配置', na=False) &
         (df['经理任职年限'] >= TH['min_tenure']) &
