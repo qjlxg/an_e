@@ -1,21 +1,25 @@
 import pandas as pd
 import numpy as np
 import os
+import re # 导入正则表达式库
 from datetime import datetime, timedelta
 # 从您的 sell_decision 模块导入必要的函数
+# 注意：该文件假设 sell_decision.py 中的函数已正确实现且可用
 from sell_decision import load_config, calculate_indicators, get_big_market_status, decide_sell
 
 # --- 回测配置 ---
 # 覆盖更长时间，这里假设从 2018 年开始，以便进行五年以上回测
 START_DATE = '2018-01-01' 
 END_DATE = datetime.now().strftime('%Y-%m-%d')
+# 修正：固定初始投入资金，用于净值基准计算 (Issue 1 & 2)
+INITIAL_CAPITAL = 10000.0
 
-# --- 绩效分析函数 ---
+# --- 绩效分析函数 (保持不变) ---
 def calculate_performance_metrics(nav_series, initial_capital, risk_free_rate=0.03):
     """
     计算关键绩效指标：年化收益、最大回撤、夏普比率。
     :param nav_series: 每日净值时间序列 (Series)
-    :param initial_capital: 初始投入总额
+    :param initial_capital: 初始投入总额 (虽然函数签名中有，但实际使用 nav_series[0] 作为基准)
     :param risk_free_rate: 无风险利率 (年化)
     :return: 包含指标的字典
     """
@@ -30,7 +34,8 @@ def calculate_performance_metrics(nav_series, initial_capital, risk_free_rate=0.
     end_date = nav_series.index[-1]
     days = (end_date - start_date).days
     years = days / 365.25
-    annualized_return = (1 + total_return) ** (1 / years) - 1
+    # 确保 years 不为零
+    annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
 
     # 3. 最大回撤 (Max Drawdown, MDD)
     cumulative_max = nav_series.cummax()
@@ -59,7 +64,7 @@ def calculate_performance_metrics(nav_series, initial_capital, risk_free_rate=0.
         '累计收益率 (%)': round(total_return * 100, 2),
     }
 
-# --- 历史回测核心逻辑 (已修改) ---
+# --- 历史回测核心逻辑 (已修正) ---
 def run_backtest(fund_code, initial_cost_nav, params, fund_df, big_market_data, big_trend_df):
     
     # 1. 过滤回测日期范围并进行指标预处理
@@ -68,7 +73,7 @@ def run_backtest(fund_code, initial_cost_nav, params, fund_df, big_market_data, 
         print(f"警告: 基金 {fund_code} 在回测期内无数据。")
         return None, None
 
-    # 预计算所有日期的指标，以避免循环中重复计算，提高效率
+    # 预计算所有日期的指标
     fund_df = calculate_indicators(
         fund_df, 
         params.get('rsi_window', 14), 
@@ -81,24 +86,22 @@ def run_backtest(fund_code, initial_cost_nav, params, fund_df, big_market_data, 
     transaction_log = []
     daily_nav_curve = []
     
-    # 设定初始资金和份额
-    initial_shares_amount = 1000 # 初始投入份额
+    # 设定初始资金和份额 (Issue 1 & 2: 固定初始资金)
+    initial_investment = INITIAL_CAPITAL
+    shares = initial_investment / initial_cost_nav # 计算初始份额
     cash = 0.0
-    shares = initial_shares_amount
-    cost_nav = initial_cost_nav
-    initial_investment = shares * cost_nav # 初始投入总额
+    # Issue 3: 动态跟踪持仓的总成本
+    total_cost = initial_investment 
     
     # 初始峰值 (用于移动止盈)
     current_peak_nav = fund_df.iloc[0]['net_value']
-    
-    # 假设大盘趋势预处理和指标计算在 main 中已完成
     
     # 3. 循环模拟每日决策
     for i in range(len(fund_df)):
         current_date = fund_df.iloc[i]['date']
         current_data_slice = fund_df.iloc[:i+1] # 截取当前及之前的数据
         
-        # 获取当日净值和指标
+        # 获取当日净值
         latest_nav_value = current_data_slice.iloc[-1]['net_value']
         
         # 更新峰值
@@ -121,66 +124,95 @@ def run_backtest(fund_code, initial_cost_nav, params, fund_df, big_market_data, 
             continue
 
         # 模拟当日持仓状态传递给决策函数
-        current_cost = shares * cost_nav
-        profit_rate = (value_assets - current_cost) / current_cost * 100 if current_cost > 0 else 0
+        current_holding_cost = total_cost # 当前持有资产的总成本
+        
+        # 修正：基于总成本计算收益 (Issue 3)
+        profit = value_assets - current_holding_cost
+        profit_rate = (profit / current_holding_cost) * 100 if current_holding_cost > 0 else 0
         
         holding = {
             'value': value_assets,
-            'cost_nav': cost_nav,
+            # 传递当前平均成本净值
+            'cost_nav': total_cost / shares if shares > 0 else 0.0, 
             'shares': shares,
             'latest_net_value': latest_nav_value,
-            'profit': value_assets - current_cost,
+            'profit': profit,
             'profit_rate': profit_rate,
             'current_peak': current_peak_nav
         }
         
-        # 获取大盘当日状态
-        big_market_latest = big_market_data[big_market_data['date'] == current_date].iloc[-1] if current_date in big_market_data['date'].values else big_market_data.iloc[-1]
-        big_trend = big_trend_df[big_trend_df['date'] == current_date].iloc[-1]['trend'] if current_date in big_trend_df['date'].values else '中性'
-        
+        # 获取大盘当日状态 (Issue 4: 使用 .asof() 安全地获取数据)
+        try:
+            # .asof() 查找索引中小于或等于给定日期 current_date 的最后一个有效值
+            big_market_latest = big_market_data.asof(current_date)
+            big_trend_latest = big_trend_df.asof(current_date)
+            
+            # 检查是否获取到有效数据
+            if big_market_latest is None or big_market_latest.empty or shares == 0:
+                # 如果没有大盘数据或已清仓，则决策不进行卖出
+                big_trend = '中性'
+            else:
+                big_trend = big_trend_latest['trend']
+                
+        except Exception:
+            # 容错处理
+            big_market_latest = pd.Series()
+            big_trend = '中性'
+            
         # 4. 做出决策
-        decision_result = decide_sell(fund_code, holding, current_data_slice, params, big_market_latest, big_market_data, big_trend)
-        decision = decision_result['decision']
+        # 如果已清仓，则不进行任何决策
+        if shares == 0:
+            decision = "持仓为零，无操作"
+            decision_result = {'decision': decision}
+        else:
+            decision_result = decide_sell(fund_code, holding, current_data_slice, params, big_market_latest, big_market_data, big_trend)
+            decision = decision_result['decision']
 
         # 5. 执行交易
         executed_shares = 0
         executed_amount = 0
         action = 'Hold'
         
-        if '卖' in decision:
-            # 提取卖出百分比
-            try:
-                if '卖出100%' in decision:
-                    sell_pct = 1.0
-                else:
-                    sell_pct = float(decision.replace('卖', '').replace('%', '').replace('减仓', '').split()[0]) / 100.0
-            except:
-                # 针对 T1 止盈等特殊决策，默认取 40% (30% - 50% 范围)
-                sell_pct = 0.4 
+        if '卖' in decision and shares > 0:
+            sell_pct = 0.4 # T1止盈等模糊决策的默认值
+            
+            # Issue 5: 使用正则表达式尝试提取百分比
+            match = re.search(r'卖出\s*(\d+)\s*%', decision)
+            if match:
+                sell_pct = float(match.group(1)) / 100.0
+            elif '卖出100%' in decision or '清仓' in decision or '绝对止损' in decision and '100%' in decision:
+                sell_pct = 1.0
+            
+            # 确保卖出百分比不超过 100%
+            sell_pct = min(sell_pct, 1.0)
+            
+            if sell_pct > 0:
+                executed_shares = shares * sell_pct
+                executed_amount = executed_shares * latest_nav_value
                 
-            executed_shares = shares * sell_pct
-            executed_amount = executed_shares * latest_nav_value
-            
-            # 更新持仓
-            cash += executed_amount
-            shares -= executed_shares
-            # 卖出后，成本净值不变（除非进行再投资，此处不做再投资）
-            
-            action = 'Sell'
-            
-            # 更新峰值（卖出后峰值可以重置，但移动止盈通常不需要）
-            # current_peak_nav = latest_nav_value # 保持移动止盈的连续性，此处不重置
-
+                # 更新持仓和总成本 (Issue 3: 成本按比例减少)
+                cost_reduction = total_cost * sell_pct
+                
+                cash += executed_amount
+                shares -= executed_shares
+                total_cost -= cost_reduction
+                
+                action = 'Sell'
+                
         # 6. 记录交易日志
         if action == 'Sell':
+            # 重新计算卖出后的平均成本净值，用于日志记录
+            remaining_cost_nav = total_cost / shares if shares > 0 else 0.0
+            
             transaction_log.append({
                 'Date': current_date.strftime('%Y-%m-%d'),
                 'Fund_Code': fund_code,
                 'Action': action,
-                'Shares_Change': -executed_shares,
-                'Amount_Change': executed_amount,
+                'Shares_Change': -round(executed_shares, 2),
+                'Amount_Change': round(executed_amount, 2),
                 'Net_Value': round(latest_nav_value, 4),
                 'Shares_Remaining': round(shares, 2),
+                'Avg_Cost_Nav_Remaining': round(remaining_cost_nav, 4), # 记录剩余份额的平均成本
                 'Cash_Remaining': round(cash, 2),
                 'Profit_Rate(%)': round(profit_rate, 2),
                 'Decision_Reason': decision,
@@ -206,10 +238,10 @@ def main():
     big_market_data, _, _ = get_big_market_status(params)
     
     # 预计算大盘趋势DF
-    big_trend_df = big_market_data[['date']].copy()
-    big_trend_df['net_value'] = big_market_data['net_value']
-    big_trend_df['ma50'] = big_market_data['ma50']
-    big_trend_df['rsi'] = big_market_data['rsi']
+    # 假设 get_big_market_status 已经计算了 RSI 和 MA50
+    big_trend_df = big_market_data[['date', 'net_value', 'ma50', 'rsi']].copy()
+    
+    # 计算大盘趋势状态
     big_trend_df['trend'] = np.where(
         (big_trend_df['rsi'] > 50) & (big_trend_df['net_value'] > big_trend_df['ma50']), '强势',
         np.where(
@@ -217,6 +249,10 @@ def main():
             '中性'
         )
     )
+    
+    # Issue 4 修正：设置 date 列为索引，以支持 .asof() 查找
+    big_market_data.set_index('date', inplace=True)
+    big_trend_df.set_index('date', inplace=True) 
     
     # 3. 运行回测
     all_trade_logs = []
@@ -229,7 +265,11 @@ def main():
             fund_df = pd.read_csv(fund_file, parse_dates=['date']).sort_values('date').reset_index(drop=True)
             print(f"开始回测基金: {code} (初始成本净值: {cost_nav})")
             
-            initial_cost_nav = float(cost_nav)
+            try:
+                initial_cost_nav = float(cost_nav)
+            except ValueError:
+                print(f"警告: 基金 {code} 的成本净值 '{cost_nav}' 无法转换为浮点数，跳过。")
+                continue
             
             trade_log, performance_metrics = run_backtest(code, initial_cost_nav, params, fund_df, big_market_data, big_trend_df)
             
