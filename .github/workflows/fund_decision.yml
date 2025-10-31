@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions:checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,20 +27,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pandas numpy tenacity tabulate lxml pyyaml
-          pip install pandas_ta==0.3.14b0
+          pip install pandas_ta
 
       - name: Run sell decision script
         run: |
           python sell_decision.py || echo "Script failed, check logs for details" >&2
         continue-on-error: true  # 脚本失败不中止，记录错误
 
-      - name: Rename CSV results with timestamp 💾
+      - name: Rename CSV results with timestamp and directory structure 💾
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d_%H%M%S')
-          # 检查并重命名新的 CSV 输出文件
+          # 获取年份和月份用于目录结构
+          YEAR_MONTH=$(date -u +'%Y/%m')
+          NEW_FILE_DIR="reports/${YEAR_MONTH}"
+          NEW_FILE_NAME="sell_decision_results_${TIMESTAMP}.csv"
+          NEW_FILE_PATH="${NEW_FILE_DIR}/${NEW_FILE_NAME}"
+
+          # 检查并创建新的目录
           if [ -f sell_decision_results.csv ]; then
-            mv sell_decision_results.csv sell_decision_results_${TIMESTAMP}.csv
-            echo "Successfully archived CSV file as sell_decision_results_${TIMESTAMP}.csv"
+            mkdir -p "$NEW_FILE_DIR"
+            mv sell_decision_results.csv "$NEW_FILE_PATH"
+            echo "Successfully archived CSV file as $NEW_FILE_PATH"
+            # 将新的文件路径设置为环境变量，供后续步骤使用
+            echo "ARCHIVED_FILE_PATH=$NEW_FILE_PATH" >> $GITHUB_ENV
           else
             echo "Results CSV file (sell_decision_results.csv) not found, skipping rename." >&2
             # 保持 exit 1 停止流程，如果脚本成功但文件丢失，则认为是致命错误
@@ -51,11 +60,18 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
           # 只添加 timestamped CSV 文件进行归档
-          git add sell_decision_results_*.csv
-          # 确保 holdings_config.json 即使没有更改，也保留在 add 列表中 (可选，取决于您是否希望每次都提交它)
-          # git add holdings_config.json 
-          git commit -m "Update sell_decision report with timestamp [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No changes to commit"
+          # 使用上一步设置的环境变量来确保只添加正确的文件
+          if [ -n "$ARCHIVED_FILE_PATH" ]; then
+            git add "$ARCHIVED_FILE_PATH"
+          else
+            echo "Error: ARCHIVED_FILE_PATH not set. Cannot commit results." >&2
+            # 如果文件路径没有设置，流程应失败
+            exit 1
+          fi
+          
+          git commit -m "Archive fund decision report: ${ARCHIVED_FILE_PATH} [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]" || echo "No changes to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
