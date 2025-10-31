@@ -27,6 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pandas numpy tenacity tabulate lxml pyyaml
+          pip install pandas_ta
 
       - name: Run sell decision script
         run: |
