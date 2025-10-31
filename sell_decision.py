@@ -19,11 +19,10 @@ def load_config(config_path='holdings_config.yaml'):
     holdings = {k: v for k, v in holdings_config.items() if k != 'parameters'}
     return params, holdings
 
-# --- 计算指标函数 ---
+# --- 计算指标函数 (保持不变) ---
 def calculate_indicators(df, rsi_win, ma_win, bb_win, adx_win):
     """
     计算基金净值的RSI(14)、MACD、MA50、布林带位置和ADX。
-    （逻辑与原文件保持一致）
     """
     df = df.copy()
     
@@ -60,7 +59,7 @@ def calculate_indicators(df, rsi_win, ma_win, bb_win, adx_win):
         
     return df
 
-# --- 大盘数据加载和指标计算 (用于当天的趋势判断) ---
+# --- 大盘数据加载和指标计算 (保持不变) ---
 def get_big_market_status(params, big_market_path='index_data/000300.csv'):
     """加载大盘数据并返回最新状态和趋势。"""
     try:
@@ -68,7 +67,7 @@ def get_big_market_status(params, big_market_path='index_data/000300.csv'):
             big_market = pd.read_csv(big_market_path, parse_dates=['date'])
             big_market = big_market.sort_values('date').reset_index(drop=True)
         else:
-            # 模拟数据 (使用原脚本的熊市模拟数据)
+            # 模拟数据
             dates = pd.date_range(end=datetime.now(), periods=100, freq='D')
             net_values = np.linspace(1.0, 1.2, 50)
             net_values = np.append(net_values, np.linspace(1.2, 0.9, 50))
@@ -105,10 +104,9 @@ def get_big_market_status(params, big_market_path='index_data/000300.csv'):
 def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_market_data, big_trend):
     """
     根据最新数据和参数做出卖出决策。
-    (已优化移动止盈回撤百分比和 T1 止盈条件)
     """
     # 获取参数 (优化: 移动止盈回撤比例改为 0.06)
-    trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.06) # <--- 优化: 0.08 -> 0.06
+    trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.06) 
     macd_divergence_window = params.get('macd_divergence_window', 60)
     adx_threshold = params.get('adx_threshold', 25) 
     profit_lock_days = params.get('profit_lock_days', 14)
@@ -155,7 +153,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
             macd_signal = '死叉'
             if (recent_macd.iloc[-1]['macd'] < 0 and recent_macd.iloc[-1]['signal'] < 0): macd_zero_dead_cross = True
 
-    # --- 高优先级规则（包含决策和净值记录） ---
+    # --- 高优先级规则（P1-P10 保持不变） ---
     # P1, P2, P3 绝对止损/暂停定投
     if profit_rate < -20:
         decision = '因绝对止损（亏损>20%）卖出100%'
@@ -171,8 +169,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
         return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
     
     # P4 T1 止盈规则（布林带中轨）
-    # 优化：新增 profit_rate > 5 的条件，防止过早止盈
-    if profit_rate > 5 and bb_pos == '中轨': # <--- 优化: profit_rate > 0 改为 > 5
+    if profit_rate > 5 and bb_pos == '中轨': 
         decision = '【T1止盈】布林中轨已达，建议卖出 30% - 50% 仓位'
         sell_reasons.append('布林中轨已达（T1），锁定部分利润')
         return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
@@ -180,7 +177,6 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
     # P5 移动止盈 (新增成本保护)
     drawdown = (current_peak - latest_net_value) / current_peak
     trailing_stop_nav = target_nav['trailing_stop_nav']
-    # 必须高于成本价才触发移动止盈
     if trailing_stop_nav > cost_nav:
         if drawdown > trailing_stop_loss_pct:
             decision = '因移动止盈卖出'
@@ -192,7 +188,6 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
         recent_data = full_fund_data.tail(macd_divergence_window)
         if not recent_data.empty:
             is_nav_peak = (full_fund_data['net_value'].iloc[-1] == current_peak)
-            # 注意：这里的 MACD 顶背离判断逻辑比较粗糙，回测时可能需要更精细的判断
             is_macd_divergence = is_nav_peak and (recent_data['macd'].iloc[-1] < recent_data['macd'].max())
             if is_macd_divergence:
                 decision = '因MACD顶背离减仓70%'
@@ -251,26 +246,30 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
             sell_reasons.append(f'持续强势，RSI>{rsi_overbought_threshold}，暂停卖出')
             return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
             
-    # --- 三要素综合决策（最低优先级） ---
+    # --- P11 三要素综合决策（最低优先级 - 优化低频减仓） ---
+    
+    # 1. 盈利幅度卖出
+    sell_profit = '持仓'
     if profit_rate > 50: sell_profit = '卖50%'
     elif profit_rate > 40: sell_profit = '卖30%'
     elif profit_rate > 30: sell_profit = '卖20%'
-    elif profit_rate > 20: sell_profit = '卖10%'
+    elif profit_rate > 20: sell_profit = '卖10%' # 只有盈利超过20%才触发低优先级卖出
     elif profit_rate < -10: sell_profit = '暂停定投'
-    else: sell_profit = '持仓'
     
+    # 2. 指标卖出（仅考虑极度超买，不考虑MACD死叉）
     indicator_sell = '持仓'
     if rsi > 85 or bb_pos == '上轨' : indicator_sell = '卖30%'
-    elif rsi > 75 or macd_signal == '死叉': indicator_sell = '卖20%'
+    elif rsi > 75: indicator_sell = '卖20%' # 极度超买，强制减仓
     
-    market_sell = '持仓'
-    if big_trend == '弱势': market_sell = '卖10%'
+    # 3. 市场和MACD弱势时的操作 (转为暂停定投)
+    is_weak_signal = (macd_signal == '死叉') and (big_trend == '弱势')
     
-    if '卖' in sell_profit and '卖' in indicator_sell and '卖' in market_sell: decision = '卖30%'
-    elif '卖' in sell_profit and '卖' in indicator_sell: decision = '卖20%'
-    elif '卖' in sell_profit and '卖' in market_sell: decision = '卖10%'
-    elif '卖' in indicator_sell and '卖' in market_sell: decision = '卖10%'
-    elif '暂停' in sell_profit: decision = '暂停定投'
+    # 决策优先级：高幅度盈利 > 极度超买 > 弱势暂停
+    if '卖' in sell_profit and '卖' in indicator_sell: decision = '卖20%' # 盈利+超买 叠加
+    elif '卖' in sell_profit: decision = sell_profit # 仅盈利幅度高
+    elif '卖' in indicator_sell: decision = indicator_sell # 仅极度超买
+    elif '暂停' in sell_profit: decision = '暂停定投' # 亏损>10%
+    elif is_weak_signal: decision = '暂停定投' # <--- 新增: 弱势信号同时出现，则暂停定投代替减仓
     else: decision = '持仓'
         
     return {
@@ -286,7 +285,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
         'target_nav': target_nav
     }
 
-# --- 脚本运行的主逻辑 (保持原脚本功能不变，仅用于当日决策) ---
+# --- 脚本运行的主逻辑 (保持不变) ---
 if __name__ == '__main__':
     # 加载配置和参数
     params, holdings_config = load_config()
@@ -299,7 +298,7 @@ if __name__ == '__main__':
     ma_window = params.get('ma_window', 50)
     bb_window = params.get('bb_window', 20)
     adx_window = params.get('adx_window', 14)
-    trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.06) # <--- 优化: 0.08 -> 0.06
+    trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.06) 
     fund_data_dir = 'fund_data/'
 
     # 加载基金数据并生成 holdings 结构
@@ -311,7 +310,7 @@ if __name__ == '__main__':
         if os.path.exists(fund_file):
             fund_df = pd.read_csv(fund_file, parse_dates=['date'])
         else:
-            # 模拟数据 (基金: 震荡下跌模拟)
+            # 模拟数据
             dates = pd.date_range(end=datetime.now(), periods=100, freq='D')
             net_values = np.linspace(cost_nav * 1.05, cost_nav * 0.95, 100)
             net_values = net_values + np.random.randn(100) * 0.01
