@@ -13,20 +13,20 @@ warnings.filterwarnings("ignore")
 
 # ==================== 配置区（直接编码阈值）===================
 THRESHOLDS = {
-    'min_tenure': 5,               # 经理任职年限 ≥ 5年
-    'min_annual_return': 0.15,     # 近5年年化 ≥ 15%
-    'max_drawdown': -0.30,         # 最大回撤 ≤ -30%
-    'min_sharpe': 1.0,             # 夏普比率 ≥ 1.0
-    'min_calmar': 0.5,             # 卡玛比率 ≥ 0.5
+    'min_tenure': 5,                # 经理任职年限 ≥ 5年
+    'min_annual_return': 0.15,      # 近5年年化 ≥ 15%
+    'max_drawdown': -0.30,          # 最大回撤 ≤ -30%
+    'min_sharpe': 1.0,              # 夏普比率 ≥ 1.0
+    'min_calmar': 0.5,              # 卡玛比率 ≥ 0.5
     'min_return_drawdown_ratio': 0.6,  # 收益回撤比 ≥ 0.6
-    'min_size': 5,                 # 规模 ≥ 5亿
-    'max_size': 50,                # 规模 ≤ 50亿
-    'top_rank_percent': 0.2        # 同类前20%
+    'min_size': 5,                  # 规模 ≥ 5亿
+    'max_size': 50,                 # 规模 ≤ 50亿
+    'top_rank_percent': 0.2         # 同类前20%
 }
 
 SETTINGS = {
-    'max_funds_to_scan': 200,      # 最多扫描基金数量（防超时）
-    'enable_cache': True           # 启用缓存（推荐）
+    'max_funds_to_scan': 200,       # 最多扫描基金数量（防超时）
+    'enable_cache': True            # 启用缓存（推荐）
 }
 
 TH = THRESHOLDS
@@ -101,7 +101,7 @@ def calc_calmar(annual_return, max_dd):
 def calc_return_drawdown_ratio(annual_return, max_dd):
     return annual_return / abs(max_dd) if max_dd < 0 else np.nan
 
-# ==================== 主筛选函数 ====================
+# ==================== 主筛选函数（已添加健壮性检查） ====================
 def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
     print(f"正在处理 {min(len(fund_codes), max_funds)} 只基金...")
     results = []
@@ -110,7 +110,15 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             print(f"  已处理 {i} 只...")
         try:
             info = ak.fund_em_open_fund_info(fund=code)
-            if info.empty: continue
+            if info.empty: 
+                continue
+            
+            # ⬇️ 健壮性修复：检查关键列是否存在，防止 KeyError: '基金类型'
+            if '基金类型' not in info.columns:
+                print(f"警告：基金 {code} 缺少 '基金类型' 字段，已跳过。")
+                continue
+            # ⬆️ 健壮性修复
+
             row = info.iloc[0].to_dict()
             name = row.get('基金简称', '未知')
             fund_type = row.get('基金类型', '')
@@ -119,10 +127,13 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
             sharpe = pd.to_numeric(row.get('夏普比率', 0), errors='coerce') or 0
             turnover = pd.to_numeric(row.get('换手率', 0), errors='coerce') or 0
             size = pd.to_numeric(row.get('基金规模(亿元)', 0), errors='coerce') or 0
+            
+            # 获取并计算高级指标
             tenure = get_manager_tenure(code)
             rank_percent = get_peer_rank_percent(code)
             calmar = calc_calmar(annual_return, max_dd)
             rdr = calc_return_drawdown_ratio(annual_return, max_dd)
+
             results.append({
                 '基金代码': code,
                 '基金名称': name,
@@ -137,9 +148,14 @@ def screen_funds(fund_codes, max_funds=SETTINGS['max_funds_to_scan']):
                 '卡玛比率': calmar,
                 '收益回撤比': rdr
             })
-        except:
-            continue
+        except Exception as e:
+             # 捕获其他运行时错误并跳过当前基金
+             # print(f"处理基金 {code} 时发生未知错误: {e}")
+             continue
+             
     df = pd.DataFrame(results)
+    
+    # 最终筛选逻辑
     mask = (
         df['基金类型'].str.contains('偏股|灵活配置', na=False) &
         (df['经理任职年限'] >= TH['min_tenure']) &
@@ -209,17 +225,23 @@ def export_and_plot(df):
         f.write(f"输出目录：{output_dir}\n")
     print(f"日志已记录：{log_file}")
 
-# ==================== 主程序 ====================
+# ==================== 主程序（已修改为读取 C类.txt） ====================
 def main():
     print("启动 主动型基金筛选系统 v4.0（GitHub Actions 版）")
     print("正在读取 C类.txt 中的基金代码...")
     try:
         with open('C类.txt', 'r', encoding='utf-8') as f:
             lines = f.readlines()
-            codes = [line.strip() for line in lines[1:] if line.strip()]  # 跳过第一行 'code'，读取后续代码
+            # 跳过第一行（假设是 'code' 标题），读取后续非空行作为基金代码
+            codes = [line.strip() for line in lines[1:] if line.strip()] 
     except FileNotFoundError:
-        print("错误: 未找到 C类.txt 文件！")
+        print("错误: 未找到 C类.txt 文件！请确保文件已提交到仓库根目录。")
         return
+    
+    if not codes:
+        print("警告: C类.txt 中未找到有效的基金代码。筛选中止。")
+        return
+
     print(f"共读取 {len(codes)} 只基金代码，开始筛选...")
     result_df = screen_funds(codes)
     export_and_plot(result_df)
