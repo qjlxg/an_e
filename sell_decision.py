@@ -3,12 +3,13 @@ import numpy as np
 import os
 import yaml
 from datetime import datetime
-import pandas_ta as ta # ✅ 现在已明确安装，取消注释
+import pandas_ta as ta # 确保已安装
 
 # --- 配置部分 (保持不变) ---
 def load_config(config_path='holdings_config.yaml'):
     """加载配置文件并返回配置参数和持仓数据。"""
     try:
+        # 使用 os.path.join 确保路径兼容性，这里简化处理，假设在当前目录
         with open(config_path, 'r', encoding='utf-8') as f:
             holdings_config = yaml.safe_load(f)
     except FileNotFoundError:
@@ -19,14 +20,15 @@ def load_config(config_path='holdings_config.yaml'):
     holdings = {k: v for k, v in holdings_config.items() if k != 'parameters'}
     return params, holdings
 
-# --- 计算指标函数 (使用 pandas_ta 优化 MACD 和 ADX) ---
+# --- 计算指标函数 (使用 pandas_ta 标准计算) ---
 def calculate_indicators(df, rsi_win, ma_win, bb_win, adx_win):
     """
     计算基金净值的RSI(14)、MACD、MA50、布林带位置和ADX。
+    使用了 pandas_ta 库计算 MACD 和 ADX，净值数据作为 OHLC 的近似。
     """
     df = df.copy()
     
-    # 1. RSI (14) - 仍使用自定义计算，确保与原脚本逻辑一致
+    # 1. RSI (14) - 保持自定义计算，与原逻辑保持一致
     delta = df['net_value'].diff()
     up = delta.where(delta > 0, 0)
     down = -delta.where(delta < 0, 0)
@@ -40,12 +42,9 @@ def calculate_indicators(df, rsi_win, ma_win, bb_win, adx_win):
     # 2. MA50
     df['ma50'] = df['net_value'].rolling(window=ma_win, min_periods=1).mean()
     
-    # 3. MACD (✅ 优化: 使用 pandas_ta 标准计算)
-    # MACD 使用默认参数 (12, 26, 9)
-    # ⚠️ 注意：pandas_ta 的 MACD 函数需要传入 Series，返回 DataFrame (MACD, Histogram, Signal)
+    # 3. MACD (使用 pandas_ta 标准计算)
     macd_data = ta.macd(df['net_value'])
     if macd_data is not None and not macd_data.empty:
-        # 约定: MACD 线取 'MACD_12_26_9', Signal 线取 'MACDh_12_26_9' 或 'MACDs_12_26_9'
         # MACD Line = MACD (Difference of EMAs)
         df['macd'] = macd_data.iloc[:, 0]
         # Signal Line = MACDs (Signal line of MACD)
@@ -54,30 +53,28 @@ def calculate_indicators(df, rsi_win, ma_win, bb_win, adx_win):
         df['macd'] = np.nan
         df['signal'] = np.nan
     
-    # 4. Bollinger Bands (保持原计算，因为它只依赖一个列)
+    # 4. Bollinger Bands
     df['bb_mid'] = df['net_value'].rolling(window=bb_win, min_periods=1).mean()
     df['bb_std'] = df['net_value'].rolling(window=bb_win, min_periods=1).std()
     df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
     df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
     
-    # 5. Volatility / Daily Return (保持不变)
+    # 5. Volatility / Daily Return
     df['daily_return'] = df['net_value'].pct_change()
     df['volatility'] = df['daily_return'].rolling(window=bb_win).std()
     
-    # 6. ADX (✅ 优化: 使用 pandas_ta 标准计算)
-    # ADX 需要 High/Low/Close。由于基金数据通常只有净值(net_value)，我们只能使用 net_value 作为所有 OHLC 值。
-    # ⚠️ 基金净值数据只适用于 MACD/RSI/MA，ADX/BBands 等依赖 HLC 的指标的计算是近似/有偏差的。
-    # 这里使用 net_value 作为 High, Low, Close 的近似值：
-    adx_series = ta.adx(df['net_value'], df['net_value'], df['net_value'], length=adx_win)
+    # 6. ADX (使用 pandas_ta 标准计算 - 需要 OHLC)
+    # 基金数据通常只有净值，使用 net_value 作为 OHLC 的近似值
+    # 确保 high/low/close 列存在，并使用它们计算 ADX
+    adx_series = ta.adx(df['high'], df['low'], df['net_value'], length=adx_win)
     if adx_series is not None and not adx_series.empty:
-        # ADX 函数返回 DataFrame，包含 ADX, DMI+, DMI-
         df['adx'] = adx_series.iloc[:, 0] # ADX (趋势强度)
     else:
         df['adx'] = np.nan
         
     return df
 
-# --- 大盘数据加载和指标计算 (需要适配新的 MACD/ADX 返回结构) ---
+# --- 大盘数据加载和指标计算 (保持不变) ---
 def get_big_market_status(params, big_market_path='index_data/000300.csv'):
     """加载大盘数据并返回最新状态和趋势。"""
     try:
@@ -85,7 +82,7 @@ def get_big_market_status(params, big_market_path='index_data/000300.csv'):
             big_market = pd.read_csv(big_market_path, parse_dates=['date'])
             if 'close' in big_market.columns:
                  big_market = big_market.rename(columns={'close': 'net_value'})
-            # 确保有 OHLC 列用于 ADX，如果没有则使用 net_value 填充 (与 calculate_indicators 保持一致)
+            # 确保大盘数据有 OHLC 列
             if 'high' not in big_market.columns: big_market['high'] = big_market['net_value']
             if 'low' not in big_market.columns: big_market['low'] = big_market['net_value']
             
@@ -105,7 +102,6 @@ def get_big_market_status(params, big_market_path='index_data/000300.csv'):
         bb_window = params.get('bb_window', 20)
         adx_window = params.get('adx_window', 14)
         
-        # 重新定义 calculate_indicators 适应大盘数据结构，以避免重复代码
         big_market_data = calculate_indicators(big_market, rsi_window, ma_window, bb_window, adx_window)
         big_market_latest = big_market_data.iloc[-1]
         
@@ -125,11 +121,7 @@ def get_big_market_status(params, big_market_path='index_data/000300.csv'):
         print(f"加载大盘数据时发生错误: {e}")
         return pd.DataFrame(), {}, '错误'
         
-# --- 决策函数 (保持与前一次优化一致) ---
-# ... (decide_sell 函数内容保持不变，因为它依赖于 'macd', 'signal', 'adx' 这些列名，
-#      而这些列名在 calculate_indicators 中已通过 pandas_ta 填充) ...
-
-# 决策函数 (关键修改在此函数内) - 保持与前一次优化一致
+# --- 决策函数 (修正 P11 逻辑) ---
 def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_market_data, big_trend):
     """
     根据最新数据和参数做出卖出决策。
@@ -137,7 +129,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
     # 获取参数 
     trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.06) 
     macd_divergence_window = params.get('macd_divergence_window', 60)
-    adx_threshold = params.get('adx_threshold', 25) 
+    adx_threshold = params.get('adx_threshold', 30) # 使用配置文件的值
     profit_lock_days = params.get('profit_lock_days', 14)
     rsi_overbought_threshold = params.get('rsi_overbought_threshold', 80)
     consecutive_days_threshold = params.get('consecutive_days_threshold', 3)
@@ -209,7 +201,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
         sell_reasons.append('布林中轨已达（T1），锁定部分利润')
         return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
     
-    # P5 移动止盈 (优化: 增加盈利条件)
+    # P5 移动止盈 (增加盈利条件)
     drawdown = (current_peak - latest_net_value) / current_peak
     trailing_stop_nav = target_nav['trailing_stop_nav']
     
@@ -233,7 +225,6 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
                 return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
                 
     # P7 ADX 趋势转弱 (MACD 零轴死叉作为辅助验证)
-    # ✅ 现在 ADX 是标准 ADX 值
     if not np.isnan(adx) and adx >= adx_threshold and macd_zero_dead_cross:
         decision = '因ADX趋势转弱减仓50%'
         sell_reasons.append('ADX趋势转弱触发')
@@ -297,10 +288,12 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
     elif profit_rate > 30: sell_profit = '卖20%'
     elif profit_rate > 20: sell_profit = '卖10%'
     
-    # 2. 指标卖出（仅考虑极度超买，避免与高优先级规则冲突）
+    # 2. 指标卖出（仅在盈利 > 0 时考虑）
     indicator_sell = '持仓'
-    if rsi > 85 or bb_pos == '上轨' : indicator_sell = '卖30%'
-    elif rsi > 75: indicator_sell = '卖20%'
+    # ✅ 修正：只有在有盈利时 (> 0)，才考虑技术指标卖出
+    if profit_rate > 0:
+        if rsi > 85 or bb_pos == '上轨' : indicator_sell = '卖30%'
+        elif rsi > 75: indicator_sell = '卖20%'
     
     # 3. 市场和MACD弱势时的操作 (转为暂停定投)
     is_weak_signal = (macd_signal == '死叉') and (big_trend == '弱势')
@@ -308,7 +301,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
     # 决策优先级：高幅度盈利 > 极度超买 > 弱势暂停
     if '卖' in sell_profit and '卖' in indicator_sell: decision = '卖30%' # 盈利+超买 叠加 (取高)
     elif '卖' in sell_profit: decision = sell_profit # 仅盈利幅度高
-    elif '卖' in indicator_sell: decision = indicator_sell # 仅极度超买
+    elif '卖' in indicator_sell: decision = indicator_sell # 仅极度超买 (且现在必须盈利)
     elif profit_rate < -10: decision = '暂停定投' # 亏损>10% (重复P3，但保留作为兜底)
     elif is_weak_signal: decision = '暂停定投' # 弱势信号同时出现，则暂停定投代替减仓
     else: decision = '持仓'
@@ -327,7 +320,7 @@ def decide_sell(code, holding, full_fund_data, params, big_market_latest, big_ma
     }
 
 # --- 脚本运行的主逻辑 (保持不变) ---
-if __name__ == '__main__':
+if __file__ == os.path.abspath(__file__):
     # 加载配置和参数
     params, holdings_config = load_config()
     
