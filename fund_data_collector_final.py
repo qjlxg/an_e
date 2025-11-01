@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 # --- 配置区 ---
-# 线程数量 (博客中建议50，但本地测试时建议调低以减少服务器压力)
+# 线程数量 (请根据您的环境调整，过高可能触发反爬)
 MAX_THREADS = 10 
 # 博客示例中查询的固定季度
 REPORT_YEAR = 2021
@@ -21,7 +21,6 @@ REPORT_MONTH = 3
 FUND_CODES_FILE = 'C类.txt' 
 
 # 动态生成输出文件名和路径，以便匹配 GitHub Actions 的提交逻辑
-# 格式为 YYYY/MM/fund_data_YYYYMMDDHHMMSS.csv
 CURRENT_TIME_STR = datetime.now().strftime('%Y%m%d%H%M%S')
 CURRENT_YEAR_DIR = datetime.now().strftime('%Y')
 CURRENT_MONTH_DIR = datetime.now().strftime('%m')
@@ -43,7 +42,7 @@ HEADER = {
 
 def get_fund_code():
     """
-    模拟博客步骤6：获取所有基金代码，来自 fund.eastmoney.com/js/fundcode_search.js
+    获取所有基金代码，来自 fund.eastmoney.com/js/fundcode_search.js
     """
     print("--- 1. 正在获取所有基金代码... ---")
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
@@ -70,7 +69,7 @@ def get_fund_code():
 
 def get_fund_data(fund_code_queue):
     """
-    模拟博客步骤7-9：多线程工作函数，从队列中取出代码并爬取数据。
+    多线程工作函数，从队列中取出代码并爬取数据。
     """
     while not fund_code_queue.empty():
         try:
@@ -80,10 +79,10 @@ def get_fund_data(fund_code_queue):
             
         code_str = str(fund_code)
         
+        # 爬取结果的基础结构
         result = {'code': code_str, 'name': 'N/A', 'gz_date': 'N/A', 'error': ''}
         
-        # ⚠️ 代理设置 (已注释，仅保留结构)
-        proxies = {} 
+        proxies = {} # 代理已注释
 
         try:
             # 1. 获取基金详情 (实时净值/估值)
@@ -106,33 +105,63 @@ def get_fund_data(fund_code_queue):
                 f"http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={code_str}"
                 f"&topline=10&year={REPORT_YEAR}&month={REPORT_MONTH}"
             )
-            req_cc = requests.get(cc_url, proxies=proxies, timeout=3, headers=HEADER)
-            req_cc.encoding = 'utf-8'
-
-            cc_match = re.search(r'var apidata=(.+);', req_cc.text)
-            if cc_match:
-                cc_data = eval(cc_match.group(1)) 
-                html_content = cc_data.get('content')
-                
-                if html_content:
-                    # 使用 pandas 读取 HTML 表格数据
-                    tables = pd.read_html(StringIO(html_content), encoding='utf-8')
-                    if tables:
-                        holdings_df = tables[0]
-                        result['holdings'] = holdings_df.to_dict('records')
+            # 增加重试机制来应对 'Read timed out' 错误
+            MAX_RETRIES = 2
+            req_cc = None
+            for attempt in range(MAX_RETRIES):
+                try:
+                    req_cc = requests.get(cc_url, proxies=proxies, timeout=5, headers=HEADER)
+                    req_cc.raise_for_status() # 检查HTTP错误
+                    req_cc.encoding = 'utf-8'
+                    break # 成功则跳出重试循环
+                except requests.exceptions.RequestException as e:
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(random.uniform(1, 3)) # 重试前休眠
                     else:
-                        result['error'] += "无法解析持仓表格; "
+                        result['error'] += f"持仓请求最终失败: {e}; "
+                        req_cc = None
+            
+            html_content = None
+            if req_cc and req_cc.status_code == 200:
+                cc_match = re.search(r'var apidata=(.+);', req_cc.text)
+                if cc_match:
+                    try:
+                        # FIX: 隔离 eval() 调用，防止其内部的 NameError 破坏外部流程
+                        cc_data = eval(cc_match.group(1)) 
+                        html_content = cc_data.get('content')
+                    except NameError as ne:
+                        # 捕获由 HTML 内嵌 JS 导致的 'name 'content' is not defined' 错误
+                        result['error'] += f"持仓数据解析失败 (NameError: {ne}); "
+                    except Exception as e:
+                        # 捕获其他解析错误 (如 SyntaxError)
+                        result['error'] += f"持仓数据解析失败: {e}; "
                 else:
-                    result['error'] += "持仓HTML内容为空; "
-            else:
-                 result['error'] += "无法解析持仓API响应; "
+                    result['error'] += "无法从持仓响应中提取 apidata; "
+            
+            
+            # 3. 解析持仓表格
+            if html_content:
+                # 使用 pandas 读取 HTML 表格数据
+                tables = pd.read_html(StringIO(html_content), encoding='utf-8')
+                if tables:
+                    # 持仓表格通常是第一个
+                    holdings_df = tables[0]
+                    # 将持仓数据转为字典列表
+                    result['holdings'] = holdings_df.to_dict('records')
+                else:
+                    result['error'] += "无法解析持仓表格; "
+            elif '持仓数据解析失败' not in result['error'] and '持仓请求最终失败' not in result['error']:
+                 # 仅在解析没有失败的情况下，报告内容为空
+                result['error'] += "持仓HTML内容为空; "
+
 
         except requests.RequestException as e:
-            result['error'] += f"请求失败: {e}; "
+            result['error'] += f"请求发生错误: {e}; "
         except Exception as e:
-            result['error'] += f"解析或处理失败: {e}; "
+            result['error'] += f"其他处理失败: {e}; "
 
-        # 3. 将结果添加到全局列表 (线程安全)
+        # 4. 将结果添加到全局列表 (线程安全)
+        # ... (数据写入逻辑保持不变)
         with data_lock:
             if 'holdings' in result:
                 for holding in result['holdings']:
@@ -162,6 +191,7 @@ def get_fund_data(fund_code_queue):
                     '爬取错误信息': result['error']
                 }
                 all_fund_data.append(row)
+
 
         fund_code_queue.task_done()
         time.sleep(random.uniform(0.1, 0.5)) 
