@@ -1,193 +1,224 @@
-# fund_data_collector_final_restored.py (恢复批量抓取模式)
-
 import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import datetime
-import os
-import time
+import re
 import json
-import random 
-from multiprocessing.dummy import Pool as ThreadPool 
 import threading
+import queue
+import time
+import random
+import pandas as pd
+import os
+from io import StringIO
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
-# --- 配置 ---
-FUND_CODES_FILE = "C类.txt"
-# 核心数据接口，用于获取持仓数据 (必须使用此接口获取数据)
-BASE_DATA_URL = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=ccmx&code={fund_code}&qdii=&sdate=&edate=&rt={timestamp}"
+# --- 配置区 ---
+# 线程数量 (博客中建议50，但本地测试时建议调低以减少服务器压力)
+MAX_THREADS = 10 
+# 博客示例中查询的固定季度
+REPORT_YEAR = 2021
+REPORT_MONTH = 3 
+# 文件名
+FUND_CODES_FILE = 'C类.txt' 
 
-# 核心配置：低并发，长延迟 (保持原鲁棒性设置)
-MAX_WORKERS = 3        # 线程数：3
-DELAY_MIN = 3.0        # 最小延迟：3.0 秒
-DELAY_MAX = 7.0        # 最大延迟：7.0 秒
+# 动态生成输出文件名和路径，以便匹配 GitHub Actions 的提交逻辑
+# 格式为 YYYY/MM/fund_data_YYYYMMDDHHMMSS.csv
+CURRENT_TIME_STR = datetime.now().strftime('%Y%m%d%H%M%S')
+CURRENT_YEAR_DIR = datetime.now().strftime('%Y')
+CURRENT_MONTH_DIR = datetime.now().strftime('%m')
+OUTPUT_DIR = os.path.join(CURRENT_YEAR_DIR, CURRENT_MONTH_DIR)
+OUTPUT_CSV_FILE = os.path.join(OUTPUT_DIR, f'fund_data_{CURRENT_TIME_STR}.csv')
 
-# 线程锁
-lock = threading.Lock() 
 
-# --- 工具函数 (保持不变) ---
+# 全局数据列表，用于收集所有线程的结果
+all_fund_data = []
+data_lock = threading.Lock() # 线程安全锁
 
-def get_output_dir():
-    """返回当前的年/月目录 (上海时区)"""
-    cst_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-    return os.path.join(cst_time.strftime("%Y"), cst_time.strftime("%m"))
+# 模拟请求头
+HEADER = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Referer': 'http://fund.eastmoney.com/'
+}
 
-def fetch_holding_data(fund_code):
-    """抓取指定基金代码的持仓表格 HTML 内容，返回HTML片段或 None。"""
-    timestamp = time.time() * 1000
-    url = BASE_DATA_URL.format(fund_code=fund_code, timestamp=timestamp)
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        # 模拟从基金档案页面的访问
-        'Referer': f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html' 
-    }
+# --- 核心函数实现 ---
+
+def get_fund_code():
+    """
+    模拟博客步骤6：获取所有基金代码，来自 fund.eastmoney.com/js/fundcode_search.js
+    """
+    print("--- 1. 正在获取所有基金代码... ---")
+    url = "http://fund.eastmoney.com/js/fundcode_search.js"
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.encoding = 'utf-8'
+        req = requests.get(url, timeout=5, headers=HEADER)
+        req.encoding = 'utf-8'
 
-        if response.status_code == 200:
-            text = response.text.strip()
+        match = re.search(r'var r = (\[.+?\]);', req.text)
+        if match:
+            fund_data_list = json.loads(match.group(1))
+            fund_codes = [data[0] for data in fund_data_list]
             
-            if text.startswith('var apidata='):
-                json_str = text.split('=', 1)[1].rstrip(';')
+            print(f"✅ 成功获取 {len(fund_codes)} 个基金代码。")
+            return fund_codes
+        
+        print("❌ 无法从 fundcode_search.js 中解析基金代码。")
+        return []
+
+    except requests.RequestException as e:
+        print(f"❌ 获取基金代码列表失败: {e}")
+        return []
+
+
+def get_fund_data(fund_code_queue):
+    """
+    模拟博客步骤7-9：多线程工作函数，从队列中取出代码并爬取数据。
+    """
+    while not fund_code_queue.empty():
+        try:
+            fund_code = fund_code_queue.get(timeout=0.1)
+        except queue.Empty:
+            break
+            
+        code_str = str(fund_code)
+        
+        result = {'code': code_str, 'name': 'N/A', 'gz_date': 'N/A', 'error': ''}
+        
+        # ⚠️ 代理设置 (已注释，仅保留结构)
+        proxies = {} 
+
+        try:
+            # 1. 获取基金详情 (实时净值/估值)
+            gz_url = f"http://fundgz.1234567.com.cn/js/{code_str}.js"
+            req_gz = requests.get(gz_url, proxies=proxies, timeout=3, headers=HEADER)
+            req_gz.encoding = 'utf-8'
+            
+            gz_match = re.search(r'jsonpgz\((.+)\);', req_gz.text)
+            if gz_match:
+                gz_data = json.loads(gz_match.group(1))
+                result['name'] = gz_data.get('name', 'N/A')
+                result['gsz'] = gz_data.get('gsz', 'N/A')
+                result['gszzl'] = gz_data.get('gszzl', 'N/A')
+                result['gz_date'] = gz_data.get('gztime', 'N/A')
+            else:
+                result['error'] += "无法解析实时估值; "
+
+            # 2. 获取持仓股票信息 (固定为 2021年1季度)
+            cc_url = (
+                f"http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={code_str}"
+                f"&topline=10&year={REPORT_YEAR}&month={REPORT_MONTH}"
+            )
+            req_cc = requests.get(cc_url, proxies=proxies, timeout=3, headers=HEADER)
+            req_cc.encoding = 'utf-8'
+
+            cc_match = re.search(r'var apidata=(.+);', req_cc.text)
+            if cc_match:
+                cc_data = eval(cc_match.group(1)) 
+                html_content = cc_data.get('content')
                 
-                try:
-                    data = json.loads(json_str)
-                    return data.get('content')
-                except json.JSONDecodeError:
-                    print(f"[{fund_code}] 错误: 无法解析返回的 JSON 内容 (JSONDecodeError)。")
-                    return None
+                if html_content:
+                    # 使用 pandas 读取 HTML 表格数据
+                    tables = pd.read_html(StringIO(html_content), encoding='utf-8')
+                    if tables:
+                        holdings_df = tables[0]
+                        result['holdings'] = holdings_df.to_dict('records')
+                    else:
+                        result['error'] += "无法解析持仓表格; "
+                else:
+                    result['error'] += "持仓HTML内容为空; "
             else:
-                print(f"[{fund_code}] 错误: 数据接口返回格式不正确 (未以 'var apidata=' 开头)。")
-                return None
-        else:
-            print(f"[{fund_code}] 抓取失败，状态码: {response.status_code}")
-            return None
-    except requests.exceptions.RequestException as e:
-        print(f"[{fund_code}] 抓取过程中发生网络错误: {e}")
-        return None
+                 result['error'] += "无法解析持仓API响应; "
 
-def parse_and_save_data(fund_code, html_content):
-    """解析 HTML 内容，提取持仓表格数据，并保存为 CSV 文件。"""
-    if not html_content:
-        return
+        except requests.RequestException as e:
+            result['error'] += f"请求失败: {e}; "
+        except Exception as e:
+            result['error'] += f"解析或处理失败: {e}; "
 
-    soup = BeautifulSoup(html_content, 'html.parser')
-    tables = soup.find_all('table', class_='w780')
-    
-    if not tables:
-        print(f"[{fund_code}] 未找到持仓表格。")
-        return
-
-    # 只处理第一个表格（最新季度数据）
-    table = tables[0]
-    
-    try:
-        # 1. 提取标题和日期
-        title_tag = table.find_previous_sibling('h4')
-        title = f"{fund_code}_股票投资明细"
-        if title_tag:
-            raw_title = title_tag.text.strip().replace('\r\n', ' ').replace('\n', ' ').replace('\xa0', ' ')
-            
-            parts = raw_title.split(' ')
-            if len(parts) >= 3 and ('季度' in parts[-2] or '年度' in parts[-2]):
-                 title = f"{parts[0]}_{parts[-3]}{parts[-2]}{parts[-1]}"
+        # 3. 将结果添加到全局列表 (线程安全)
+        with data_lock:
+            if 'holdings' in result:
+                for holding in result['holdings']:
+                    row = {
+                        '基金代码': result['code'],
+                        '基金名称': result['name'],
+                        '实时估值': result.get('gsz'),
+                        '估值日期': result.get('gz_date'),
+                        '持仓股票代码': holding.get('股票代码'),
+                        '持仓股票名称': holding.get('股票名称'),
+                        '占净值比例': holding.get('占净值比例'),
+                        '持仓市值(万元)': holding.get('持仓市值(万元)'),
+                        '爬取错误信息': result['error']
+                    }
+                    all_fund_data.append(row)
             else:
-                 title = raw_title.replace(' ', '_')
-        
-        # 2. 提取行数据
-        data_rows = []
-        for row in table.find_all('tr')[1:]:
-            cols = [col.text.strip().replace('\xa0', '').replace('\n', '').replace(' ', '') for col in row.find_all(['td'])]
-            
-            # 兼容原始脚本中的列数逻辑
-            if len(cols) == 10:
-                data_rows.append([cols[0], cols[1], cols[2], cols[3], cols[4], cols[6], cols[7], cols[8]]) # 去掉第5(持股类型)和第9列(报告期)
-            elif len(cols) == 9:
-                data_rows.append(cols[:8]) # 假设是去掉最后一列(报告期)
-            elif len(cols) == 8:
-                 data_rows.append(cols) # 匹配最终表头
-            else:
-                continue
+                 # 如果没有持仓数据，也记录一条基础信息
+                row = {
+                    '基金代码': result['code'],
+                    '基金名称': result['name'],
+                    '实时估值': result.get('gsz'),
+                    '估值日期': result.get('gz_date'),
+                    '持仓股票代码': 'N/A',
+                    '持仓股票名称': 'N/A',
+                    '占净值比例': 'N/A',
+                    '持仓市值(万元)': 'N/A',
+                    '爬取错误信息': result['error']
+                }
+                all_fund_data.append(row)
 
-        final_headers = ['序号', '股票代码', '股票名称', '最新价', '涨跌幅', '占净值比例', '持股数（万股）', '持仓市值（万元）']
-        
-        df = pd.DataFrame(data_rows, columns=final_headers)
-        
-        # 生成时间戳和文件名
-        cst_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-        timestamp = cst_time.strftime("%Y%m%d%H%M%S")
-        
-        output_dir = get_output_dir()
-        os.makedirs(output_dir, exist_ok=True)
-        
-        filename = f"{title}_{timestamp}.csv"
-        filepath = os.path.join(output_dir, filename)
-        
-        df.to_csv(filepath, index=False, encoding='utf_8_sig')
-        print(f"[{fund_code}] 成功保存数据到: {filepath}")
-        
-    except Exception as e:
-        print(f"[{fund_code}] 解析或保存表格时发生错误: {e}")
+        fund_code_queue.task_done()
+        time.sleep(random.uniform(0.1, 0.5)) 
+        print(f"Processed: {code_str} (Queue size: {fund_code_queue.qsize()})")
 
-# 并行处理函数 (保持不变)
-def process_fund(fund_code):
-    """单个基金代码的完整处理流程，包括一次失败重试。"""
-    
-    # 第一次尝试：并行 + 随机延迟
-    delay = random.uniform(DELAY_MIN, DELAY_MAX)
-    time.sleep(delay) 
-    
-    print(f"[{fund_code}] (第一次尝试) 开始抓取... (延迟 {delay:.2f}s)")
-    html_content = fetch_holding_data(fund_code)
-    
-    if html_content:
-        parse_and_save_data(fund_code, html_content)
-    else:
-        # 抓取失败，进入重试逻辑
-        print(f"[{fund_code}] 第一次抓取失败，开始超慢速重试...")
-        
-        # 第二次尝试：串行回退策略，强制超长等待
-        retry_delay = 10.0 + random.uniform(0.0, 3.0) # 10到13秒延迟
-        time.sleep(retry_delay)
-        
-        print(f"[{fund_code}] (第二次尝试/重试) 开始抓取... (延迟 {retry_delay:.2f}s)")
-        html_content_retry = fetch_holding_data(fund_code)
-        
-        if html_content_retry:
-            print(f"[{fund_code}] 第二次重试成功！")
-            parse_and_save_data(fund_code, html_content_retry)
-        else:
-            print(f"[{fund_code}] 第二次抓取仍然失败，跳过该基金。")
-
-# 主运行逻辑 (恢复读取文件)
-def main():
-    print(f"--- 开始运行基金数据收集脚本 (最鲁棒并行模式，线程数: {MAX_WORKERS}, 延迟: {DELAY_MIN}-{DELAY_MAX}s) ---")
-    
-    # 1. 读取基金代码
-    fund_codes = []
-    try:
-        with open(FUND_CODES_FILE, 'r') as f:
-            # 确保读取的代码是干净的，并且跳过可能的标题行 'code'
-            fund_codes = [line.strip() for line in f if line.strip() and line.strip().lower() != 'code']
-            
-        if not fund_codes:
-            print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 为空或只包含标题行。请检查文件内容。")
-            return
-
-        print(f"读取到 {len(fund_codes)} 个基金代码。")
-    except FileNotFoundError:
-        print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 未找到。请确保文件与脚本在同一目录下。")
-        return
-
-    # 2. 并行处理
-    pool = ThreadPool(MAX_WORKERS)
-    pool.map(process_fund, fund_codes)
-    pool.close()
-    pool.join()
-    
-    print("\n--- 脚本运行结束 ---")
+# --- 主程序 ---
 
 if __name__ == "__main__":
-    main()
+    
+    # 1. 创建输出目录
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # 2. 读取文件中的基金代码
+    fund_codes_to_process = []
+    try:
+        with open(FUND_CODES_FILE, 'r') as f:
+            fund_codes_to_process = [line.strip() for line in f if line.strip()]
+        print(f"✅ 从 {FUND_CODES_FILE} 中读取到 {len(fund_codes_to_process)} 个基金代码。")
+    except FileNotFoundError:
+        print(f"⚠️ 文件 {FUND_CODES_FILE} 未找到，尝试获取所有基金代码作为处理列表。")
+        fund_codes_to_process = get_fund_code()
+        
+    if not fund_codes_to_process:
+        print("❌ 没有基金代码可以处理，程序退出。")
+    else:
+        # 3. 构造队列
+        fund_code_queue = queue.Queue(len(fund_codes_to_process))
+        for code in fund_codes_to_process:
+            fund_code_queue.put(code)
+
+        # 4. 开启多线程爬取
+        print(f"--- 2. 启动 {MAX_THREADS} 个线程开始爬取数据... ---")
+        
+        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+            for i in range(MAX_THREADS):
+                executor.submit(get_fund_data, fund_code_queue)
+
+        fund_code_queue.join()
+        
+        print("--- 3. 所有爬虫线程任务完成。 ---")
+
+        # 5. 保存结果到 CSV 文件
+        if all_fund_data:
+            df_output = pd.DataFrame(all_fund_data)
+            
+            final_columns = [
+                '基金代码', '基金名称', '实时估值', '估值日期', 
+                '持仓股票代码', '持仓股票名称', '占净值比例', 
+                '持仓市值(万元)', '爬取错误信息'
+            ]
+            df_output = df_output.reindex(columns=final_columns)
+            
+            df_output.to_csv(OUTPUT_CSV_FILE, index=False, encoding='utf-8-sig')
+            
+            print("\n==============================================")
+            print(f"✅ 数据成功保存至 {OUTPUT_CSV_FILE}")
+            print(f"共计 {len(df_output)} 条持仓/估值记录。")
+            print("==============================================")
+        else:
+            print("❌ 未能获取到任何有效数据。")
