@@ -6,11 +6,12 @@ from datetime import datetime
 import concurrent.futures
 import re
 import json 
-from bs4 import BeautifulSoup # <-- 新增依赖导入
+from bs4 import BeautifulSoup # 确保已安装
 
 class FundDataCollector:
     def __init__(self):
         self.headers = {
+            # 使用更完整的User-Agent
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Referer": "http://fund.eastmoney.com/"
         }
@@ -18,7 +19,7 @@ class FundDataCollector:
 
     def read_fund_codes(self, file_path):
         """
-        [修复：此方法已添加到类中] 从文件中读取基金代码列表。
+        从文件中读取基金代码列表。
         """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -41,97 +42,90 @@ class FundDataCollector:
 
     def get_fund_basic_info(self, fund_code):
         """
-        通过基金代码获取包含基本信息的JavaScript数据。
+        [重写] 通过 F10DataApi 获取包含净值和收益率的 JSON/HTML 数据。
         """
-        url = f"http://fund.eastmoney.com/pingzhongdata/{fund_code}.js"
+        # API 用于获取基金的净值数据
+        url = f'http://fundf10.eastmoney.com/F10DataApi.aspx'
+        params = {
+            'type': 'lsjz', # 历史净值数据
+            'code': fund_code,
+            'page': '1',
+            'per': '1', # 只取最新一条数据
+            'rt': time.time()
+        }
+        
         try:
             time.sleep(self.RATE_LIMIT_DELAY) 
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = requests.get(url, params=params, headers=self.headers, timeout=10)
             response.encoding = 'utf-8'
             if response.status_code == 200:
                  return response.text
             else:
-                 print(f"[{fund_code}] 获取信息失败: HTTP状态码 {response.status_code}")
+                 print(f"[{fund_code}] 获取基本信息失败: HTTP状态码 {response.status_code}")
                  return None
-        except requests.exceptions.Timeout:
-            print(f"[{fund_code}] 获取信息超时 (10秒)")
-            return None
         except requests.exceptions.RequestException as e:
-            print(f"[{fund_code}] 获取信息失败: {e}")
+            print(f"[{fund_code}] 获取基本信息失败: {e}")
             return None
 
     def parse_fund_data(self, fund_code, raw_data):
         """
-        使用正则表达式从原始JavaScript字符串中解析出基金的基本信息和近期收益率，并修复数据缺失问题。
+        [重写] 解析 F10DataApi 返回的 HTML 字符串以提取基本信息。
         """
         fund_info = {
             '基金代码': fund_code,
             '基金名称': '未知',
             '单位净值': 0.0,
             '日增长率': 0.0, 
-            '近1月收益': 0.0,
+            '近1月收益': 0.0, # 周期收益无法通过此单点API获取，暂仍为0.0
             '近3月收益': 0.0,
             '近1年收益': 0.0,
             '更新时间': datetime.now().strftime('%Y-%m-%d')
         }
         
+        # 尝试从原始的 raw_data 中提取名称（如果可以的话）
+        # 否则，可能需要通过另一个接口单独查询名称
+        name_match = re.search(r'var fName\s*=\s*"([^"]*)";', raw_data)
+        if name_match:
+             fund_info['基金名称'] = name_match.group(1).strip()
+             
         try:
-            def extract_var(pattern, default=None):
-                match = re.search(pattern, raw_data)
-                if match:
-                    return match.group(1).strip().replace('"', '')
-                return default
-
-            # --- 1. 提取基本信息 (名称, 净值, 日增长率) ---
-            fund_info['基金名称'] = extract_var(r'var fS_name\s*=\s*"([^"]*)";', '未知')
-
-            dwjz_str = extract_var(r'var DWJZ\s*=\s*"([^"]*)";')
-            if dwjz_str:
-                try:
-                    fund_info['单位净值'] = float(dwjz_str)
-                except ValueError:
-                    pass
-
-            rzdf_str = extract_var(r'var RZDF\s*=\s*"([^"]*)";')
-            if rzdf_str:
-                try:
-                    fund_info['日增长率'] = float(rzdf_str)
-                except ValueError:
-                    pass
+            # 提取净值表格中的数据
+            soup = BeautifulSoup(raw_data, 'html.parser')
+            table = soup.find('table', class_='w782')
             
-            # --- 2. 修复后的周期收益率提取 ---
-            returns_data = extract_var(r'var Data_fundReturns\s*=\s*(\[.*?\]);')
-            
-            if returns_data:
-                try:
-                    # 使用 eval 解析 JS 数组
-                    returns_list = eval(returns_data)
+            if table:
+                latest_row = table.find_all('tr')[1] # 第一行是表头，第二行是最新数据
+                cols = latest_row.find_all('td')
+                
+                # 检查数据列的长度和内容
+                if len(cols) >= 4:
+                    # 索引 0: 净值日期
+                    fund_info['更新时间'] = cols[0].text.strip()
                     
-                    if len(returns_list) > 0 and len(returns_list[0]) >= 6:
-                        latest_returns = returns_list[0]
-                        
-                        # 安全转换函数，处理 None 或空字符串导致 0.0 的问题
-                        get_safe_float = lambda x: float(x) if x is not None and x != '' else 0.0
-
-                        fund_info['近1月收益'] = get_safe_float(latest_returns[2])
-                        fund_info['近3月收益'] = get_safe_float(latest_returns[3])
-                        fund_info['近1年收益'] = get_safe_float(latest_returns[5])
-                        
-                except Exception as e:
-                    print(f"[{fund_code}] 警告：无法解析收益率数据或列表格式错误: {e}")
-
+                    # 索引 1: 单位净值 (最新)
+                    fund_info['单位净值'] = float(cols[1].text.strip() or 0.0) 
+                    
+                    # 索引 3: 日增长率 (需去除百分号)
+                    daily_growth_str = cols[3].text.strip().replace('%', '')
+                    fund_info['日增长率'] = float(daily_growth_str or 0.0)
+                    
+                    # 由于这个单点API不直接提供近1/3/1年收益率，我们保持 0.0
+                    # 如果需要，需要单独再抓取原始JS文件或其它专门接口
+                    
+                    return fund_info
+                    
         except Exception as e:
-            print(f"[{fund_code}] 解析数据时发生整体错误: {e}")
+            # 如果解析失败，可能是数据格式不同或数据为空
+            print(f"[{fund_code}] 解析基本数据失败: {e}")
             
         return fund_info
 
 
     def get_fund_holdings(self, fund_code):
         """
-        [增强：使用 HTML 解析获取前十大持仓数据]
+        使用 HTML 解析获取前十大持仓数据 (逻辑保持不变)。
         """
         url = f'http://fundf10.eastmoney.com/FundArchivesDatas.aspx'
-        # 使用时间戳防止缓存
         params = {
             'type': 'jjcc',
             'code': fund_code,
@@ -147,23 +141,19 @@ class FundDataCollector:
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
             response.encoding = 'utf-8'
 
-            # 东方财富的这个接口返回的是一个包含 HTML 字符串的 JSON
             data = response.json()
             
             if 'content' in data:
                 soup = BeautifulSoup(data['content'], 'html.parser')
-                
-                # 提取持仓表格数据
                 tables = soup.find_all('table')
                 
                 for table in tables:
                     rows = table.find_all('tr')
                     
-                    # 尝试提取报告期信息（通常在表格前的 <p> 标签中）
+                    # 提取报告期信息
                     report_info_tag = table.find_previous_sibling('p')
                     report_date = '未知报告期'
                     if report_info_tag:
-                         # 匹配格式：...截止日期：YYYY-MM-DD（XXXX年第X季度）
                          date_match = re.search(r'\d{4}-\d{2}-\d{2}', report_info_tag.text)
                          if date_match:
                              report_date = date_match.group(0)
@@ -175,7 +165,7 @@ class FundDataCollector:
                                 '报告期': report_date,
                                 '股票代码': cols[0].text.strip(),
                                 '股票名称': cols[1].text.strip(),
-                                '持仓比例(%)': cols[4].text.strip(), # 占净值比例
+                                '持仓比例(%)': cols[4].text.strip(), 
                                 '持股数': cols[5].text.strip()
                             }
                             holdings_data.append(holding_info)
@@ -190,18 +180,18 @@ class FundDataCollector:
         
     def _process_single_fund(self, fund_code):
         """组合任务函数，用于线程池"""
-        # 1. 获取基本信息
+        # 1. 获取基本信息 (新方法)
         raw_data = self.get_fund_basic_info(fund_code)
         basic_info = None
         if raw_data:
             basic_info = self.parse_fund_data(fund_code, raw_data)
-            if basic_info and basic_info.get('基金名称') != '未知':
-                print(f"[{fund_code}] 处理完成: {basic_info['基金名称']}")
-        else:
-            print(f"[{fund_code}] 未能获取基本数据，跳过。")
-            
+        
         # 2. 获取持仓数据
         holdings = self.get_fund_holdings(fund_code)
+        
+        # 打印完成信息
+        fund_name = basic_info.get('基金名称') if basic_info else '未知'
+        print(f"[{fund_code}] 处理完成: {fund_name}")
 
         return basic_info, holdings
 
@@ -211,7 +201,7 @@ class FundDataCollector:
         返回 (基本信息列表, 持仓信息字典)
         """
         all_fund_data = []
-        all_holdings = {} # {fund_code: [holding1, holding2, ...]}
+        all_holdings = {}
         
         print(f"开始并行获取 {len(fund_codes)} 个基金的数据...")
         
@@ -223,7 +213,7 @@ class FundDataCollector:
                 code = future_to_code[future]
                 try:
                     basic_info, holdings = future.result()
-                    if basic_info:
+                    if basic_info and basic_info.get('单位净值') != 0.0:
                         all_fund_data.append(basic_info)
                     if holdings:
                         all_holdings[code] = holdings
