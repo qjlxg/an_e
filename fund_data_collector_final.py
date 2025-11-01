@@ -7,10 +7,13 @@ import datetime
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import io
+import concurrent.futures # <-- 实现并行的关键库
 
 # 常量定义
 BASE_URL_TEMPLATE = 'http://fundf10.eastmoney.com/ccmx_{}.html'
 C_CLASS_FILE = 'C类.txt'
+MAX_WORKERS = 10 # 最大并发线程数，可根据GitHub Actions的性能进行调整
 
 def read_codes_from_file(file_path):
     """
@@ -51,22 +54,22 @@ def scrape_fund_holding(fund_code):
         response.raise_for_status()
         response.encoding = 'utf-8' 
         html_content = response.text
-        print("页面内容下载成功。")
+        print(f"基金 {fund_code} 页面内容下载成功。")
     except requests.exceptions.RequestException as e:
-        print(f"HTTP请求失败: {e}")
+        print(f"基金 {fund_code} HTTP请求失败: {e}")
         return {}
     
     quarterly_data = {}
     
-    # 尝试使用 pandas.read_html 读取页面中所有基金持仓表格
     try:
-        # 使用 attrs={'class': 'ftb'} 确保只抓取持仓表格
-        all_tables = pd.read_html(html_content, attrs={'class': 'ftb'})
+        # 使用 io.StringIO 包装 html_content，遵循 pandas 最新规范
+        all_tables = pd.read_html(io.StringIO(html_content), attrs={'class': 'ftb'})
     except ValueError:
+        # 如果页面没有包含匹配的表格，pandas 会抛出 ValueError
         print(f"基金 {fund_code} 页面未找到任何基金持仓表格。")
         return {}
     except Exception as e:
-        print(f"读取表格时发生未知错误: {e}")
+        print(f"基金 {fund_code} 读取表格时发生未知错误: {e}")
         return {}
 
     # 使用 BeautifulSoup 查找表格前的标题，提取季度信息
@@ -75,9 +78,8 @@ def scrape_fund_holding(fund_code):
     
     for index, table_element in enumerate(table_elements):
         if index >= len(all_tables):
-            break # 防止越界
+            break
 
-        # 尝试从表格前的最近标题中提取季度信息
         prev_sibling = table_element.find_previous_sibling()
         quarter_label = f"未知季度-{index + 1}"
 
@@ -91,7 +93,7 @@ def scrape_fund_holding(fund_code):
             prev_sibling = prev_sibling.find_previous_sibling()
 
         df = all_tables[index]
-        print(f"--- 成功提取 {quarter_label} 数据 ---")
+        print(f"基金 {fund_code} - 成功提取 {quarter_label} 数据。")
         
         # 清理列名
         cols_to_drop = ['相关资讯', '变动详情', '股吧', '行情']
@@ -137,6 +139,30 @@ def format_output(fund_code, all_fund_codes, quarterly_data):
     
     return output
 
+def process_fund(fund_code, all_fund_codes, output_dir, timestamp_str):
+    """
+    处理单个基金代码的抓取、格式化和保存，用于并发执行。
+    """
+    try:
+        # 1. 抓取数据
+        quarterly_data_map = scrape_fund_holding(fund_code) 
+
+        # 2. 格式化报告
+        final_report = format_output(fund_code, all_fund_codes, quarterly_data_map)
+
+        # 3. 生成文件名和路径
+        filename = f"{fund_code}_holding_{timestamp_str}.md"
+        output_path = os.path.join(output_dir, filename)
+
+        # 4. 保存到文件
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(final_report)
+        
+        return f"基金 {fund_code} 报告生成成功。路径: {output_path}"
+    
+    except Exception as e:
+        return f"处理基金 {fund_code} 时发生致命错误: {e}"
+
 def main():
     # 1. 检查依赖
     try:
@@ -144,7 +170,7 @@ def main():
         import requests
     except ImportError:
         print("请确保已安装所需的库: pip install requests pandas beautifulsoup4 lxml")
-        exit(1)
+        return
 
     # 2. 读取 C类.txt 中的基金代码
     fund_codes_to_scrape = read_codes_from_file(C_CLASS_FILE)
@@ -159,40 +185,37 @@ def main():
     
     # 目录格式: 年月 (YYYYMM)
     output_dir = now.strftime('%Y%m')
+    timestamp_str = now.strftime('%Y%m%d_%H%M%S') # 统一时间戳
     
     # 确保目录存在
     os.makedirs(output_dir, exist_ok=True)
     
-    all_reports_paths = []
+    print(f"\n--- 准备以 {MAX_WORKERS} 个并发线程抓取 {len(fund_codes_to_scrape)} 个基金 ---")
     
-    # 4. 循环处理每个基金代码
-    for fund_code in fund_codes_to_scrape:
-        # 每次循环都使用当前时间生成报告，以保证文件名中的时间戳唯一性
+    # 4. 并发处理所有基金代码
+    results = []
+    
+    # 使用 ThreadPoolExecutor 实现并发抓取 (网络IO密集型任务，线程更高效)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # 提交所有任务到线程池
+        future_to_code = {
+            executor.submit(process_fund, code, fund_codes_to_scrape, output_dir, timestamp_str): code
+            for code in fund_codes_to_scrape
+        }
         
-        # 抓取数据
-        quarterly_data_map = scrape_fund_holding(fund_code) 
+        # 收集结果并打印
+        for future in concurrent.futures.as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                result = future.result()
+                results.append(result)
+                print(result) # 实时打印每个基金的处理结果
+            except Exception as exc:
+                print(f'基金 {code} 在处理过程中产生异常: {exc}')
 
-        # 格式化报告
-        final_report = format_output(fund_code, fund_codes_to_scrape, quarterly_data_map)
-
-        # 生成文件名和路径
-        timestamp_str = now.strftime('%Y%m%d_%H%M%S')
-        # 文件名格式: FUNDCODE_holding_YYYYMMDD_HHMMSS.md
-        filename = f"{fund_code}_holding_{timestamp_str}.md"
-        output_path = os.path.join(output_dir, filename)
-
-        # 保存到文件
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(final_report)
-            all_reports_paths.append(output_path)
-            print(f"--- 基金 {fund_code} 报告生成成功 ---")
-            print(f"输出路径: {output_path}")
-        except Exception as e:
-            print(f"保存基金 {fund_code} 报告时发生错误: {e}")
-            
     print("\n\n======== 所有基金报告处理完成 ========")
-    print(f"共生成 {len(all_reports_paths)} 份报告。")
+    success_count = len([r for r in results if '成功' in r])
+    print(f"成功生成 {success_count} 份报告。")
 
 if __name__ == '__main__':
     main()
