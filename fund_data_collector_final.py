@@ -1,4 +1,4 @@
-# fund_data_collector_final.py (最终稳定版 - 降低并发)
+# fund_data_collector_final.py (最强鲁棒性并行模式)
 
 import requests
 from bs4 import BeautifulSoup
@@ -9,12 +9,20 @@ import time
 import json
 import random 
 from multiprocessing.dummy import Pool as ThreadPool 
+import threading
 
 # --- 配置 ---
 FUND_CODES_FILE = "C类.txt"
+# 核心数据接口，用于获取持仓数据
 BASE_DATA_URL = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=ccmx&code={fund_code}&qdii=&sdate=&edate=&rt={timestamp}"
-# 调整配置：降低并发线程数，提高稳定性
-MAX_WORKERS = 5 
+
+# 核心配置：低并发，长延迟
+MAX_WORKERS = 3        # 线程数：降至 3
+DELAY_MIN = 3.0        # 最小延迟：3.0 秒
+DELAY_MAX = 7.0        # 最大延迟：7.0 秒
+
+# 线程锁
+lock = threading.Lock() 
 
 # --- 工具函数 ---
 
@@ -30,7 +38,7 @@ def fetch_holding_data(fund_code):
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
+        'Referer': f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html' # 使用您提供的页面类型作为Referer
     }
     
     try:
@@ -47,18 +55,16 @@ def fetch_holding_data(fund_code):
                     data = json.loads(json_str)
                     return data.get('content')
                 except json.JSONDecodeError:
-                    print(f"[{fund_code}] 错误: 无法解析返回的 JSON 内容。原始内容可能被服务器截断或格式错误。")
+                    print(f"[{fund_code}] 错误: 无法解析返回的 JSON 内容 (JSONDecodeError)。")
                     return None
             else:
-                # 再次检查，如果不是预期格式，打印头部信息辅助诊断
-                print(f"[{fund_code}] 错误: 数据接口返回格式不正确 (未以 'var apidata=' 开头)。可能被服务器限制。")
-                print(f"[{fund_code}] 原始内容前200字符: {text[:200]}")
+                print(f"[{fund_code}] 错误: 数据接口返回格式不正确 (未以 'var apidata=' 开头)。")
                 return None
         else:
             print(f"[{fund_code}] 抓取失败，状态码: {response.status_code}")
             return None
     except requests.exceptions.RequestException as e:
-        print(f"[{fund_code}] 抓取过程中发生错误: {e}")
+        print(f"[{fund_code}] 抓取过程中发生网络错误: {e}")
         return None
 
 def parse_and_save_data(fund_code, html_content):
@@ -73,10 +79,11 @@ def parse_and_save_data(fund_code, html_content):
         print(f"[{fund_code}] 未找到持仓表格。")
         return
 
+    # 只处理第一个表格（最新季度数据）
     table = tables[0]
     
     try:
-        # 1. 提取标题
+        # 1. 提取标题和日期
         title_tag = table.find_previous_sibling('h4')
         title = f"{fund_code}_股票投资明细"
         if title_tag:
@@ -122,23 +129,37 @@ def parse_and_save_data(fund_code, html_content):
 
 # 并行处理函数
 def process_fund(fund_code):
-    """单个基金代码的完整处理流程。"""
+    """单个基金代码的完整处理流程，包括一次失败重试。"""
     
-    # 调整随机延迟范围：0.5 到 2.0 秒，进一步避免触发速率限制
-    delay = random.uniform(0.5, 2.0)
+    # 第一次尝试：并行 + 随机延迟
+    delay = random.uniform(DELAY_MIN, DELAY_MAX)
     time.sleep(delay) 
     
-    print(f"[{fund_code}] 开始抓取... (延迟 {delay:.2f}s)")
+    print(f"[{fund_code}] (第一次尝试) 开始抓取... (延迟 {delay:.2f}s)")
     html_content = fetch_holding_data(fund_code)
     
     if html_content:
         parse_and_save_data(fund_code, html_content)
     else:
-        print(f"[{fund_code}] 抓取失败，跳过解析。")
+        # 抓取失败，进入重试逻辑
+        print(f"[{fund_code}] 第一次抓取失败，开始超慢速重试...")
+        
+        # 第二次尝试：串行回退策略，强制超长等待
+        retry_delay = 10.0 + random.uniform(0.0, 3.0) # 10到13秒延迟
+        time.sleep(retry_delay)
+        
+        print(f"[{fund_code}] (第二次尝试/重试) 开始抓取... (延迟 {retry_delay:.2f}s)")
+        html_content_retry = fetch_holding_data(fund_code)
+        
+        if html_content_retry:
+            print(f"[{fund_code}] 第二次重试成功！")
+            parse_and_save_data(fund_code, html_content_retry)
+        else:
+            print(f"[{fund_code}] 第二次抓取仍然失败，跳过该基金。")
 
 # 主运行逻辑
 def main():
-    print("--- 开始运行基金数据收集脚本 (并行模式，并发数: 5) ---")
+    print(f"--- 开始运行基金数据收集脚本 (最鲁棒并行模式，线程数: {MAX_WORKERS}, 延迟: {DELAY_MIN}-{DELAY_MAX}s) ---")
     
     # 1. 读取基金代码
     fund_codes = []
@@ -150,7 +171,7 @@ def main():
             print("错误: 基金代码文件为空或只包含标题行。")
             return
 
-        print(f"读取到 {len(fund_codes)} 个基金代码，将使用 {MAX_WORKERS} 个线程并行处理。")
+        print(f"读取到 {len(fund_codes)} 个基金代码。")
     except FileNotFoundError:
         print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 未找到。")
         return
