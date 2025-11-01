@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: ⬇️ 检出代码
         uses: actions/checkout@v4
-        # 必须设置 fetch-depth: 0 以便后续步骤能够推送更改 (完整历史记录)
+        # 必须设置 fetch-depth: 0 以便后续步骤能够推送更改
         with:
           fetch-depth: 0  
           token: ${{ secrets.GITHUB_TOKEN }} # 使用内置 token 授权推送
@@ -51,15 +51,20 @@ jobs:
       - name: 🔄 推送生成的数据到仓库
         id: push_data
         run: |
-          # 检查是否有新的 fund_data 目录或文件生成
-          if [ -d "fund_data" ] && [ "$(ls -A fund_data | wc -l)" -gt 0 ]; then
+          # 动态获取当前的年月目录名，例如 202511
+          YEAR_MONTH_DIR=$(date +'%Y%m')
+          
+          # 检查是否有新的 年月 目录生成，并且目录不为空
+          # 检查的路径现在是 $YEAR_MONTH_DIR (例如 202511)
+          if [ -d "$YEAR_MONTH_DIR" ] && [ "$(ls -A "$YEAR_MONTH_DIR" | wc -l)" -gt 0 ]; then
             
             echo "--- 配置 Git ---"
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             
             echo "--- 添加并提交文件 ---"
-            git add fund_data
+            # 修改: 添加整个年月目录
+            git add "$YEAR_MONTH_DIR"
             
             # 检查是否有实际的更改需要提交 
             if ! git diff --cached --exit-code --quiet; then
@@ -69,7 +74,6 @@ jobs:
                 git commit -m "$COMMIT_MESSAGE"
                 
                 # *** 修复推送失败的关键步骤 ***
-                # 在推送之前先拉取远程更改并进行 rebase，解决非快进式推送问题
                 echo "--- 拉取远程更改并合并 (git pull --rebase) ---"
                 git pull --rebase
                 
@@ -81,6 +85,6 @@ jobs:
                 echo "status=no_change" >> $GITHUB_OUTPUT
             fi
           else
-            echo "未找到 fund_data 目录或其中没有文件，跳过推送。"
+            echo "未找到 $YEAR_MONTH_DIR 目录或其中没有文件，跳过推送。"
             echo "status=no_data" >> $GITHUB_OUTPUT
           fi
