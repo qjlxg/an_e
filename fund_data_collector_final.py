@@ -1,4 +1,4 @@
-# fund_data_collector_final.py (最强鲁棒性并行模式)
+# fund_data_collector_final_restored.py (恢复批量抓取模式)
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,18 +13,18 @@ import threading
 
 # --- 配置 ---
 FUND_CODES_FILE = "C类.txt"
-# 核心数据接口，用于获取持仓数据
+# 核心数据接口，用于获取持仓数据 (必须使用此接口获取数据)
 BASE_DATA_URL = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=ccmx&code={fund_code}&qdii=&sdate=&edate=&rt={timestamp}"
 
-# 核心配置：低并发，长延迟
-MAX_WORKERS = 3        # 线程数：降至 3
+# 核心配置：低并发，长延迟 (保持原鲁棒性设置)
+MAX_WORKERS = 3        # 线程数：3
 DELAY_MIN = 3.0        # 最小延迟：3.0 秒
 DELAY_MAX = 7.0        # 最大延迟：7.0 秒
 
 # 线程锁
 lock = threading.Lock() 
 
-# --- 工具函数 ---
+# --- 工具函数 (保持不变) ---
 
 def get_output_dir():
     """返回当前的年/月目录 (上海时区)"""
@@ -38,7 +38,8 @@ def fetch_holding_data(fund_code):
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html' # 使用您提供的页面类型作为Referer
+        # 模拟从基金档案页面的访问
+        'Referer': f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html' 
     }
     
     try:
@@ -100,10 +101,13 @@ def parse_and_save_data(fund_code, html_content):
         for row in table.find_all('tr')[1:]:
             cols = [col.text.strip().replace('\xa0', '').replace('\n', '').replace(' ', '') for col in row.find_all(['td'])]
             
+            # 兼容原始脚本中的列数逻辑
             if len(cols) == 10:
-                data_rows.append([cols[0], cols[1], cols[2], cols[3], cols[4], cols[6], cols[7], cols[8], cols[9]])
+                data_rows.append([cols[0], cols[1], cols[2], cols[3], cols[4], cols[6], cols[7], cols[8]]) # 去掉第5(持股类型)和第9列(报告期)
+            elif len(cols) == 9:
+                data_rows.append(cols[:8]) # 假设是去掉最后一列(报告期)
             elif len(cols) == 8:
-                data_rows.append([cols[0], cols[1], cols[2], '', '', cols[4], cols[5], cols[6], cols[7]])
+                 data_rows.append(cols) # 匹配最终表头
             else:
                 continue
 
@@ -127,7 +131,7 @@ def parse_and_save_data(fund_code, html_content):
     except Exception as e:
         print(f"[{fund_code}] 解析或保存表格时发生错误: {e}")
 
-# 并行处理函数
+# 并行处理函数 (保持不变)
 def process_fund(fund_code):
     """单个基金代码的完整处理流程，包括一次失败重试。"""
     
@@ -157,7 +161,7 @@ def process_fund(fund_code):
         else:
             print(f"[{fund_code}] 第二次抓取仍然失败，跳过该基金。")
 
-# 主运行逻辑
+# 主运行逻辑 (恢复读取文件)
 def main():
     print(f"--- 开始运行基金数据收集脚本 (最鲁棒并行模式，线程数: {MAX_WORKERS}, 延迟: {DELAY_MIN}-{DELAY_MAX}s) ---")
     
@@ -165,15 +169,16 @@ def main():
     fund_codes = []
     try:
         with open(FUND_CODES_FILE, 'r') as f:
-            fund_codes = [line.strip() for line in f if line.strip() and line.strip() != 'code']
-        
+            # 确保读取的代码是干净的，并且跳过可能的标题行 'code'
+            fund_codes = [line.strip() for line in f if line.strip() and line.strip().lower() != 'code']
+            
         if not fund_codes:
-            print("错误: 基金代码文件为空或只包含标题行。")
+            print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 为空或只包含标题行。请检查文件内容。")
             return
 
         print(f"读取到 {len(fund_codes)} 个基金代码。")
     except FileNotFoundError:
-        print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 未找到。")
+        print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 未找到。请确保文件与脚本在同一目录下。")
         return
 
     # 2. 并行处理
