@@ -1,4 +1,4 @@
-# fund_data_collector_final.py (并行版)
+# fund_data_collector_final.py (最终修正版 - 完整并行)
 
 import requests
 from bs4 import BeautifulSoup
@@ -7,19 +7,21 @@ import datetime
 import os
 import time
 import json
+import random # 引入 random 用于生成随机延迟
 from multiprocessing.dummy import Pool as ThreadPool # 使用线程池进行网络I/O密集型任务
 
 # --- 配置 ---
 FUND_CODES_FILE = "C类.txt"
 # 直接请求数据接口，该接口返回包含所有持仓表格的HTML片段
 BASE_DATA_URL = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=ccmx&code={fund_code}&qdii=&sdate=&edate=&rt={timestamp}"
-# 设置并发线程数。通常设置为CPU核数或更高（针对I/O密集型任务）
+# 设置并发线程数。建议保持在 10 左右
 MAX_WORKERS = 10 
 
 # --- 工具函数 ---
 
 def get_output_dir():
     """返回当前的年/月目录 (上海时区)"""
+    # 确保使用时区感知时间
     cst_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     return os.path.join(cst_time.strftime("%Y"), cst_time.strftime("%m"))
 
@@ -40,13 +42,23 @@ def fetch_holding_data(fund_code):
 
         if response.status_code == 200:
             text = response.text.strip()
+            
+            # 检查响应是否以预期格式开头
             if text.startswith('var apidata='):
                 # 提取 JSON 字符串部分
                 json_str = text.split('=', 1)[1].rstrip(';')
-                data = json.loads(json_str)
-                return data.get('content')
+                
+                try:
+                    data = json.loads(json_str)
+                    return data.get('content')
+                except json.JSONDecodeError:
+                    # 增强的错误处理
+                    print(f"[{fund_code}] 错误: 无法解析返回的 JSON 内容。原始内容可能被服务器截断或格式错误。")
+                    return None
             else:
-                print(f"[{fund_code}] 错误: 数据接口返回格式不正确。")
+                # 服务器返回了 200，但内容不是数据接口格式，可能是反爬机制触发
+                print(f"[{fund_code}] 错误: 数据接口返回格式不正确 (未以 'var apidata=' 开头)。可能被服务器限制。")
+                print(f"[{fund_code}] 原始内容前200字符: {text[:200]}")
                 return None
         else:
             print(f"[{fund_code}] 抓取失败，状态码: {response.status_code}")
@@ -79,18 +91,16 @@ def parse_and_save_data(fund_code, html_content):
             
             # 提取基金名和季度信息
             parts = raw_title.split(' ')
+            # 匹配 "基金名 2025年3季度股票投资明细"
             if len(parts) >= 3 and ('季度' in parts[-2] or '年度' in parts[-2]):
                  title = f"{parts[0]}_{parts[-3]}{parts[-2]}{parts[-1]}"
             else:
                  title = raw_title.replace(' ', '_')
 
         
-        # 2. 提取表头
-        headers = [th.text.strip().replace('\xa0', '').replace('\n', '') for th in table.find('tr').find_all('th')]
-        
-        # 3. 提取行数据
+        # 2. 提取行数据
         data_rows = []
-        for row in table.find_all('tr')[1:]:
+        for row in table.find_all('tr')[1:]: # 跳过表头行
             cols = [col.text.strip().replace('\xa0', '').replace('\n', '').replace(' ', '') for col in row.find_all(['td'])]
             
             # 标准化数据列
@@ -101,7 +111,6 @@ def parse_and_save_data(fund_code, html_content):
                 # 填充 '最新价' 和 '涨跌幅' 为空字符串
                 data_rows.append([cols[0], cols[1], cols[2], '', '', cols[4], cols[5], cols[6], cols[7]])
             else:
-                # 无法识别的列数，跳过本行
                 continue
 
         # 调整表头以匹配我们最终保留的列
@@ -117,7 +126,6 @@ def parse_and_save_data(fund_code, html_content):
         output_dir = get_output_dir()
         os.makedirs(output_dir, exist_ok=True)
         
-        # 文件名示例: 汇添富中证芯片产业指数增强发起式C_2025年3季度股票投资明细_20251101201500.csv
         filename = f"{title}_{timestamp}.csv"
         filepath = os.path.join(output_dir, filename)
         
@@ -130,7 +138,11 @@ def parse_and_save_data(fund_code, html_content):
 # 并行处理函数
 def process_fund(fund_code):
     """单个基金代码的完整处理流程。"""
-    # 增加日志
+    
+    # 💥 CRITICAL FIX: 在每个线程开始前添加一个短暂的随机延迟
+    # 这极大地减少了被速率限制的可能性。
+    time.sleep(random.uniform(0.1, 1.0)) 
+    
     print(f"[{fund_code}] 开始抓取...")
     html_content = fetch_holding_data(fund_code)
     
@@ -138,7 +150,7 @@ def process_fund(fund_code):
         parse_and_save_data(fund_code, html_content)
     else:
         print(f"[{fund_code}] 抓取失败，跳过解析。")
-    # 线程并行，不需要 time.sleep
+    # 线程并行，不需要在最后添加 time.sleep
 
 # 主运行逻辑
 def main():
@@ -149,6 +161,11 @@ def main():
     try:
         with open(FUND_CODES_FILE, 'r') as f:
             fund_codes = [line.strip() for line in f if line.strip() and line.strip() != 'code']
+        
+        if not fund_codes:
+            print("错误: 基金代码文件为空或只包含标题行。")
+            return
+
         print(f"读取到 {len(fund_codes)} 个基金代码，将使用 {MAX_WORKERS} 个线程并行处理。")
     except FileNotFoundError:
         print(f"错误: 基金代码文件 '{FUND_CODES_FILE}' 未找到。")
@@ -156,7 +173,10 @@ def main():
 
     # 2. 并行处理
     pool = ThreadPool(MAX_WORKERS)
+    
+    # 使用 map 函数将 process_fund 应用到 fund_codes 列表中的每个元素
     pool.map(process_fund, fund_codes)
+    
     pool.close()
     pool.join()
     
