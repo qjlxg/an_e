@@ -11,7 +11,6 @@ from bs4 import BeautifulSoup
 class FundDataCollector:
     def __init__(self):
         self.headers = {
-            # 使用更完整的User-Agent来模拟浏览器
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Referer": "http://fund.eastmoney.com/"
         }
@@ -39,86 +38,6 @@ class FundDataCollector:
         except Exception as e:
             print(f"读取文件失败: {e}")
             return []
-
-    def get_fund_basic_info(self, fund_code):
-        """
-        通过 F10DataApi 获取包含净值和收益率的 JSON/HTML 数据。
-        """
-        # API 用于获取基金的净值数据
-        url = f'http://fundf10.eastmoney.com/F10DataApi.aspx'
-        params = {
-            'type': 'lsjz', # 历史净值数据
-            'code': fund_code,
-            'page': '1',
-            'per': '1', # 只取最新一条数据
-            'rt': time.time()
-        }
-        
-        try:
-            time.sleep(self.RATE_LIMIT_DELAY) 
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            response.encoding = 'utf-8'
-            if response.status_code == 200:
-                 return response.text
-            else:
-                 print(f"[{fund_code}] 获取基本信息失败: HTTP状态码 {response.status_code}")
-                 return None
-        except requests.exceptions.RequestException as e:
-            print(f"[{fund_code}] 获取基本信息失败: {e}")
-            return None
-
-    def parse_fund_data(self, fund_code, raw_data):
-        """
-        解析 F10DataApi 返回的 HTML 字符串以提取基本信息。
-        """
-        # 初始化默认值，如果抓取或解析失败，则保持 0.0
-        fund_info = {
-            '基金代码': fund_code,
-            '基金名称': '未知',
-            '单位净值': 0.0,
-            '日增长率': 0.0, 
-            '近1月收益': 0.0, # 注意：近X月收益无法通过此API获取，保持 0.0
-            '近3月收益': 0.0,
-            '近1年收益': 0.0,
-            '更新时间': datetime.now().strftime('%Y-%m-%d')
-        }
-        
-        # 尝试从原始数据中提取基金名称
-        name_match = re.search(r'var fName\s*=\s*"([^"]*)";', raw_data)
-        if name_match:
-             fund_info['基金名称'] = name_match.group(1).strip()
-             
-        try:
-            # 提取净值表格中的数据
-            soup = BeautifulSoup(raw_data, 'html.parser')
-            # 历史净值表格通常有 class='w782'，但我们通过 find('table') 来找第一个表格
-            table = soup.find('table') 
-            
-            if table:
-                # 历史净值表格的第一行是表头，第二行是最新数据
-                latest_row = table.find_all('tr')[1] 
-                cols = latest_row.find_all('td')
-                
-                # 检查数据列的长度和内容 (至少要有 日期, 单位净值, 累计净值, 日增长率)
-                if len(cols) >= 4:
-                    # 索引 0: 净值日期
-                    fund_info['更新时间'] = cols[0].text.strip()
-                    
-                    # 索引 1: 单位净值 (最新)
-                    dwjz_str = cols[1].text.strip()
-                    fund_info['单位净值'] = float(dwjz_str or 0.0) 
-                    
-                    # 索引 3: 日增长率 (需去除百分号)
-                    daily_growth_str = cols[3].text.strip().replace('%', '')
-                    fund_info['日增长率'] = float(daily_growth_str or 0.0)
-                    
-                    return fund_info
-                    
-        except Exception as e:
-            print(f"[{fund_code}] 解析基本数据失败: {e}")
-            
-        return fund_info
-
 
     def get_fund_holdings(self, fund_code):
         """
@@ -151,7 +70,6 @@ class FundDataCollector:
                     rows = table.find_all('tr')
                     
                     # 提取报告期信息
-                    # 报告期通常在表格前的 <p> 标签中，或通过 find_previous_sibling 查找
                     report_info_tag = table.find_previous_sibling('p')
                     report_date = '未知报告期'
                     if report_info_tag:
@@ -161,9 +79,10 @@ class FundDataCollector:
 
                     for row in rows[1:]:  # 跳过表头
                         cols = row.find_all('td')
-                        # 检查列数，防止解析到非持仓表格
+                        # 股票代码和名称通常在 cols[1] 和 cols[2]
                         if len(cols) >= 6:
                             holding_info = {
+                                '基金代码': fund_code, # 添加基金代码，方便后续数据分析和关联
                                 '报告期': report_date,
                                 '股票代码': cols[1].text.strip(), 
                                 '股票名称': cols[2].text.strip(), 
@@ -172,6 +91,7 @@ class FundDataCollector:
                             }
                             holdings_data.append(holding_info)
                 
+                print(f"[{fund_code}] 成功获取 {len(holdings_data)} 条持仓记录。")
                 return holdings_data
             else:
                 return holdings_data
@@ -181,30 +101,18 @@ class FundDataCollector:
             return holdings_data
         
     def _process_single_fund(self, fund_code):
-        """组合任务函数，用于线程池"""
-        # 1. 获取基本信息 
-        raw_data = self.get_fund_basic_info(fund_code)
-        basic_info = None
-        if raw_data:
-            basic_info = self.parse_fund_data(fund_code, raw_data)
-        
-        # 2. 获取持仓数据
+        """组合任务函数，用于线程池，仅处理持仓"""
         holdings = self.get_fund_holdings(fund_code)
-        
-        fund_name = basic_info.get('基金名称') if basic_info else '未知'
-        print(f"[{fund_code}] 处理完成: {fund_name}")
+        return holdings
 
-        return basic_info, holdings
-
-    def collect_all_fund_data(self, fund_codes, output_dir=''):
+    def collect_all_fund_data(self, fund_codes):
         """
-        使用线程池并行遍历所有基金代码，收集基本信息和持仓数据。
-        返回 (基本信息列表, 持仓信息字典)
+        使用线程池并行遍历所有基金代码，仅收集持仓数据。
+        返回 (持仓信息列表)
         """
-        all_fund_data = []
-        all_holdings = {}
+        all_holdings_list = []
         
-        print(f"开始并行获取 {len(fund_codes)} 个基金的数据...")
+        print(f"开始并行获取 {len(fund_codes)} 个基金的持仓数据...")
         
         MAX_WORKERS = 10 
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -213,19 +121,16 @@ class FundDataCollector:
             for future in concurrent.futures.as_completed(future_to_code):
                 code = future_to_code[future]
                 try:
-                    basic_info, holdings = future.result()
-                    # 仅保留成功获取到净值（不为 0.0）的记录
-                    if basic_info and basic_info.get('单位净值') != 0.0:
-                        all_fund_data.append(basic_info)
+                    holdings = future.result()
                     if holdings:
-                        all_holdings[code] = holdings
+                        all_holdings_list.extend(holdings)
                 except Exception as exc:
-                    print(f"基金 {code} 在处理过程中发生异常: {exc}")
+                    print(f"基金 {code} 在处理持仓过程中发生异常: {exc}")
         
-        print(f"数据收集完毕，共成功获取 {len(all_fund_data)} 条基本记录，{len(all_holdings)} 个基金的持仓数据。")
-        return all_fund_data, all_holdings
+        print(f"数据收集完毕，共成功获取 {len(all_holdings_list)} 条持仓记录。")
+        return all_holdings_list
 
-    def save_to_csv(self, data, filename_prefix, output_dir=''):
+    def save_to_csv(self, data, filename_prefix):
         """
         通用保存函数。路径格式：YYYYMM/filename_prefix_...csv
         """
@@ -246,7 +151,23 @@ class FundDataCollector:
         filename = f'{filename_prefix}_{timestamp}.csv'
         filepath = os.path.join(final_output_dir, filename)
         
+        # 确保 DataFrame 字段顺序
         df = pd.DataFrame(data)
+        
+        # 重新排序字段，让基金代码、报告期、股票代码在前
+        column_order = [
+            '基金代码', 
+            '报告期', 
+            '股票代码', 
+            '股票名称', 
+            '持仓比例(%)', 
+            '持股数'
+        ]
+        
+        # 确保只有存在的列被选中
+        final_columns = [col for col in column_order if col in df.columns]
+        df = df[final_columns]
+        
         df.to_csv(filepath, index=False, encoding='utf-8-sig')
         
         print("-" * 30)
@@ -270,23 +191,13 @@ def main():
         return
     
     start_time = time.time()
-    fund_data, fund_holdings_dict = collector.collect_all_fund_data(fund_codes)
+    # 仅收集持仓数据
+    all_holdings_list = collector.collect_all_fund_data(fund_codes)
     end_time = time.time()
     
     print(f"总耗时: {end_time - start_time:.2f} 秒")
     
-    # 1. 保存基本信息 (fund_data_...csv)
-    saved_file_data = collector.save_to_csv(fund_data, 'fund_data') 
-    if saved_file_data:
-        print(f"任务完成！基本基金数据已保存至: {saved_file_data}")
-
-    # 2. 扁平化并保存持仓信息 (fund_holdings_...csv)
-    all_holdings_list = []
-    for code, holdings in fund_holdings_dict.items():
-        for holding in holdings:
-            holding['基金代码'] = code # 添加基金代码字段
-            all_holdings_list.append(holding)
-
+    # 保存持仓信息
     saved_file_holdings = collector.save_to_csv(all_holdings_list, 'fund_holdings')
     if saved_file_holdings:
         print(f"任务完成！基金持仓数据已保存至: {saved_file_holdings}")
