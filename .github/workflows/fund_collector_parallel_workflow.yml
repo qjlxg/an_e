@@ -16,7 +16,7 @@ on:
     
   # 3. 定时触发：每天上海时间早上 10:00 运行 (UTC 02:00)
   schedule:
-    - cron: '0 2 * * *' 
+    - cron: '0 2 * * *'  # UTC 02:00 等于 上海时间 (Asia/Shanghai) 10:00
 
 jobs:
   collect_and_push:
@@ -29,15 +29,15 @@ jobs:
     steps:
       - name: ⬇️ 检出代码
         uses: actions/checkout@v4
-        # 必须设置 token 和 fetch-depth 以便后续步骤能够推送更改
+        # 必须设置 fetch-depth: 0 以便后续步骤能够推送更改 (完整历史记录)
         with:
-          fetch-depth: 0 
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  
+          token: ${{ secrets.GITHUB_TOKEN }} # 使用内置 token 授权推送
 
       - name: 🐍 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x' 
+          python-version: '3.x'  
 
       - name: ⚙️ 安装依赖 (requests, pandas)
         run: |
@@ -45,7 +45,6 @@ jobs:
           pip install requests pandas
 
       - name: 🏃 运行修复后的并行数据收集脚本
-        # 注意：这里运行的是新的最终脚本名称
         run: |
           python fund_data_collector_final.py
           
@@ -68,6 +67,11 @@ jobs:
                 COMMIT_MESSAGE="自动更新：[Data-Fixed-Final] 基金数据更新于 $(date +'%Y-%m-%d %H:%M:%S')"
                 
                 git commit -m "$COMMIT_MESSAGE"
+                
+                # *** 修复推送失败的关键步骤 ***
+                # 在推送之前先拉取远程更改并进行 rebase，解决非快进式推送问题
+                echo "--- 拉取远程更改并合并 (git pull --rebase) ---"
+                git pull --rebase
                 
                 echo "--- 推送更改 ---"
                 git push
