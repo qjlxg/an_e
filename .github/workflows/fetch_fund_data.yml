@@ -1,92 +1,83 @@
-# .github/workflows/fetch_fund_data.yml
-name: 💰 Fetch Fund Holding Data and Push to Repo
+# .github/workflows/data_collection.yml
+name: 💰 Fund Data Collector
 
-# 触发条件
 on:
-  # 1. 手动触发
+  # 1. 允许手动运行工作流
   workflow_dispatch:
     inputs:
-      reason:
-        description: '手动运行的原因 (例如: 每日更新)'
-        required: false
-        default: 'Manual run for data update'
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
   
-  # 2. 脚本或工作流文件变动时自动运行
+  # 2. 当 fund_data_collector_final.py 或此工作流文件 (yml) 发生变动时自动运行
   push:
+    branches:
+      - main
     paths:
-      # 脚本名称已更新
-      - 'fund_data_collector_final.py' 
-      - 'C类.txt'
-      - '.github/workflows/fetch_fund_data.yml'
-
-# 设置全局环境变量，用于后续的 Git 操作
-env:
-  GIT_COMMITTER_NAME: GitHub Actions Bot
-  GIT_COMMITTER_EMAIL: actions-bot@github.com
+      - 'fund_data_collector_final.py'
+      - '.github/workflows/data_collection.yml'
 
 jobs:
-  scrape_and_push:
+  collect_data:
     runs-on: ubuntu-latest
-    
-    steps:
-      - name: ⬇️ Checkout Repository
-        uses: actions/checkout@v4
-        # 必须使用 fetch-depth: 0 才能拉取所有历史并进行后续的 commit/push 操作
-        with:
-          fetch-depth: 0
 
-      - name: 🐍 Set up Python
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+        # 允许 actions/checkout 访问后续步骤中创建的提交，否则可能会失败
+        with:
+          fetch-depth: 0 
+
+      - name: ⚙️ Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.x' 
 
-      - name: 📦 Install Dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 安装所需的库：requests用于网络请求，pandas/lxml用于HTML表格解析，beautifulsoup4用于HTML处理
-          pip install requests pandas beautifulsoup4 lxml
+          pip install requests beautifulsoup4 pandas
 
-      - name: ⚙️ Run Scraper Script
-        id: run_script
-        # 运行Python脚本，文件名已更新
+      # 设置时区为上海时区 (Asia/Shanghai)，等同于中国时区（东八区）
+      - name: ⏰ Set up time zone
+        uses: sergeysova/markdown-link-check@v1.7.1 # 使用一个常用的action
+        with:
+          timezone: Asia/Shanghai
+          
+      # 运行 Python 脚本
+      - name: 🚀 Run data collection script
         run: python fund_data_collector_final.py
-      
-      - name: ➕ Configure Git and Add Files
-        # 配置 Git 并添加新生成的数据文件
-        run: |
-          git config user.name "${{ env.GIT_COMMITTER_NAME }}"
-          git config user.email "${{ env.GIT_COMMITTER_EMAIL }}"
-          
-          # 根据上海时区（UTC+8）计算预期的输出目录 (YYYYMM)
-          # 使用 date -d '8 hours ago' 将 UTC 时间调整到接近上海时间
-          REPORT_DIR=$(date -u +%Y%m -d '8 hours ago')
-          echo "Expected directory: $REPORT_DIR"
-          
-          # 添加新生成的目录和文件
-          if [ -d "$REPORT_DIR" ]; then
-            git add $REPORT_DIR
-            echo "Added new directory: $REPORT_DIR"
-          fi
-          
-          # 检查是否有文件变动
-          if git diff --cached --quiet; then
-            echo "No changes to commit. Exiting step."
-            exit 0
-          else
-            echo "Changes detected. Preparing to commit."
-          fi
 
-      - name: 💾 Commit and Push Changes
-        # 提交并推送新文件到仓库
+      # 检查是否有新的 CSV 文件生成
+      - name: 🕵️ Check for new data files
+        id: check_files
+        # 检查当前运行的年月目录中是否有新生成的 CSV 文件
+        # 脚本中的目录结构为 $Y/$M/
         run: |
-          # 只有在有变化时才执行 commit 和 push
-          if ! git diff --cached --quiet; then
-            COMMIT_MESSAGE="Auto update: Fund holding data for $(date -u +%Y-%m-%d) (Shanghai Time)"
-            git commit -m "$COMMIT_MESSAGE"
-            echo "Committing with message: $COMMIT_MESSAGE"
-            # 推送到默认分支
+          YEAR=$(date -u +%Y -d '8 hours')
+          MONTH=$(date -u +%m -d '8 hours')
+          NEW_FILES=$(find ${YEAR}/${MONTH} -name "*.csv" -type f 2>/dev/null | xargs)
+          echo "files=$NEW_FILES" >> $GITHUB_OUTPUT
+        shell: bash
+        
+      # 提交新的 CSV 文件到仓库
+      - name: 💾 Commit and Push new data
+        if: steps.check_files.outputs.files != '' # 只有当有新文件时才执行
+        run: |
+          # 配置 Git 用户信息
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          # 检查并添加所有新的 CSV 文件
+          git add -N .
+          if ! git diff --exit-code --quiet; then
+            # 文件有变化，进行添加和提交
+            git add .
+            COMMIT_MESSAGE="📈 Data update: $(date -u +'%Y-%m-%d %H:%M:%S' -d '8 hours') CST"
+            git commit -m "${COMMIT_MESSAGE}"
             git push
-            echo "Successfully pushed changes to repository."
+            echo "Successfully committed and pushed new data."
           else
-            echo "No changes to commit. Skip pushing."
+            echo "No new changes to commit."
           fi
