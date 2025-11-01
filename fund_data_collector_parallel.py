@@ -3,16 +3,18 @@ import pandas as pd
 import time
 import os
 from datetime import datetime
-import concurrent.futures # 导入并行处理模块
+import concurrent.futures
+import re # 导入正则表达式模块
 
 class FundDataCollector:
     def __init__(self):
         self.headers = {
+            # 使用更完整的User-Agent
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Referer": "http://fund.eastmoney.com/"
         }
-        # 限制并发时的请求速率
-        self.RATE_LIMIT_DELAY = 0.1 # 每个请求间隔至少 100ms
+        # 限制并发时的请求速率，避免被服务器拒绝
+        self.RATE_LIMIT_DELAY = 0.1 
 
     def read_fund_codes(self, file_path):
         """
@@ -61,7 +63,7 @@ class FundDataCollector:
 
     def parse_fund_data(self, fund_code, raw_data):
         """
-        从原始JavaScript字符串中解析出基金的基本信息。
+        使用正则表达式从原始JavaScript字符串中解析出基金的基本信息和近期收益率。
         """
         fund_info = {
             '基金代码': fund_code,
@@ -75,38 +77,63 @@ class FundDataCollector:
         }
         
         try:
-            # 提取基金名称 fS_name
-            if 'fS_name' in raw_data:
-                start_key = 'fS_name="'
-                start = raw_data.find(start_key) + len(start_key)
-                end = raw_data.find('";', start)
-                if end > start:
-                    fund_info['基金名称'] = raw_data[start:end].strip()
+            # 辅助函数：使用正则表达式提取变量值
+            def extract_var(pattern, default=None):
+                # 匹配 JS 变量定义: var KEY="VALUE"; 或 var KEY = VALUE;
+                match = re.search(pattern, raw_data)
+                if match:
+                    # 返回捕获组 (即括号中的内容)
+                    return match.group(1).strip().replace('"', '') 
+                return default
 
-            # 提取单位净值 DWJZ
-            if 'DWJZ' in raw_data:
-                start_key = 'DWJZ="'
-                start = raw_data.find(start_key) + len(start_key)
-                end = raw_data.find('";', start)
-                if end > start:
-                    try:
-                        fund_info['单位净值'] = float(raw_data[start:end].strip())
-                    except ValueError:
-                        pass 
+            # --- 1. 提取基本信息 (名称, 净值, 日增长率) ---
+            # 匹配 fS_name="名称";
+            fund_info['基金名称'] = extract_var(r'var fS_name\s*=\s*"([^"]*)";', '未知')
 
-            # 提取日增长率 RZDF
-            if 'RZDF' in raw_data:
-                start_key = 'RZDF="'
-                start = raw_data.find(start_key) + len(start_key)
-                end = raw_data.find('";', start)
-                if end > start:
-                    try:
-                        fund_info['日增长率'] = float(raw_data[start:end].strip())
-                    except ValueError:
-                        pass 
+            # 匹配 DWJZ="净值";
+            dwjz_str = extract_var(r'var DWJZ\s*=\s*"([^"]*)";')
+            if dwjz_str:
+                try:
+                    fund_info['单位净值'] = float(dwjz_str)
+                except ValueError:
+                    pass
+
+            # 匹配 RZDF="增长率";
+            rzdf_str = extract_var(r'var RZDF\s*=\s*"([^"]*)";')
+            if rzdf_str:
+                try:
+                    fund_info['日增长率'] = float(rzdf_str)
+                except ValueError:
+                    pass
             
+            # --- 2. 提取并计算周期收益率 ---
+            # 周期收益率通常位于名为 'Data_fundReturns' 的数组中
+            # 匹配 Data_fundReturns = [....];
+            returns_data = extract_var(r'var Data_fundReturns\s*=\s*(\[.*?\]);')
+            
+            if returns_data:
+                # 尝试将字符串转换为Python列表，使用 json.loads 或 ast.literal_eval 更安全，但 eval 最简单
+                try:
+                    # 注意：eval 存在安全风险，但鉴于数据源确定，这里简化处理
+                    returns_list = eval(returns_data)
+                    # Data_fundReturns 数组格式通常是: [[日期, 近1周, 近1月, 近3月, 近6月, 近1年, 近2年, 近3年, 今年以来, 成立以来], ...]
+                    # 我们主要关心第 2, 3, 5 个元素 (从 0 开始计数，即索引 2, 3, 5)
+                    # 索引 2: 近1月, 索引 3: 近3月, 索引 5: 近1年
+                    if len(returns_list) > 0 and len(returns_list[0]) >= 6:
+                        # 假设返回的是最新数据 [日期, ..., 近1月, 近3月, ..., 近1年, ...]
+                        latest_returns = returns_list[0]
+                        
+                        # 确保数据非空 None
+                        fund_info['近1月收益'] = latest_returns[2] if latest_returns[2] is not None else 0.0
+                        fund_info['近3月收益'] = latest_returns[3] if latest_returns[3] is not None else 0.0
+                        fund_info['近1年收益'] = latest_returns[5] if latest_returns[5] is not None else 0.0
+                        
+                except Exception as e:
+                    print(f"[{fund_code}] 警告：无法解析收益率数据或列表格式错误: {e}")
+
+
         except Exception as e:
-            print(f"[{fund_code}] 解析数据时出错: {e}")
+            print(f"[{fund_code}] 解析数据时发生整体错误: {e}")
             
         return fund_info
 
@@ -115,7 +142,9 @@ class FundDataCollector:
         raw_data = self.get_fund_basic_info(fund_code)
         if raw_data:
             fund_info = self.parse_fund_data(fund_code, raw_data)
-            print(f"[{fund_code}] 处理完成: {fund_info['基金名称']}")
+            # 仅在获取到名称时打印成功信息，避免日志混乱
+            if fund_info['基金名称'] != '未知':
+                print(f"[{fund_code}] 处理完成: {fund_info['基金名称']}")
             return fund_info
         else:
             print(f"[{fund_code}] 未能获取数据，跳过。")
@@ -132,8 +161,7 @@ class FundDataCollector:
         
         print(f"开始并行获取 {len(fund_codes)} 个基金的数据...")
         
-        # 使用 ThreadPoolExecutor 进行线程并行
-        MAX_WORKERS = 10 # 设置最大线程数，避免过度并发导致被封
+        MAX_WORKERS = 10 # 线程数
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             # 提交所有任务到线程池
             future_to_code = {executor.submit(self._process_single_fund, code): code for code in fund_codes}
@@ -164,6 +192,7 @@ class FundDataCollector:
         filepath = os.path.join(output_dir, filename)
         
         df = pd.DataFrame(fund_data)
+        # 使用'utf-8-sig'编码以确保Excel等软件能正确识别中文
         df.to_csv(filepath, index=False, encoding='utf-8-sig')
         
         print("-" * 30)
@@ -179,7 +208,7 @@ def main():
     """
     collector = FundDataCollector()
     
-    # 请确保 'C类.txt' 文件存在
+    # 请确保 'C类.txt' 文件存在于仓库根目录
     fund_codes = collector.read_fund_codes('C类.txt') 
     
     if not fund_codes:
@@ -194,6 +223,7 @@ def main():
     
     if fund_data:
         saved_file = collector.save_to_csv(fund_data) 
+        # 这一行输出对于 GitHub Actions 的日志很重要
         print(f"任务完成！基金数据已保存至: {saved_file}")
     else:
         print("未能获取到任何基金数据")
