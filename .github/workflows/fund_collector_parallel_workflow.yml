@@ -1,4 +1,4 @@
-name: 💰 Parallel Fund Data Collection & Push
+name: 💰 Final Fund Data Collection & Push (Parallel + Fixed)
 
 # 触发工作流的事件
 on:
@@ -7,9 +7,9 @@ on:
     branches:
       - main  # 请根据您的默认分支名称修改
     paths:
-      - 'fund_data_collector_parallel.py' # 仅当核心脚本变动时触发
-      - 'C类.txt'                        # 仅当基金列表变动时触发
-      - '.github/workflows/fund_collector_parallel_workflow.yml'
+      - 'fund_data_collector_final.py' # 仅当核心脚本变动时触发
+      - 'C类.txt'                      # 仅当基金列表变动时触发
+      - '.github/workflows/fund_collector_final_workflow.yml'
   
   # 2. 手动触发
   workflow_dispatch:
@@ -29,6 +29,7 @@ jobs:
     steps:
       - name: ⬇️ 检出代码
         uses: actions/checkout@v4
+        # 必须设置 token 和 fetch-depth 以便后续步骤能够推送更改
         with:
           fetch-depth: 0 
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -38,16 +39,15 @@ jobs:
         with:
           python-version: '3.x' 
 
-      - name: ⚙️ 安装依赖
+      - name: ⚙️ 安装依赖 (requests, pandas)
         run: |
           python -m pip install --upgrade pip
-          # 确保安装 requests 和 pandas
           pip install requests pandas
 
-      - name: 🏃 运行并行基金数据收集脚本
-        # 注意：这里运行的是新的并行脚本名称
+      - name: 🏃 运行修复后的并行数据收集脚本
+        # 注意：这里运行的是新的最终脚本名称
         run: |
-          python fund_data_collector_parallel.py
+          python fund_data_collector_final.py
           
       - name: 🔄 推送生成的数据到仓库
         id: push_data
@@ -62,10 +62,10 @@ jobs:
             echo "--- 添加并提交文件 ---"
             git add fund_data
             
-            # 检查是否有实际的更改需要提交 (只提交 fund_data 文件夹下的更改)
+            # 检查是否有实际的更改需要提交 
             if ! git diff --cached --exit-code --quiet; then
                 
-                COMMIT_MESSAGE="自动更新：[Data-Parallel] 基金数据更新于 $(date +'%Y-%m-%d %H:%M:%S')"
+                COMMIT_MESSAGE="自动更新：[Data-Fixed-Final] 基金数据更新于 $(date +'%Y-%m-%d %H:%M:%S')"
                 
                 git commit -m "$COMMIT_MESSAGE"
                 
