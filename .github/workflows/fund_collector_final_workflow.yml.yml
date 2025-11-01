@@ -7,8 +7,8 @@ on:
     branches:
       - main  # 请根据您的默认分支名称修改
     paths:
-      - 'fund_data_collector_final.py' # 仅当核心脚本变动时触发
-      - 'C类.txt'                      # 仅当基金列表变动时触发
+      - 'fund_data_collector_final.py' 
+      - 'C类.txt'                      
       - '.github/workflows/fund_collector_final_workflow.yml'
   
   # 2. 手动触发
@@ -39,10 +39,10 @@ jobs:
         with:
           python-version: '3.x'  
 
-      - name: ⚙️ 安装依赖 (requests, pandas)
+      - name: ⚙️ 安装依赖 (requests, pandas, beautifulsoup4)
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas
+          pip install requests pandas beautifulsoup4 # <-- 新增 beautifulsoup4
 
       - name: 🏃 运行修复后的并行数据收集脚本
         run: |
@@ -55,7 +55,6 @@ jobs:
           YEAR_MONTH_DIR=$(date +'%Y%m')
           
           # 检查是否有新的 年月 目录生成，并且目录不为空
-          # 检查的路径现在是 $YEAR_MONTH_DIR (例如 202511)
           if [ -d "$YEAR_MONTH_DIR" ] && [ "$(ls -A "$YEAR_MONTH_DIR" | wc -l)" -gt 0 ]; then
             
             echo "--- 配置 Git ---"
@@ -63,7 +62,6 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             
             echo "--- 添加并提交文件 ---"
-            # 修改: 添加整个年月目录
             git add "$YEAR_MONTH_DIR"
             
             # 检查是否有实际的更改需要提交 
@@ -73,7 +71,7 @@ jobs:
                 
                 git commit -m "$COMMIT_MESSAGE"
                 
-                # *** 修复推送失败的关键步骤 ***
+                # 解决推送失败的关键步骤
                 echo "--- 拉取远程更改并合并 (git pull --rebase) ---"
                 git pull --rebase
                 
