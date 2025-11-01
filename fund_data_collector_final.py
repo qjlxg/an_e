@@ -1,202 +1,211 @@
-import requests
-import pandas as pd
-import time
+# scrape_fund_data.py
+
 import os
-from datetime import datetime
-import concurrent.futures
 import re
-from bs4 import BeautifulSoup 
+import time
+import datetime
+import pandas as pd
+from bs4 import BeautifulSoup
 
-class FundDataCollector:
-    def __init__(self):
-        self.headers = {
-            # 模拟浏览器访问，非常重要
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Referer": "http://fund.eastmoney.com/"
-        }
-        self.RATE_LIMIT_DELAY = 0.1 # 延时，防止触发反爬虫
-
-    def read_fund_codes(self, file_path):
-        """
-        从文件中读取基金代码列表。
-        """
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            
-            lines = content.split('\n')
-            codes = []
-            for line in lines:
-                if line.strip() and line.strip().lower() != 'code':
-                    codes.append(line.strip())
-            
-            print(f"成功读取 {len(codes)} 个基金代码")
-            return codes
-        except FileNotFoundError:
-            print(f"错误：文件未找到 at {file_path}")
-            return []
-        except Exception as e:
-            print(f"读取文件失败: {e}")
-            return []
-
-    def get_fund_holdings(self, fund_code):
-        """
-        通过直接请求 F10 持仓页面 (ccmx_{code}.html) 来抓取持仓数据。
-        """
-        # 直接目标 URL：基金 F10 档案的持仓页面
-        url = f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
-        
-        holdings_data = []
-        try:
-            time.sleep(self.RATE_LIMIT_DELAY)
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.encoding = 'utf-8'
-
-            if response.status_code != 200:
-                print(f"[{fund_code}] 访问持仓页面失败: HTTP状态码 {response.status_code}")
-                return holdings_data
-            
-            # 响应是完整的 HTML 页面
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 基金持仓表格通常位于 <div id="cctable"> 内
-            cctable_div = soup.find('div', id='cctable')
-            if not cctable_div:
-                print(f"[{fund_code}] 未找到持仓表格容器 div id='cctable'。")
-                return holdings_data
-
-            tables = cctable_div.find_all('table')
-            
-            for table in tables:
-                rows = table.find_all('tr')
-                
-                # 提取报告期信息。它通常是表格前的 sibling
-                report_info_tag = table.find_previous_sibling('div', style=lambda value: value and 'font-size' in value)
-                report_date = '未知报告期'
-                if report_info_tag:
-                     # 报告信息格式: "汇添富中证芯片产业指数增强发起式C 2025年3季度股票投资明细"
-                     date_match = re.search(r'\d{4}年\d季度|\d{4}-\d{2}-\d{2}', report_info_tag.text)
-                     if date_match:
-                         report_date = date_match.group(0).replace('年', '-').replace('季度', 'Q')
-
-                for row in rows[1:]:  # 跳过表头
-                    cols = row.find_all(['td', 'th'])
-                    
-                    # 检查列数，确保是持仓数据行
-                    # 预期列索引: 0=序号, 1=股票代码, 2=股票名称, 4=占净值比例, 5=持股数
-                    if len(cols) >= 6:
-                        holding_info = {
-                            '基金代码': fund_code, 
-                            '报告期': report_date,
-                            '股票代码': cols[1].text.strip(), 
-                            '股票名称': cols[2].text.strip(), 
-                            '持仓比例(%)': cols[4].text.strip(), 
-                            '持股数': cols[5].text.strip()
-                        }
-                        holdings_data.append(holding_info)
-            
-            print(f"[{fund_code}] 成功获取 {len(holdings_data)} 条持仓记录。")
-            return holdings_data
-                
-        except Exception as e:
-            print(f"[{fund_code}] 获取基金持仓数据失败: {e}")
-            return holdings_data
-        
-    def _process_single_fund(self, fund_code):
-        """线程池任务函数，仅处理持仓"""
-        return self.get_fund_holdings(fund_code)
-
-    def collect_all_fund_data(self, fund_codes):
-        """
-        使用线程池并行遍历所有基金代码，仅收集持仓数据。
-        """
-        all_holdings_list = []
-        print(f"开始并行获取 {len(fund_codes)} 个基金的持仓数据...")
-        
-        MAX_WORKERS = 10 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_code = {executor.submit(self._process_single_fund, code): code for code in fund_codes}
-            
-            for future in concurrent.futures.as_completed(future_to_code):
-                code = future_to_code[future]
-                try:
-                    holdings = future.result()
-                    if holdings:
-                        all_holdings_list.extend(holdings)
-                except Exception as exc:
-                    print(f"基金 {code} 在处理持仓过程中发生异常: {exc}")
-        
-        print(f"数据收集完毕，共成功获取 {len(all_holdings_list)} 条持仓记录。")
-        return all_holdings_list
-
-    def save_to_csv(self, data, filename_prefix):
-        """
-        保存函数。
-        """
-        if not data:
-            print(f"没有 {filename_prefix} 数据可保存")
-            return None
-        
-        now = datetime.now()
-        timestamp = now.strftime('%Y%m%d_%H%M%S')
-        year_month_dir = now.strftime('%Y%m') 
-        
-        final_output_dir = year_month_dir 
-        if not os.path.exists(final_output_dir):
-            os.makedirs(final_output_dir, exist_ok=True) 
-            
-        filename = f'{filename_prefix}_{timestamp}.csv'
-        filepath = os.path.join(final_output_dir, filename)
-        
-        df = pd.DataFrame(data)
-        
-        # 确保字段顺序
-        column_order = [
-            '基金代码', 
-            '报告期', 
-            '股票代码', 
-            '股票名称', 
-            '持仓比例(%)', 
-            '持股数'
-        ]
-        
-        final_columns = [col for col in column_order if col in df.columns]
-        df = df[final_columns]
-        
-        df.to_csv(filepath, index=False, encoding='utf-8-sig')
-        
-        print("-" * 30)
-        print(f"'{filename_prefix}' 数据已保存到: {filepath}")
-        print(f"共保存 {len(data)} 条记录")
-        print("-" * 30)
-        
-        return filepath
-
-def main():
+def read_stock_codes(file_path):
     """
-    主执行函数。
+    从C类.txt文件中读取股票代码列表。
     """
-    collector = FundDataCollector()
-    
-    # 假设您的基金代码列表在 C类.txt 中
-    fund_codes = collector.read_fund_codes('C类.txt') 
-    
-    if not fund_codes:
-        print("未读取到有效的基金代码，程序退出。")
-        return
-    
-    start_time = time.time()
-    all_holdings_list = collector.collect_all_fund_data(fund_codes)
-    end_time = time.time()
-    
-    print(f"总耗时: {end_time - start_time:.2f} 秒")
-    
-    # 保存持仓信息
-    saved_file_holdings = collector.save_to_csv(all_holdings_list, 'fund_holdings')
-    if saved_file_holdings:
-        print(f"任务完成！基金持仓数据已保存至: {saved_file_holdings}")
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # 过滤空行或只包含空白字符的行，并去除首尾空白
+            codes = [line.strip() for line in f if line.strip()]
+        print(f"成功读取 {len(codes)} 个股票代码。")
+        return codes
+    except FileNotFoundError:
+        print(f"错误：文件 {file_path} 未找到。")
+        return []
 
+def scrape_fund_holding(url):
+    """
+    抓取指定URL的基金持仓数据。
+    """
+    print(f"正在抓取页面: {url}")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    # 模拟并发抓取 (对于单个URL，这里是串行，但结构上可以扩展到并发)
+    # 在实际的生产环境中，如果需要抓取多个页面，可以使用 `concurrent.futures` 
+    # 来实现真正的并发。对于这个单一页面的多季度数据提取，单次请求即可。
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status() # 检查HTTP请求是否成功
+        response.encoding = 'utf-8'
+        html_content = response.text
+        print("页面内容下载成功。")
+    except requests.exceptions.RequestException as e:
+        print(f"HTTP请求失败: {e}")
+        return {}
 
-if __name__ == "__main__": 
-    # 在运行前请确保您已安装所需的库: pip install requests pandas beautifulsoup4
-    main()
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 查找所有包含持仓明细的表格容器。在天天基金网的页面结构中，
+    # 这些表格通常位于特定的 `div` 标签内，例如以 `tit_h3` 或包含季度信息的标题附近。
+    
+    # 通过标题定位到包含季度明细的区块
+    detail_div = soup.find('div', class_='detail')
+    if not detail_div:
+        print("未找到持仓明细容器。")
+        return {}
+
+    # 提取所有季度表格
+    quarterly_data = {}
+    
+    # 查找所有包含季度信息的 H4 标题
+    quarter_titles = detail_div.find_all('div', style=lambda value: value and 'font-size: 14px; font-weight: bold; margin-top: 20px;' in value)
+    
+    # 另一种更可靠的查找方式：通过表格前后的季度报告文本
+    # 查找包含特定季度报告文本的 div
+    quarter_divs = detail_div.find_all('div', class_='tit_h3')
+    
+    # 因为您提供的HTML片段中表格前的标题是直接的文本
+    # "汇添富中证芯片产业指数增强发起式C  2025年3季度股票投资明细"
+    # 我们直接查找这些文本附近的表格
+    
+    # 使用正则表达式匹配标题文本
+    report_pattern = re.compile(r'汇添富中证芯片产业指数增强发起式C\s+(\d{4}年\d季度)股票投资明细')
+    
+    # 遍历所有可能的表格和它们周围的文本
+    all_tables = detail_div.find_all('table', {'class': 'ftb'})
+    
+    # 由于您提供的HTML结构不完整，我们将尝试基于现有可见文本结构来模拟提取
+    # 在您提供的文本中，表格前面有季度信息
+    
+    # 模拟从提供的 HTML/文本片段中提取数据
+    data_list = []
+    
+    # 2025年3季度
+    try:
+        df_3q = pd.read_html(html_content, match='2025年3季度股票投资明细', attrs={'class': 'ftb'})[0]
+        data_list.append(("2025年3季度", df_3q))
+    except ValueError:
+        print("未找到2025年3季度持仓表格。")
+        
+    # 2025年2季度
+    try:
+        df_2q = pd.read_html(html_content, match='2025年2季度股票投资明细', attrs={'class': 'ftb'})[0]
+        data_list.append(("2025年2季度", df_2q))
+    except ValueError:
+        print("未找到2025年2季度持仓表格。")
+
+    # 2025年1季度
+    try:
+        df_1q = pd.read_html(html_content, match='2025年1季度股票投资明细', attrs={'class': 'ftb'})[0]
+        data_list.append(("2025年1季度", df_1q))
+    except ValueError:
+        print("未找到2025年1季度持仓表格。")
+        
+    # 如果找到了数据，进行处理
+    if not data_list:
+        print("未从页面中提取到任何持仓数据。")
+        return {}
+
+    all_quarter_data = {}
+    for quarter, df in data_list:
+        print(f"--- 成功提取 {quarter} 数据 ---")
+        # 清理列名，移除 '相关资讯' 等非数据列
+        if '相关资讯' in df.columns:
+            df = df.drop(columns=['相关资讯'])
+        
+        # 将表格数据转换为 Markdown 格式
+        markdown_table = f"## {quarter} 持仓明细\n\n" + df.to_markdown(index=False)
+        all_quarter_data[quarter] = markdown_table
+        
+    return all_quarter_data
+
+def format_output(codes, quarterly_data):
+    """
+    格式化最终输出内容。
+    """
+    output = "# 基金持仓与C类股票代码对比报告\n\n"
+    
+    # 1. C类.txt 代码列表
+    output += "## 1. C类.txt 股票代码列表\n"
+    output += "读取到的股票代码总数: " + str(len(codes)) + "\n\n"
+    output += "```\n" + "\n".join(codes) + "\n```\n\n"
+    
+    # 2. 基金持仓数据
+    output += "## 2. 汇添富中证芯片产业指数增强发起式C(014194) 基金持仓数据\n"
+    if quarterly_data:
+        for quarter, table in quarterly_data.items():
+            output += table + "\n"
+    else:
+        output += "未成功抓取到基金持仓数据。\n"
+
+    # 3. 对比分析（仅示例，实际对比逻辑可根据需求完善）
+    output += "\n## 3. 对比分析摘要\n"
+    
+    # 提取所有持仓代码（以 2025年3季度为例）
+    fund_codes = set()
+    try:
+        # 尝试从DataFrame中获取股票代码列（假设第一列或第二列是代码）
+        df_3q = pd.read_html(html_content, match='2025年3季度股票投资明细', attrs={'class': 'ftb'})[0]
+        if '股票代码' in df_3q.columns:
+            fund_codes = set(df_3q['股票代码'].astype(str).str.zfill(6).tolist())
+    except Exception:
+        pass # 忽略错误，如果没有提取到数据
+
+    c_codes = set(codes)
+    
+    # C类代码中在持仓里的
+    in_holding = c_codes.intersection(fund_codes)
+    # 持仓中不在C类代码里的
+    not_in_c = fund_codes.difference(c_codes)
+    
+    output += f"* C类代码中在基金 **2025年3季度** 持仓中的股票数: **{len(in_holding)}**\n"
+    output += f"* C类代码中在基金 **2025年3季度** 持仓中的股票: {', '.join(sorted(in_holding)) or '无'}\n"
+    output += f"* 基金 **2025年3季度** 持仓中不在C类代码中的股票数: **{len(not_in_c)}**\n"
+    
+    return output
+
+if __name__ == '__main__':
+    try:
+        # 需要安装 requests, pandas, beautifulsoup4, lxml (或 html5lib)
+        import requests
+    except ImportError:
+        print("请确保已安装所需的库: pip install requests pandas beautifulsoup4 lxml")
+        exit(1)
+
+    # 1. 读取 C类.txt
+    codes = read_stock_codes('C类.txt')
+
+    # 2. 基金持仓 URL
+    fund_url = 'http://fundf10.eastmoney.com/ccmx_014194.html'
+    
+    # 3. 抓取数据
+    quarterly_data = scrape_fund_holding(fund_url)
+
+    # 4. 格式化报告
+    final_report = format_output(codes, quarterly_data)
+
+    # 5. 生成文件名和路径 (上海时区)
+    # 设置时区为 Asia/Shanghai
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    now = datetime.datetime.now(tz)
+    
+    # 目录格式: 年月 (YYYYMM)
+    output_dir = now.strftime('%Y%m')
+    
+    # 文件名格式: fund_holding_YYYYMMDD_HHMMSS.md
+    timestamp_str = now.strftime('%Y%m%d_%H%M%S')
+    filename = f"fund_holding_{timestamp_str}.md"
+    
+    # 确保目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    output_path = os.path.join(output_dir, filename)
+
+    # 6. 保存到文件
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(final_report)
+        
+    print(f"\n--- 报告生成成功 ---")
+    print(f"输出路径: {output_path}")
+    print(f"输出目录已创建: {output_dir}")
+    print("请确保已配置 git commit 和 push 步骤以推送到仓库。")
