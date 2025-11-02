@@ -192,10 +192,10 @@ def calculate_technical_indicators(df):
 
 def calculate_consecutive_drops(series):
     """
-    计算净值序列中最大的连续下跌天数
+    【已修复】计算净值序列中最大的连续下跌天数
     
     Args:
-        series: 净值序列，按日期降序排列
+        series: 净值序列，按日期降序排列 (最新值在 series.iloc[0])
         
     Returns:
         int: 最大连续下跌天数
@@ -204,30 +204,20 @@ def calculate_consecutive_drops(series):
         if series.empty or len(series) < 2:
             return 0
         
-        # 计算每日是否下跌 (今日净值 < 昨日净值)
-        # 注意: series是降序排列的，所以 series.iloc[:-1].values 是较早的日期，series.iloc[1:].values 是较新的日期
-        # 正确的比较应该是：较新的净值 < 较早的净值 
-        # 但因为传入的 series 是降序 (最新的在前面)，所以:
-        # series.iloc[0] 是最新值 (T)
-        # series.iloc[1] 是 T-1 值
-        # series.iloc[2] 是 T-2 值
+        # drops: [T < T-1, T-1 < T-2, T-2 < T-3, ...]
+        # series.iloc[:-1] 是 [T, T-1, T-2, ...]
+        # series.iloc[1:] 是 [T-1, T-2, T-3, ...]
+        # 比较：series.iloc[:-1].values < series.iloc[1:].values
+        #   - 比较 T 和 T-1: series.iloc[0] < series.iloc[1] (正确判断T是否下跌)
         
-        # drops = (series.iloc[1:].values < series.iloc[:-1].values) # T-1 vs T-2, T-2 vs T-3, ... 这是错误的
-        # 应该是 T vs T-1, T-1 vs T-2, ...
-        
-        # 修正：
-        # 计算日收益率
-        returns = series.pct_change(periods=-1).iloc[:-1] # periods=-1 用于计算 T vs T-1
-        
-        # 是否下跌 (收益率 < 0)
-        drops = (returns < 0)
-        drops_int = drops.astype(int).values
+        drops = (series.iloc[:-1].values < series.iloc[1:].values) 
         
         max_drop_days = 0
         current_drop_days = 0
         
-        for val in drops_int:
-            if val == 1:
+        # 从最新一天开始迭代
+        for is_dropped in drops:
+            if is_dropped:
                 current_drop_days += 1
                 max_drop_days = max(max_drop_days, current_drop_days)
             else:
@@ -244,7 +234,7 @@ def calculate_max_drawdown(series):
     计算最大回撤
     
     Args:
-        series: 净值序列
+        series: 净值序列，按日期降序排列
         
     Returns:
         float: 最大回撤比例
@@ -309,6 +299,7 @@ def analyze_single_fund(filepath):
         # 读取数据
         df = pd.read_csv(filepath)
         df['date'] = pd.to_datetime(df['date'])
+        # 核心：确保数据按日期降序排列，最新数据在最前面
         df = df.sort_values(by='date', ascending=False).reset_index(drop=True)
         df = df.rename(columns={'net_value': 'value'})
         
@@ -322,7 +313,7 @@ def analyze_single_fund(filepath):
         df_recent_month = df.head(30)
         df_recent_week = df.head(5)
         
-        # 注意: calculate_consecutive_drops 逻辑已在上面修正，确保输入的是净值序列
+        # 注意: calculate_consecutive_drops 逻辑已修复，可以准确处理降序数据
         max_drop_days_month = calculate_consecutive_drops(df_recent_month['value'])
         mdd_recent_month = calculate_max_drawdown(df_recent_month['value'])
         max_drop_days_week = calculate_consecutive_drops(df_recent_week['value'])
@@ -487,7 +478,6 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥇 第一优先级：【即时恐慌买入】** ({len(df_buy_signal_1)}只)\n\n",
-                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
                 r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $\ge$ " + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**严格关注 MA50/MA250 趋势。**" + "\n\n",
@@ -529,7 +519,6 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥈 第二优先级：【技术共振建仓】** ({len(df_buy_signal_2)}只)\n\n",
-                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
                 r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $< $" + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**严格关注 MA50/MA250 趋势。**" + "\n\n",
@@ -571,7 +560,6 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_extended_elastic)}只)\n\n",
-                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
                 r"低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n",
                 r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**严格关注 MA50/MA250 趋势。**" + "\n\n",
@@ -595,7 +583,6 @@ def generate_report(results, timestamp_str):
         else:
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】**\n\n",
-                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
                 r"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。" + "\n\n",
                 f"---\n"
             ])
@@ -622,7 +609,6 @@ def generate_report(results, timestamp_str):
             f"分析数据时间范围: 最近30个交易日 (通常约为1个月)。\n",
             f"\n## **高弹性策略执行纪律（已结合 MA50/MA250 趋势过滤）**\n\n",
             f"**1. 趋势过滤与建仓（MA指标优先）：**\n",
-            # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
             r"    * **趋势健康度（MA50/MA250）：** 优先关注 **MA50/MA250 $\ge 0.95$** 且 **趋势方向为 '向上' 或 '平稳'** 的基金。若比值低于 $0.95$ 且趋势方向为 **'向下'**，则表明中期趋势严重走熊，应**果断放弃**。", "\n",
             r"    * **I 级试水建仓：** 仅当基金同时满足：**MA50/MA250 趋势健康** + **净值/MA50 $\le 1.0$** + **RSI $\le 35$** 时，才进行 $\mathbf{I}$ 级试水。", "\n",
             r"    * **II/III 级加仓：** 应严格结合**价格跌幅**和**技术共振**。例如，$\mathbf{P}_{\text{current}} \le \mathbf{P}_0 \times 0.95$ **且 $\text{MACD}$ 出现金叉** 或 **RSI $\le 30$** 时，才执行 $\mathbf{II}$ 级/$\mathbf{III}$ 级加仓。", "\n",
@@ -681,10 +667,7 @@ def main():
         return False
 
 if __name__ == '__main__':
-    # 确保在实际运行环境中，FUND_DATA_DIR ('fund_data') 目录存在，并且其中包含以基金代码命名的 CSV 文件
-    # 例如：fund_data/161725.csv, fund_data/001186.csv
-    # 文件的列名必须是 'date', 'net_value' (在 analyze_single_fund 中会被重命名为 'value')
-    # 示例代码无法自动创建数据文件，若无数据文件，analyze_all_funds 将返回空列表并生成空报告
+    # 请确保 'fund_data' 目录存在，且其中包含以基金代码命名的 CSV 文件 (date, net_value)
     success = main()
     # exit(0 if success else 1) # 在 Notebook 环境中，避免执行 exit()
     print("脚本执行完毕。")
