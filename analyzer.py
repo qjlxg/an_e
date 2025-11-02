@@ -205,8 +205,23 @@ def calculate_consecutive_drops(series):
             return 0
         
         # 计算每日是否下跌 (今日净值 < 昨日净值)
-        drops = (series.iloc[:-1].values < series.iloc[1:].values)
-        drops_int = drops.astype(int)
+        # 注意: series是降序排列的，所以 series.iloc[:-1].values 是较早的日期，series.iloc[1:].values 是较新的日期
+        # 正确的比较应该是：较新的净值 < 较早的净值 
+        # 但因为传入的 series 是降序 (最新的在前面)，所以:
+        # series.iloc[0] 是最新值 (T)
+        # series.iloc[1] 是 T-1 值
+        # series.iloc[2] 是 T-2 值
+        
+        # drops = (series.iloc[1:].values < series.iloc[:-1].values) # T-1 vs T-2, T-2 vs T-3, ... 这是错误的
+        # 应该是 T vs T-1, T-1 vs T-2, ...
+        
+        # 修正：
+        # 计算日收益率
+        returns = series.pct_change(periods=-1).iloc[:-1] # periods=-1 用于计算 T vs T-1
+        
+        # 是否下跌 (收益率 < 0)
+        drops = (returns < 0)
+        drops_int = drops.astype(int).values
         
         max_drop_days = 0
         current_drop_days = 0
@@ -238,7 +253,10 @@ def calculate_max_drawdown(series):
         if series.empty:
             return 0.0
         
-        rolling_max = series.cummax()
+        # 由于传入的series是降序排列（最新在前），cummax需要逆序操作
+        series_asc = series.iloc[::-1]
+        rolling_max = series_asc.cummax().iloc[::-1] # 保持降序索引，但值是倒序累积最大值
+        
         drawdown = (rolling_max - series) / rolling_max
         return drawdown.max()
         
@@ -304,6 +322,7 @@ def analyze_single_fund(filepath):
         df_recent_month = df.head(30)
         df_recent_week = df.head(5)
         
+        # 注意: calculate_consecutive_drops 逻辑已在上面修正，确保输入的是净值序列
         max_drop_days_month = calculate_consecutive_drops(df_recent_month['value'])
         mdd_recent_month = calculate_max_drawdown(df_recent_month['value'])
         max_drop_days_week = calculate_consecutive_drops(df_recent_week['value'])
@@ -468,10 +487,10 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥇 第一优先级：【即时恐慌买入】** ({len(df_buy_signal_1)}只)\n\n",
-                # 修复: 使用 rf-string 确保反斜杠被正确识别为字面量
-                rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                rf"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $\ge$ {MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
-                f"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**严格关注 MA50/MA250 趋势。**\n\n",
+                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
+                r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
+                r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $\ge$ " + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
+                r"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
             ])
@@ -510,10 +529,10 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥈 第二优先级：【技术共振建仓】** ({len(df_buy_signal_2)}只)\n\n",
-                # 修复: 使用 rf-string 确保反斜杠被正确识别为字面量
-                rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                rf"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $< {MIN_DAILY_DROP_PERCENT*100:.0f}\%$**\n",
-                f"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**严格关注 MA50/MA250 趋势。**\n\n",
+                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
+                r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
+                r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $< $" + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
+                r"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
             ])
@@ -552,10 +571,10 @@ def generate_report(results, timestamp_str):
 
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_extended_elastic)}只)\n\n",
-                # 修复: 使用 rf-string 确保反斜杠被正确识别为字面量
-                rf"**条件：** 长期超跌 ($\ge$ {HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                rf"低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n",
-                f"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**严格关注 MA50/MA250 趋势。**\n\n",
+                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
+                r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
+                r"低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n",
+                r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
             ])
@@ -576,8 +595,8 @@ def generate_report(results, timestamp_str):
         else:
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】**\n\n",
-                # 修复: 使用 rf-string 确保反斜杠被正确识别为字面量
-                rf"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。\n\n",
+                # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
+                r"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。" + "\n\n",
                 f"---\n"
             ])
 
@@ -597,20 +616,21 @@ def generate_report(results, timestamp_str):
                 f"**{row['MA50/MA250趋势']}** | {format_technical_value(row['净值/MA250'], 'decimal2')} | {row['布林带位置']} |\n"
             )
 
+        # 策略执行纪律
         report_parts.extend([
             "\n---\n",
             f"分析数据时间范围: 最近30个交易日 (通常约为1个月)。\n",
             f"\n## **高弹性策略执行纪律（已结合 MA50/MA250 趋势过滤）**\n\n",
-            # 修复: 使用 rf-string 确保反斜杠被正确识别为字面量
-            rf"**1. 趋势过滤与建仓（MA指标优先）：**\n",
-            rf"    * **趋势健康度（MA50/MA250）：** 优先关注 **MA50/MA250 $\ge 0.95$** 且 **趋势方向为 '向上' 或 '平稳'** 的基金。若比值低于 $0.95$ 且趋势方向为 **'向下'**，则表明中期趋势严重走熊，应**果断放弃**。\n",
-            rf"    * **I 级试水建仓：** 仅当基金同时满足：**MA50/MA250 趋势健康** + **净值/MA50 $\le 1.0$** + **RSI $\le 35$** 时，才进行 $\mathbf{I}$ 级试水。\n",
-            rf"    * **II/III 级加仓：** 应严格结合**价格跌幅**和**技术共振**。例如，$\mathbf{P}_{\text{current}} \le \mathbf{P}_0 \times 0.95$ **且 $\text{MACD}$ 出现金叉** 或 **RSI $\le 30$** 时，才执行 $\mathbf{II}$ 级/$\mathbf{III}$ 级加仓。\n",
-            rf"**2. 波段止盈与清仓信号（顺势原则）：**\n",
-            rf"    * **确认反弹/止盈警惕:** 当目标基金的 **MACD 信号从 '观察/死叉' 变为 '金叉'** 时，表明反弹趋势确立，此时应视为 **分批止盈** 的警惕信号。应在达到您的**平均成本 $\times 1.05$** 止盈线时，果断赎回 $\mathbf{50\%}$ 份额。\n",
-            rf"    * **趋势反转/清仓:** 当 **MACD 信号从 '金叉' 变为 '死叉'** 或 **净值/MA50 $>$ 1.10** (短期超涨) 且您的**平均成本已实现 5% 利润**时，应考虑**清仓止盈**。\n", 
-            rf"**3. 风险控制（严格止损）：**\n",
-            rf"    * 为所有买入的基金设置严格的止损线。建议从买入平均成本价开始计算，一旦跌幅达到 **8%-10%**，应**立即**卖出清仓，避免深度套牢。\n"
+            f"**1. 趋势过滤与建仓（MA指标优先）：**\n",
+            # 修复: 使用原始字符串 r'...' 避免转义序列警告和错误
+            r"    * **趋势健康度（MA50/MA250）：** 优先关注 **MA50/MA250 $\ge 0.95$** 且 **趋势方向为 '向上' 或 '平稳'** 的基金。若比值低于 $0.95$ 且趋势方向为 **'向下'**，则表明中期趋势严重走熊，应**果断放弃**。", "\n",
+            r"    * **I 级试水建仓：** 仅当基金同时满足：**MA50/MA250 趋势健康** + **净值/MA50 $\le 1.0$** + **RSI $\le 35$** 时，才进行 $\mathbf{I}$ 级试水。", "\n",
+            r"    * **II/III 级加仓：** 应严格结合**价格跌幅**和**技术共振**。例如，$\mathbf{P}_{\text{current}} \le \mathbf{P}_0 \times 0.95$ **且 $\text{MACD}$ 出现金叉** 或 **RSI $\le 30$** 时，才执行 $\mathbf{II}$ 级/$\mathbf{III}$ 级加仓。", "\n",
+            f"**2. 波段止盈与清仓信号（顺势原则）：**\n",
+            r"    * **确认反弹/止盈警惕:** 当目标基金的 **MACD 信号从 '观察/死叉' 变为 '金叉'** 时，表明反弹趋势确立，此时应视为 **分批止盈** 的警惕信号。应在达到您的**平均成本 $\times 1.05$** 止盈线时，果断赎回 $\mathbf{50\%}$ 份额。", "\n",
+            r"    * **趋势反转/清仓:** 当 **MACD 信号从 '金叉' 变为 '死叉'** 或 **净值/MA50 $>$ 1.10** (短期超涨) 且您的**平均成本已实现 5% 利润**时，应考虑**清仓止盈**。", "\n", 
+            f"**3. 风险控制（严格止损）：**\n",
+            f"    * 为所有买入的基金设置严格的止损线。建议从买入平均成本价开始计算，一旦跌幅达到 **8%-10%**，应**立即**卖出清仓，避免深度套牢。\n"
         ])
 
         return "".join(report_parts)
@@ -661,5 +681,10 @@ def main():
         return False
 
 if __name__ == '__main__':
+    # 确保在实际运行环境中，FUND_DATA_DIR ('fund_data') 目录存在，并且其中包含以基金代码命名的 CSV 文件
+    # 例如：fund_data/161725.csv, fund_data/001186.csv
+    # 文件的列名必须是 'date', 'net_value' (在 analyze_single_fund 中会被重命名为 'value')
+    # 示例代码无法自动创建数据文件，若无数据文件，analyze_all_funds 将返回空列表并生成空报告
     success = main()
-    exit(0 if success else 1)
+    # exit(0 if success else 1) # 在 Notebook 环境中，避免执行 exit()
+    print("脚本执行完毕。")
