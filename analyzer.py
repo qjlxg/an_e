@@ -11,8 +11,12 @@ FUND_DATA_DIR = 'fund_data'
 MIN_CONSECUTIVE_DROP_DAYS = 3
 MIN_MONTH_DRAWDOWN = 0.06
 HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10
-MIN_DAILY_DROP_PERCENT = 0.03
+MIN_DAILY_DROP_PERCENT = 0.03 # 3%
 REPORT_BASE_NAME = 'fund_warning_report'
+
+# --- 核心阈值调整 ---
+# RSI 超卖极值收紧至 29
+EXTREME_RSI_THRESHOLD = 29.0
 
 # --- 设置日志 ---
 def setup_logging():
@@ -205,9 +209,6 @@ def calculate_consecutive_drops(series):
             return 0
         
         # drops: [T < T-1, T-1 < T-2, T-2 < T-3, ...]
-        # 判断：今天的净值是否小于昨天的净值
-        # series.iloc[:-1] = [T, T-1, T-2, ...]
-        # series.iloc[1:] = [T-1, T-2, T-3, ...]
         drops = (series.iloc[:-1].values < series.iloc[1:].values) 
         
         max_drop_days = 0
@@ -270,13 +271,16 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
         if pd.isna(rsi_val):
             return '高回撤观察 (RSI数据缺失)'
         
-        # 这里的判断用于 Action Prompt，而非用于列表分组
-        if rsi_val < 30 and daily_drop_val >= MIN_DAILY_DROP_PERCENT:
-            return '买入信号 (RSI极度超卖 + 当日大跌)'
-        elif rsi_val < 35 and daily_drop_val >= MIN_DAILY_DROP_PERCENT:
-            return '买入信号 (RSI超卖 + 当日大跌)'
-        elif rsi_val < 35:
-            return '考虑试水建仓 (RSI超卖)'
+        # 使用收紧后的 RSI 阈值
+        if rsi_val <= EXTREME_RSI_THRESHOLD:
+            if daily_drop_val >= MIN_DAILY_DROP_PERCENT:
+                # 极度超卖 + 当日大跌
+                return f'🌟 买入信号 (RSI极度超卖 <= {EXTREME_RSI_THRESHOLD:.0f} + 当日大跌)'
+            else:
+                # 极度超卖 + 非大跌日
+                return f'考虑试水建仓 (RSI极度超卖 <= {EXTREME_RSI_THRESHOLD:.0f})'
+        elif rsi_val < 35: # 保持 30-35 之间的提示
+            return '观察中 (RSI超卖, 但未达极值)'
         else:
             return '高回撤观察 (RSI未超卖)'
     else:
@@ -451,7 +455,7 @@ def generate_report(results, timestamp_str):
             f"本次分析共发现 **{total_count}** 只基金同时满足以下两个预警条件（基于最近30个交易日）：\n",
             f"1. **连续下跌**：净值连续下跌 **{MIN_CONSECUTIVE_DROP_DAYS}** 天以上。\n",
             f"2. **高回撤**：近 1 个月内最大回撤达到 **{MIN_MONTH_DRAWDOWN*100:.0f}%** 以上。\n\n",
-            f"**指标增强：新增 MA50/MA250 趋势健康指标（含趋势方向），用于过滤长期熊市风险。**\n",
+            f"**策略更新：RSI超卖阈值收紧至 $\le {EXTREME_RSI_THRESHOLD:.0f}$，聚焦极值机会。**\n",
             f"---\n"
         ])
 
@@ -461,10 +465,10 @@ def generate_report(results, timestamp_str):
             (df_results['近一周连跌'] == 1)
         ].copy()
 
-        # 进一步筛选：RSI超卖 (RSI < 35)
-        df_base_elastic_low_rsi = df_base_elastic[df_base_elastic['RSI'] < 35.0].copy()
+        # 进一步筛选：RSI极度超卖 (RSI <= 29.0)
+        df_base_elastic_low_rsi = df_base_elastic[df_base_elastic['RSI'] <= EXTREME_RSI_THRESHOLD].copy()
 
-        # 第一优先级：即时恐慌买入 (RSI超卖 且 当日大跌)
+        # 1. 🥇 第一优先级：即时恐慌买入 (RSI极度超卖 且 当日大跌)
         df_buy_signal_1 = df_base_elastic_low_rsi[
             df_base_elastic_low_rsi['当日跌幅'] >= MIN_DAILY_DROP_PERCENT
         ].copy()
@@ -478,7 +482,7 @@ def generate_report(results, timestamp_str):
             report_parts.extend([
                 f"\n## **🥇 第一优先级：【即时恐慌买入】** ({len(df_buy_signal_1)}只)\n\n",
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $\ge$ " + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
+                r"低位企稳 + **RSI极度超卖 ($\le {EXTREME_RSI_THRESHOLD:.0f}$)** + **当日跌幅 $\ge$ " + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 市场恐慌时出手，本金充足时应优先配置此列表。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
@@ -500,15 +504,18 @@ def generate_report(results, timestamp_str):
         else:
             report_parts.extend([
                 f"\n## **🥇 第一优先级：【即时恐慌买入】**\n\n",
-                f"**今日没有基金同时满足所有严格条件，市场恐慌度不足。**\n\n",
+                f"**今日没有基金同时满足所有严格条件 (RSI $\le {EXTREME_RSI_THRESHOLD:.0f}$ 且 当日跌幅 $\ge {MIN_DAILY_DROP_PERCENT*100:.0f}\%$)，市场恐慌度不足。**\n\n",
                 f"---\n"
             ])
 
-        # 第二优先级：技术共振建仓 (RSI超卖 且 当日跌幅不够大)
+        # 2. 🥈 第二优先级：技术共振建仓 (RSI极度超卖 且 当日跌幅不够大)
+        # 核心修复点：使用~isin() 严格排除第一优先级的基金
         funds_to_exclude_1 = df_buy_signal_1['基金代码'].tolist() if not df_buy_signal_1.empty else []
         df_buy_signal_2 = df_base_elastic_low_rsi[
-            ~df_base_elastic_low_rsi['基金代码'].isin(funds_to_exclude_1)
+            (~df_base_elastic_low_rsi['基金代码'].isin(funds_to_exclude_1)) &
+            (df_base_elastic_low_rsi['当日跌幅'] < MIN_DAILY_DROP_PERCENT) # 增加跌幅排除
         ].copy()
+
 
         if not df_buy_signal_2.empty:
             df_buy_signal_2 = df_buy_signal_2.sort_values(
@@ -519,7 +526,7 @@ def generate_report(results, timestamp_str):
             report_parts.extend([
                 f"\n## **🥈 第二优先级：【技术共振建仓】** ({len(df_buy_signal_2)}只)\n\n",
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                r"低位企稳 + RSI超卖 ($ < 35$) + **当日跌幅 $< $" + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
+                r"低位企稳 + **RSI极度超卖 ($\le {EXTREME_RSI_THRESHOLD:.0f}$)** + **当日跌幅 $< $" + f"{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 适合在本金有限时优先配置，或在非大跌日进行建仓。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
@@ -541,15 +548,16 @@ def generate_report(results, timestamp_str):
         else:
             report_parts.extend([
                 f"\n## **🥈 第二优先级：【技术共振建仓】**\n\n",
-                f"所有满足 **长期超跌+RSI超卖** 基础条件的基金，均已进入 **第一优先级列表**。\n\n",
+                f"没有基金同时满足 **长期超跌**、**低位企稳** 和 **RSI极度超卖 ($\le {EXTREME_RSI_THRESHOLD:.0f}$)** 且 **当日跌幅 $< {MIN_DAILY_DROP_PERCENT*100:.0f}\%$** 的条件。\n\n",
                 f"---\n"
             ])
 
-        # 第三优先级：扩展观察池 (RSI未超卖)
-        funds_to_exclude_2 = df_base_elastic_low_rsi['基金代码'].tolist()
+        # 3. 🥉 第三优先级：扩展观察池 (RSI > 29.0)
+        # 排除所有 RSI <= 29.0 的基金
         df_extended_elastic = df_base_elastic[
-            ~df_base_elastic['基金代码'].isin(funds_to_exclude_2)
+            df_base_elastic['RSI'] > EXTREME_RSI_THRESHOLD
         ].copy()
+
 
         if not df_extended_elastic.empty:
             df_extended_elastic = df_extended_elastic.sort_values(
@@ -560,8 +568,8 @@ def generate_report(results, timestamp_str):
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_extended_elastic)}只)\n\n",
                 r"**条件：** 长期超跌 ($\ge$ " + f"{HIGH_ELASTICITY_MIN_DRAWDOWN*100:.0f}%) + "
-                r"低位企稳，但 **RSI $\ge 35$ (未超卖)**。\n",
-                r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**严格关注 MA50/MA250 趋势。**" + "\n\n",
+                r"低位企稳，但 **RSI $>{EXTREME_RSI_THRESHOLD:.0f}$ (未达极度超卖)**。\n",
+                r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入极度超卖区。**严格关注 MA50/MA250 趋势。**" + "\n\n",
                 f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n",
                 f"| :---: | :---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | ---: | :---: | :---: |\n"
             ])
@@ -582,7 +590,7 @@ def generate_report(results, timestamp_str):
         else:
             report_parts.extend([
                 f"\n## **🥉 第三优先级：【扩展观察池】**\n\n",
-                r"没有基金满足 **长期超跌** 且 **RSI $\ge 35$** 的观察条件。" + "\n\n",
+                r"没有基金满足 **长期超跌** 且 **RSI $>{EXTREME_RSI_THRESHOLD:.0f}$** 的观察条件。" + "\n\n",
                 f"---\n"
             ])
 
@@ -606,11 +614,11 @@ def generate_report(results, timestamp_str):
         report_parts.extend([
             "\n---\n",
             f"分析数据时间范围: 最近30个交易日 (通常约为1个月)。\n",
-            f"\n## **高弹性策略执行纪律（已结合 MA50/MA250 趋势过滤）**\n\n",
+            f"\n## **高弹性策略执行纪律（RSI $\le {EXTREME_RSI_THRESHOLD:.0f}$ 极值策略）**\n\n",
             f"**1. 趋势过滤与建仓（MA指标优先）：**\n",
             r"    * **趋势健康度（MA50/MA250）：** 优先关注 **MA50/MA250 $\ge 0.95$** 且 **趋势方向为 '向上' 或 '平稳'** 的基金。若比值低于 $0.95$ 且趋势方向为 **'向下'**，则表明中期趋势严重走熊，应**果断放弃**。", "\n",
-            r"    * **I 级试水建仓：** 仅当基金同时满足：**MA50/MA250 趋势健康** + **净值/MA50 $\le 1.0$** + **RSI $\le 35$** 时，才进行 $\mathbf{I}$ 级试水。", "\n",
-            r"    * **II/III 级加仓：** 应严格结合**价格跌幅**和**技术共振**。例如，$\mathbf{P}_{\text{current}} \le \mathbf{P}_0 \times 0.95$ **且 $\text{MACD}$ 出现金叉** 或 **RSI $\le 30$** 时，才执行 $\mathbf{II}$ 级/$\mathbf{III}$ 级加仓。", "\n",
+            r"    * **I 级试水建仓（极度超卖）：** 仅当基金同时满足：**MA50/MA250 趋势健康** + **净值/MA50 $\le 1.0$** + **RSI $\le {EXTREME_RSI_THRESHOLD:.0f}$** 时，才进行 $\mathbf{I}$ 级试水。", "\n",
+            r"    * **II/III 级加仓：** 应严格结合**价格跌幅**和**技术共振**。例如，$\mathbf{P}_{\text{current}} \le \mathbf{P}_0 \times 0.95$ **且 $\text{MACD}$ 出现金叉** 或 **RSI $\le 20$** 时，才执行 $\mathbf{II}$ 级/$\mathbf{III}$ 级加仓。", "\n",
             f"**2. 波段止盈与清仓信号（顺势原则）：**\n",
             r"    * **确认反弹/止盈警惕:** 当目标基金的 **MACD 信号从 '观察/死叉' 变为 '金叉'** 时，表明反弹趋势确立，此时应视为 **分批止盈** 的警惕信号。应在达到您的**平均成本 $\times 1.05$** 止盈线时，果断赎回 $\mathbf{50\%}$ 份额。", "\n",
             r"    * **趋势反转/清仓:** 当 **MACD 信号从 '金叉' 变为 '死叉'** 或 **净值/MA50 $>$ 1.10** (短期超涨) 且您的**平均成本已实现 5% 利润**时，应考虑**清仓止盈**。", "\n", 
