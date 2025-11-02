@@ -31,6 +31,7 @@ def calculate_technical_indicators(df):
             '当日跌幅': np.nan
         }
 
+    # 升序数据用于指标计算
     df_asc = df.iloc[::-1].copy()
 
     # 1. RSI (14)
@@ -108,7 +109,7 @@ def calculate_technical_indicators(df):
         '当日跌幅': round(daily_drop, 4)
     }
 
-# --- 其他不变的辅助函数 ---
+# --- 其他不变的辅助函数 (保持原样) ---
 def extract_fund_codes(report_content):
     codes = set()
     lines = report_content.split('\n')
@@ -130,10 +131,19 @@ def extract_fund_codes(report_content):
                         continue 
     return list(codes)
 
+# --- ✅ 修正后的函数：连续下跌计算 ---
 def calculate_consecutive_drops(series):
+    """
+    计算净值序列中最大的连续下跌天数。
+    要求 series 必须按日期降序排列 (最新数据在最前面)。
+    下跌的定义：今日净值 < 昨日净值。
+    """
     if series.empty or len(series) < 2:
         return 0
-    drops = (series.iloc[1:].values < series.iloc[:-1].values)
+    
+    # 修正后的逻辑：[V_T, V_T-1, V_T-2, ...] < [V_T-1, V_T-2, V_T-3, ...]
+    # 比较结果：[V_T < V_T-1, V_T-1 < V_T-2, ...] (True 表示下跌)
+    drops = (series.iloc[:-1].values < series.iloc[1:].values)
 
     drops_int = drops.astype(int)
     max_drop_days = 0
@@ -248,7 +258,7 @@ def generate_report(results, timestamp_str):
 
         # 报告表格新增 '净值/MA250'
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | **净值/MA250** | 试水买价 (跌3%) | 行动提示 |\n"
-        report += f"| :---: | :---: | ---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | :---: |\n"  
+        report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | **---:** | :---: | :---: |\n"  
 
         for index, row in df_buy_signal_2.iterrows():
             latest_value = row.get('最新净值', 1.0)
@@ -281,7 +291,7 @@ def generate_report(results, timestamp_str):
 
         # 报告表格新增 '净值/MA250'
         report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | RSI(14) | MACD信号 | 净值/MA50 | **净值/MA250** | 试水买价 (跌3%) | 行动提示 |\n"
-        report += f"| :---: | :---: | ---: | ---: | ---: | ---: | :---: | ---: | **---:** | :---: | :---: |\n"  
+        report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | **---:** | :---: | :---: |\n"  
 
         for index, row in df_extended_elastic.iterrows():
             latest_value = row.get('最新净值', 1.0)
@@ -304,7 +314,7 @@ def generate_report(results, timestamp_str):
 
     # 报告表格新增 '净值/MA250'
     report += f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | 连跌 (1M) | 连跌 (1W) | RSI(14) | MACD信号 | 净值/MA50 | **净值/MA250** | 布林带位置 |\n"
-    report += f"| :---: | :---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | **---:** | :---: |\n"  
+    report += f"| :---: | :---: | ---: | ---: | :---: | ---: | :---: | ---: | ---: | **---:** | :---: |\n"  
 
     for index, row in df_results.iterrows():
         # 处理 np.nan 的显示
@@ -355,6 +365,7 @@ def analyze_all_funds(target_codes=None):
 
             df = pd.read_csv(filepath)
             df['date'] = pd.to_datetime(df['date'])
+            # 确保数据是按日期降序排列的
             df = df.sort_values(by='date', ascending=False).reset_index(drop=True)
             df = df.rename(columns={'net_value': 'value'})
 
@@ -364,6 +375,7 @@ def analyze_all_funds(target_codes=None):
             df_recent_month = df.head(30)
             df_recent_week = df.head(5)
 
+            # 使用修正后的连续下跌计算
             max_drop_days_month = calculate_consecutive_drops(df_recent_month['value'])
             mdd_recent_month = calculate_max_drawdown(df_recent_month['value'])
             max_drop_days_week = calculate_consecutive_drops(df_recent_week['value'])
