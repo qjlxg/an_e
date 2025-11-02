@@ -205,11 +205,9 @@ def calculate_consecutive_drops(series):
             return 0
         
         # drops: [T < T-1, T-1 < T-2, T-2 < T-3, ...]
-        # series.iloc[:-1] 是 [T, T-1, T-2, ...]
-        # series.iloc[1:] 是 [T-1, T-2, T-3, ...]
-        # 比较：series.iloc[:-1].values < series.iloc[1:].values
-        #   - 比较 T 和 T-1: series.iloc[0] < series.iloc[1] (正确判断T是否下跌)
-        
+        # 判断：今天的净值是否小于昨天的净值
+        # series.iloc[:-1] = [T, T-1, T-2, ...]
+        # series.iloc[1:] = [T-1, T-2, T-3, ...]
         drops = (series.iloc[:-1].values < series.iloc[1:].values) 
         
         max_drop_days = 0
@@ -272,6 +270,7 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
         if pd.isna(rsi_val):
             return '高回撤观察 (RSI数据缺失)'
         
+        # 这里的判断用于 Action Prompt，而非用于列表分组
         if rsi_val < 30 and daily_drop_val >= MIN_DAILY_DROP_PERCENT:
             return '买入信号 (RSI极度超卖 + 当日大跌)'
         elif rsi_val < 35 and daily_drop_val >= MIN_DAILY_DROP_PERCENT:
@@ -313,7 +312,6 @@ def analyze_single_fund(filepath):
         df_recent_month = df.head(30)
         df_recent_week = df.head(5)
         
-        # 注意: calculate_consecutive_drops 逻辑已修复，可以准确处理降序数据
         max_drop_days_month = calculate_consecutive_drops(df_recent_month['value'])
         mdd_recent_month = calculate_max_drawdown(df_recent_month['value'])
         max_drop_days_week = calculate_consecutive_drops(df_recent_week['value'])
@@ -457,15 +455,16 @@ def generate_report(results, timestamp_str):
             f"---\n"
         ])
 
-        # 核心筛选：高弹性基金
+        # 核心筛选：高弹性基金 (MDD>=10% 且 近一周连跌=1)
         df_base_elastic = df_results[
             (df_results['最大回撤'] >= HIGH_ELASTICITY_MIN_DRAWDOWN) &
             (df_results['近一周连跌'] == 1)
         ].copy()
 
+        # 进一步筛选：RSI超卖 (RSI < 35)
         df_base_elastic_low_rsi = df_base_elastic[df_base_elastic['RSI'] < 35.0].copy()
 
-        # 第一优先级：即时恐慌买入
+        # 第一优先级：即时恐慌买入 (RSI超卖 且 当日大跌)
         df_buy_signal_1 = df_base_elastic_low_rsi[
             df_base_elastic_low_rsi['当日跌幅'] >= MIN_DAILY_DROP_PERCENT
         ].copy()
@@ -505,7 +504,7 @@ def generate_report(results, timestamp_str):
                 f"---\n"
             ])
 
-        # 第二优先级：技术共振建仓
+        # 第二优先级：技术共振建仓 (RSI超卖 且 当日跌幅不够大)
         funds_to_exclude_1 = df_buy_signal_1['基金代码'].tolist() if not df_buy_signal_1.empty else []
         df_buy_signal_2 = df_base_elastic_low_rsi[
             ~df_base_elastic_low_rsi['基金代码'].isin(funds_to_exclude_1)
@@ -546,7 +545,7 @@ def generate_report(results, timestamp_str):
                 f"---\n"
             ])
 
-        # 第三优先级：扩展观察池
+        # 第三优先级：扩展观察池 (RSI未超卖)
         funds_to_exclude_2 = df_base_elastic_low_rsi['基金代码'].tolist()
         df_extended_elastic = df_base_elastic[
             ~df_base_elastic['基金代码'].isin(funds_to_exclude_2)
