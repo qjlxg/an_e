@@ -1,4 +1,4 @@
-name: 基金筛选工作流
+name: 筛选
 
 on:
   push:
