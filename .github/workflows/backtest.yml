@@ -1,80 +1,79 @@
-name: 基金策略历史回测 (Backtest Strategy)
+name: 历史回测
 
 # 触发工作流的条件
 on:
-  # 1. 每次推送到主分支时执行
+  # 1. 允许手动触发 (通过 GitHub Actions 界面)
+  workflow_dispatch:
+
+  # 2. 当 backtester.py 或 workflow 文件变动时自动运行
   push:
     branches:
       - main
-      - master
+      - master # 假设您的主分支是 main 或 master
     paths:
-      - 'backtester.py' # 仅当 backtester.py 或 workflow 文件本身变化时触发
+      - 'backtester.py'
       - '.github/workflows/backtest.yml'
-  
-  # 2. 定时计划任务执行 (例如，每天凌晨 00:00 UTC+8 自动回测)
-  # 注意: GitHub Actions 使用 UTC 时间。如果想在 UTC+8 运行，需相应调整。
-  schedule:
-    # 每天 16:00 UTC (北京时间次日 00:00) 运行
-    - cron: '0 16 * * *' 
-  
-  # 3. 允许手动触发 (通过 GitHub Actions 界面)
-  workflow_dispatch:
-
-# 定义环境变量，供所有步骤使用
-env:
-  PYTHON_VERSION: '3.10'
-  FUND_DATA_DIR: fund_data
 
 jobs:
-  run_backtest:
-    runs-on: ubuntu-latest # 使用最新的 Ubuntu 运行环境
+  backtest_and_push:
+    runs-on: ubuntu-latest
     
+    # 关键设置：启用内容写入权限，允许工作流推送回仓库
+    permissions:
+      contents: write
+
     steps:
-      # 1. 检出代码
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      # 2. 设置 Python 环境
-      - name: 设置 Python ${{ env.PYTHON_VERSION }}
+      - name: 设置 Python 3.x 环境
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.10'
       
-      # 3. 安装依赖
-      - name: 安装 Python 依赖
+      - name: 安装 Python 依赖 (pandas, numpy)
         run: |
-          # 假设 backtester.py 只需要 pandas 和 numpy
           python -m pip install --upgrade pip
           pip install pandas numpy
 
-      # 4. 准备数据目录 (关键步骤：模拟数据存在)
-      # ⚠️ 注意: 这一步需要您自己确保 fund_data 目录和里面的 .csv 文件能被拉取或创建。
-      #    如果您的数据位于其他私有仓库或需要专门下载，您需要修改此步骤。
-      #    此处仅创建目录并添加一个占位符。
-      - name: 准备基金数据目录
+      # --- 关键步骤 1: 设置时区并运行回测 ---
+      - name: 运行历史回测脚本 (基于 Asia/Shanghai 时间)
         run: |
-          mkdir -p ${{ env.FUND_DATA_DIR }}
-          # 假设您的数据已存在于此目录，或者您将在此处添加数据下载/解压步骤
-          echo "确保您的基金历史数据（例如：001234.csv）已存在于 fund_data 目录中。"
+          # 设置 TZ 环境变量，确保所有基于系统时间的命令（包括 Python 内部的 datetime.now()）使用上海时区
+          echo "TZ=Asia/Shanghai" >> $GITHUB_ENV
+          export TZ='Asia/Shanghai'
+          
+          # 执行回测脚本
+          python backtester.py
 
-      # 5. 执行回测脚本
-      - name: 运行历史回测脚本
-        id: backtest_run
-        # 假设 backtester.py 在主目录下
-        run: python backtester.py
-      
-      # 6. 上传回测报告 (将生成的 .md 文件作为 Artifact 保存)
-      - name: 查找并上传回测报告
-        uses: actions/upload-artifact@v4
-        with:
-          name: backtest-report-${{ github.sha }}
-          # backtester.py 的输出文件格式为 backtest_report_YYYYMMDD.md
-          path: backtest_report_*.md
-          retention-days: 90 # 报告保留 90 天
-      
-      # 7. (可选) 通知/发布结果
-      - name: 发布回测结果到 GitHub Pages (或 Gist/Slack)
-        if: always() # 即使上一步失败，也尝试运行通知
+      # --- 关键步骤 2: 推送结果到 YYYYMM 目录 ---
+      - name: 提交报告到年月目录并推送
         run: |
-          echo "回测报告已生成并作为 Artifact 上传。请到 Actions 页面下载报告。"
-          # 可以在此添加脚本将报告内容发送到 Slack/微信/邮件等通知系统。
+          # 1. 配置 Git 用户为 github-actions[bot]
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # 2. 获取上海时间 YYYYMM 目录名
+          # 使用 TZ='Asia/Shanghai' 确保时间基准正确
+          REPORT_DIR=$(TZ='Asia/Shanghai' date +%Y%m)
+          
+          # 获取生成的报告文件名 (backtester.py 确保只有一个)
+          REPORT_FILENAME=$(ls backtest_report_*.md)
+
+          echo "目标目录: ${REPORT_DIR}"
+          echo "报告文件: ${REPORT_FILENAME}"
+
+          # 3. 创建目录并移动文件
+          mkdir -p ${REPORT_DIR}
+          mv ${REPORT_FILENAME} ${REPORT_DIR}/
+
+          # 4. 提交并推送
+          # 检查是否有文件变动 (新目录或新报告)
+          if [ -n "$(git status --porcelain)" ]; then
+            git add ${REPORT_DIR}
+            # [skip ci] 避免本次推送再次触发工作流，造成无限循环
+            git commit -m "Automated Backtest: Add report ${REPORT_DIR}/${REPORT_FILENAME} [skip ci]"
+            git push
+          else
+            echo "没有新的回测报告或文件变动，跳过推送。"
+          fi
