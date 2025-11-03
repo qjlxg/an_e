@@ -297,11 +297,11 @@ def format_technical_value(value, format_type='percent'):
     else: return str(value)
 
 # --- 表格行格式化 (函数配置 11/13) ---
-def format_table_row(index, row):
+def format_table_row(index, row, table_part=1):
     """
     【格式优化】
     格式化 Markdown 表格行，包含颜色/符号标记，确保清晰度。
-    关键数值（回撤、RSI、趋势、行动提示）加粗。
+    根据 table_part 输出表的某一部分，以解决滚动条问题。
     """
     latest_value = row.get('最新净值', 1.0)
     # 计算试水价：当前净值 * (1 - 3%的跌幅)
@@ -317,20 +317,25 @@ def format_table_row(index, row):
         trend_display = f"**{trend_display}**"
         ma_ratio_display = f"**{ma_ratio_display}**"
 
-    # 严格保证13列输出，使用居中对齐
-    return (
-        f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
-        f"**{format_technical_value(row['当日跌幅'], 'percent')}** | **{row['RSI']:.2f}** | "
-        f"{row['MACD信号']} | {row['布林带位置']} | {format_technical_value(row['净值/MA50'], 'decimal2')} | "
-        f"{ma_ratio_display} | {trend_display} | "
-        f"{format_technical_value(row['净值/MA250'], 'decimal2')} | `{trial_price:.4f}` | **{row['行动提示']}** |\n"
-    )
+    if table_part == 1:
+        # 表格 1 (6列): 排名, 基金代码, 最大回撤, 当日跌幅, RSI(14), 行动提示
+        return (
+            f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
+            f"**{format_technical_value(row['当日跌幅'], 'percent')}** | **{row['RSI']:.2f}** | **{row['行动提示']}** |\n"
+        )
+    else:
+        # 表格 2 (8列): 基金代码, MACD信号, 布林带位置, 净值/MA50, MA50/MA250, 趋势, 净值/MA250, 试水买价 (跌3%)
+        return (
+            f"| `{row['基金代码']}` | {row['MACD信号']} | {row['布林带位置']} | "
+            f"{format_technical_value(row['净值/MA50'], 'decimal2')} | {ma_ratio_display} | {trend_display} | "
+            f"{format_technical_value(row['净值/MA250'], 'decimal2')} | `{trial_price:.4f}` |\n"
+        )
 
 # --- 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
     """
     【格式优化】
-    生成完整的Markdown格式报告，优化段落和标题间距。
+    生成完整的Markdown格式报告，优化段落和标题间距，并拆分表格以消除滚动条。
     """
     try:
         if not results:
@@ -359,10 +364,15 @@ def generate_report(results, timestamp_str):
         CRITICAL_DROP_INT = int(MIN_DAILY_DROP_PERCENT * 1000)
         df_base_elastic['当日跌幅_INT'] = (df_base_elastic['当日跌幅'] * 1000).astype(int)
 
-        # 定义表格头部和对齐分隔符（确保13列严格对齐，全部居中）
-        TABLE_HEADER = f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | MACD信号 | 布林带位置 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) | 行动提示 |\n"
-        # 13个分隔符, 全部使用居中对齐 :---:
-        TABLE_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
+        # 定义两个表格的头部和对齐分隔符
+        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日跌幅, RSI(14), 行动提示
+        TABLE_1_HEADER = f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | 行动提示 |\n"
+        TABLE_1_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: |\n" 
+        
+        # 表格 2 (8列): 基金代码, MACD信号, 布林带位置, 净值/MA50, MA50/MA250, 趋势, 净值/MA250, 试水买价 (跌3%)
+        TABLE_2_HEADER = f"| 基金代码 | MACD信号 | 布林带位置 | 净值/MA50 | **MA50/MA250** | **趋势** | 净值/MA250 | 试水买价 (跌3%) |\n"
+        TABLE_2_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
+        
         
         # ----------------------------------------------------
         # 1. 🥇 第一优先级：RSI <= 29.0
@@ -380,11 +390,21 @@ def generate_report(results, timestamp_str):
                 f"\n## **🥇 第一优先级 A：【即时恐慌买入】** ({len(df_p1a)}只)\n\n",
                 f"**条件：** 长期超跌 + **RSI极度超卖 ($\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)** + **当日跌幅 $\\ge$ {MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 市场恐慌时出手，本金充足时应优先配置。**（最高优先级）**" + "\n\n",
-                TABLE_HEADER,
-                TABLE_SEPARATOR
+                "### 核心指标 (1/2)\n",
+                TABLE_1_HEADER,
+                TABLE_1_SEPARATOR
             ])
             for index, row in df_p1a.iterrows():
-                report_parts.append(format_table_row(index, row))
+                report_parts.append(format_table_row(index, row, table_part=1))
+            
+            report_parts.extend([
+                "\n### 趋势与技术细节 (2/2)\n",
+                TABLE_2_HEADER,
+                TABLE_2_SEPARATOR
+            ])
+            for index, row in df_p1a.iterrows():
+                report_parts.append(format_table_row(index, row, table_part=2))
+            
             report_parts.append("\n---\n")
 
         # --- 报告 P1B ---
@@ -396,11 +416,21 @@ def generate_report(results, timestamp_str):
                 f"\n## **🥇 第一优先级 B：【技术共振建仓】** ({len(df_p1b)}只)\n\n",
                 f"**条件：** 长期超跌 + **RSI极度超卖 ($\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)** + **当日跌幅 $\\lt$ {MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
                 r"**纪律：** 极值超卖，适合在非大跌日进行建仓。**（第二高优先级）**" + "\n\n",
-                TABLE_HEADER,
-                TABLE_SEPARATOR
+                "### 核心指标 (1/2)\n",
+                TABLE_1_HEADER,
+                TABLE_1_SEPARATOR
             ])
             for index, row in df_p1b.iterrows():
-                report_parts.append(format_table_row(index, row))
+                report_parts.append(format_table_row(index, row, table_part=1))
+                
+            report_parts.extend([
+                "\n### 趋势与技术细节 (2/2)\n",
+                TABLE_2_HEADER,
+                TABLE_2_SEPARATOR
+            ])
+            for index, row in df_p1b.iterrows():
+                report_parts.append(format_table_row(index, row, table_part=2))
+                
             report_parts.append("\n---\n")
 
         # ----------------------------------------------------
@@ -419,12 +449,22 @@ def generate_report(results, timestamp_str):
                 f"\n## **🥈 第二优先级：【强力超卖观察池】** ({len(df_p2)}只)\n\n",
                 f"**条件：** 长期超跌 + **强力超卖 ($>{EXTREME_RSI_THRESHOLD_P1:.0f}$ 且 $\\le {STRONG_RSI_THRESHOLD_P2:.0f}$)**。\n",
                 r"**纪律：** 接近极值，是良好的观察目标，但需等待 RSI 进一步下行或趋势确立。**（第三优先级）**" + "\n\n",
-                TABLE_HEADER,
-                TABLE_SEPARATOR
+                "### 核心指标 (1/2)\n",
+                TABLE_1_HEADER,
+                TABLE_1_SEPARATOR
             ])
 
             for index, row in df_p2.iterrows():
-                report_parts.append(format_table_row(index, row))
+                report_parts.append(format_table_row(index, row, table_part=1))
+                
+            report_parts.extend([
+                "\n### 趋势与技术细节 (2/2)\n",
+                TABLE_2_HEADER,
+                TABLE_2_SEPARATOR
+            ])
+            for index, row in df_p2.iterrows():
+                report_parts.append(format_table_row(index, row, table_part=2))
+                
             report_parts.append("\n---\n")
         else:
             report_parts.extend([
@@ -447,12 +487,22 @@ def generate_report(results, timestamp_str):
                 f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_p3)}只)\n\n",
                 f"**条件：** 长期超跌 + **RSI $>{STRONG_RSI_THRESHOLD_P2:.0f}$ (未达强力超卖)**。\n",
                 r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI 进一步进入超卖区。**（最低优先级）**" + "\n\n",
-                TABLE_HEADER,
-                TABLE_SEPARATOR
+                "### 核心指标 (1/2)\n",
+                TABLE_1_HEADER,
+                TABLE_1_SEPARATOR
             ])
 
             for index, row in df_p3.iterrows():
-                report_parts.append(format_table_row(index, row))
+                report_parts.append(format_table_row(index, row, table_part=1))
+                
+            report_parts.extend([
+                "\n### 趋势与技术细节 (2/2)\n",
+                TABLE_2_HEADER,
+                TABLE_2_SEPARATOR
+            ])
+            for index, row in df_p3.iterrows():
+                report_parts.append(format_table_row(index, row, table_part=2))
+
             report_parts.append("\n---\n")
         
         # 策略执行纪律（包含行业风险提示）
