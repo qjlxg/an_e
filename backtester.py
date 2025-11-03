@@ -9,6 +9,7 @@ import logging
 FUND_DATA_DIR = 'fund_data'
 HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
 EXTREME_RSI_THRESHOLD_P1 = 29.0      # 第一优先级买入RSI阈值 (P1)
+STRONG_RSI_THRESHOLD_P2 = 35.0       # 第二优先级买入RSI阈值 (P2)
 MA_HEALTH_THRESHOLD = 0.95           # 趋势健康度阈值 (MA50/MA250 >= 0.95)
 STOP_LOSS_PERCENT = 0.10             # 止损阈值 (10%)
 HOLDING_PERIOD = 60                  # 固定持有周期 (60个交易日)
@@ -114,7 +115,10 @@ def calculate_indicators_at_date(df, current_index):
 
 # --- 策略信号生成函数 (Buy Signal) ---
 def check_buy_signal(indicators):
-    """检查是否触发 P1 级买入信号"""
+    """
+    【调试版本】检查是否触发 P2 级买入信号。
+    条件：高弹性 + RSI强力超卖 (<= 35.0) + 忽略趋势健康度。
+    """
     if indicators is None:
         return False
 
@@ -122,15 +126,14 @@ def check_buy_signal(indicators):
     is_elastic = (indicators['最大回撤(1M)'] >= HIGH_ELASTICITY_MIN_DRAWDOWN) and \
                  (indicators['近一周连跌'] == 1)
 
-    # Filter 2: RSI P1 极度超卖
-    is_p1_oversold = indicators['RSI'] <= EXTREME_RSI_THRESHOLD_P1
+    # Filter 2: RSI 强力超卖 (使用 P2 阈值 35.0)
+    is_p2_oversold = indicators['RSI'] <= STRONG_RSI_THRESHOLD_P2
     
-    # Filter 3: 趋势健康度检查
-    is_trend_healthy = (indicators['MA50/MA250'] is not np.nan and indicators['MA50/MA250'] >= MA_HEALTH_THRESHOLD) and \
-                       (indicators['MA50/MA250趋势'] != '向下')
+    # Filter 3: 趋势健康度检查 (DEBUG: 暂时设置为 True，跳过检查)
+    is_trend_healthy = True 
     
-    # 策略买入条件：高弹性 + 极度超卖 + 趋势健康
-    return is_elastic and is_p1_oversold and is_trend_healthy
+    # 策略买入条件：高弹性 + 强力超卖 (P2) + 忽略趋势健康度
+    return is_elastic and is_p2_oversold and is_trend_healthy
 
 
 # --- 历史回测主函数 ---
@@ -151,7 +154,7 @@ def backtest_strategy(start_date_str, end_date_str):
         filename = os.path.basename(filepath)
         fund_code = os.path.splitext(filename)[0]
         
-        # --- 关键修复点：排除文件 ---
+        # --- 关键：排除文件 ---
         if filename in EXCLUDE_FILES:
             LOG.info(f"跳过排除列表中的文件: {filename}")
             continue
@@ -163,7 +166,6 @@ def backtest_strategy(start_date_str, end_date_str):
             if 'net_value' in df.columns:
                 df = df.rename(columns={'net_value': 'value'})
             elif 'value' not in df.columns:
-                # 尝试猜测可能的净值列名
                 value_cols = [col for col in df.columns if 'value' in col or '净值' in col]
                 if value_cols:
                     df = df.rename(columns={value_cols[0]: 'value'})
@@ -307,7 +309,6 @@ if __name__ == '__main__':
         with open(report_filename, 'w', encoding='utf-8') as f:
             f.write(final_report)
     except TypeError as e:
-        # 再次捕获 write 错误，确保用户看到报告内容
         print(f"写入报告文件时发生错误: {e}. 最终报告内容如下:\n")
         print(final_report)
         exit(1)
