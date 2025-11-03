@@ -13,6 +13,12 @@ MA_HEALTH_THRESHOLD = 0.95           # 趋势健康度阈值 (MA50/MA250 >= 0.95
 STOP_LOSS_PERCENT = 0.10             # 止损阈值 (10%)
 HOLDING_PERIOD = 60                  # 固定持有周期 (60个交易日)
 
+# --- 文件排除列表：跳过非净值数据文件 ---
+EXCLUDE_FILES = [
+    'fund_fee_result.csv', # 排除用户指定的文件
+    # 可在此处添加其他不包含净值数据的文件名
+]
+
 # --- 设置日志 (与 analyzer.py 保持一致) ---
 def setup_logging():
     """设置日志配置"""
@@ -120,7 +126,7 @@ def check_buy_signal(indicators):
     is_p1_oversold = indicators['RSI'] <= EXTREME_RSI_THRESHOLD_P1
     
     # Filter 3: 趋势健康度检查
-    is_trend_healthy = (indicators['MA50/MA250'] >= MA_HEALTH_THRESHOLD) and \
+    is_trend_healthy = (indicators['MA50/MA250'] is not np.nan and indicators['MA50/MA250'] >= MA_HEALTH_THRESHOLD) and \
                        (indicators['MA50/MA250趋势'] != '向下')
     
     # 策略买入条件：高弹性 + 极度超卖 + 趋势健康
@@ -132,11 +138,9 @@ def backtest_strategy(start_date_str, end_date_str):
     """对所有基金进行历史回测"""
     LOG = setup_logging()
     
-    # 报告存储结构
     trades = []
-    
-    # 找到所有基金文件
     csv_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
+    
     if not csv_files:
         LOG.error(f"在目录 '{FUND_DATA_DIR}' 中未找到CSV文件")
         return []
@@ -144,25 +148,50 @@ def backtest_strategy(start_date_str, end_date_str):
     LOG.info(f"开始回测，时间范围: {start_date_str} 至 {end_date_str}")
     
     for filepath in csv_files:
-        fund_code = os.path.splitext(os.path.basename(filepath))[0]
+        filename = os.path.basename(filepath)
+        fund_code = os.path.splitext(filename)[0]
+        
+        # --- 关键修复点：排除文件 ---
+        if filename in EXCLUDE_FILES:
+            LOG.info(f"跳过排除列表中的文件: {filename}")
+            continue
+
         try:
             df = pd.read_csv(filepath)
+            
+            # 兼容 analyzer.py 的列名
+            if 'net_value' in df.columns:
+                df = df.rename(columns={'net_value': 'value'})
+            elif 'value' not in df.columns:
+                # 尝试猜测可能的净值列名
+                value_cols = [col for col in df.columns if 'value' in col or '净值' in col]
+                if value_cols:
+                    df = df.rename(columns={value_cols[0]: 'value'})
+                else:
+                    raise KeyError("CSV文件缺少 'date' 或 'net_value'/'value' 列")
+
+            # 确保 'date' 列存在
+            if 'date' not in df.columns:
+                raise KeyError("CSV文件缺少 'date' 列")
+
             df['date'] = pd.to_datetime(df['date'])
-            df = df.rename(columns={'net_value': 'value'}).sort_values(by='date', ascending=True).reset_index(drop=True)
+            df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
             
             # 过滤回测日期范围
             df_test = df[(df['date'] >= start_date_str) & (df['date'] <= end_date_str)].copy()
             
             if df_test.empty or len(df_test) < 250:
+                LOG.warning(f"基金 {fund_code} 数据不足或不在回测范围内，跳过。")
                 continue
 
             LOG.debug(f"开始回测基金: {fund_code}")
             
-            # 交易记录
-            active_position = None # {buy_date, entry_price, entry_index}
+            active_position = None
             
-            # 遍历数据，从第一个有足够指标数据计算的日期开始
+            # 遍历数据
             for i in range(len(df_test)):
+                original_df_index = df_test.index[i] 
+                
                 current_date = df_test.iloc[i]['date']
                 current_price = df_test.iloc[i]['value']
                 
@@ -175,7 +204,7 @@ def backtest_strategy(start_date_str, end_date_str):
                     stop_loss_price = entry_price * (1 - STOP_LOSS_PERCENT)
                     is_stop_loss = current_price <= stop_loss_price
                     
-                    # 1.2. 达到固定持有期 (使用 index 差值近似交易日)
+                    # 1.2. 达到固定持有期
                     entry_index = active_position['entry_index']
                     is_time_up = (i - entry_index) >= HOLDING_PERIOD
                     
@@ -192,14 +221,11 @@ def backtest_strategy(start_date_str, end_date_str):
                             '收益率': (exit_price - entry_price) / entry_price,
                             '退出原因': '止损' if is_stop_loss else '周期结束'
                         })
-                        active_position = None # 清除持仓
-                        LOG.debug(f"{fund_code} 卖出 ({'止损' if is_stop_loss else '周期结束'})")
-                        # 卖出后当日不再买入
+                        active_position = None 
 
                 # --- 2. 检查买入信号 (Buy Logic) ---
                 if active_position is None:
-                    # 必须计算当日指标，从原始 df 中切片以确保指标计算的准确性
-                    indicators = calculate_indicators_at_date(df, df_test.index[i])
+                    indicators = calculate_indicators_at_date(df, original_df_index)
                     
                     if check_buy_signal(indicators):
                         active_position = {
@@ -207,10 +233,13 @@ def backtest_strategy(start_date_str, end_date_str):
                             'entry_price': current_price,
                             'entry_index': i 
                         }
-                        LOG.debug(f"{fund_code} 买入信号 ({current_date.strftime('%Y-%m-%d')})")
         
+        # 捕获因数据格式错误导致的 KeyError
+        except KeyError as e:
+            LOG.error(f"处理基金 {fund_code} 时发生数据列错误: {e}")
+            continue
         except Exception as e:
-            LOG.error(f"处理基金 {fund_code} 时发生错误: {e}")
+            LOG.error(f"处理基金 {fund_code} 时发生未知错误: {e}")
             continue
 
     return trades
@@ -219,7 +248,7 @@ def backtest_strategy(start_date_str, end_date_str):
 def analyze_results(trades):
     """计算回测结果统计"""
     if not trades:
-        return "回测结果为空，没有发生交易。", 0.0, 0, 0, 0.0
+        return "回测结果为空，没有发生交易。" # 确保返回类型是 str
 
     df_trades = pd.DataFrame(trades)
     
@@ -260,11 +289,9 @@ def analyze_results(trades):
 
 if __name__ == '__main__':
     # --- 回测配置 ---
-    # 假设回测过去一年的数据
     END_DATE = datetime.now() 
     START_DATE = END_DATE - timedelta(days=365) 
 
-    # 格式化日期字符串，用于数据加载
     START_DATE_STR = START_DATE.strftime('%Y-%m-%d')
     END_DATE_STR = END_DATE.strftime('%Y-%m-%d')
 
@@ -276,9 +303,14 @@ if __name__ == '__main__':
     
     # 保存报告到文件
     report_filename = f"backtest_report_{END_DATE.strftime('%Y%m%d')}.md"
-    with open(report_filename, 'w', encoding='utf-8') as f:
-        f.write(final_report)
+    try:
+        with open(report_filename, 'w', encoding='utf-8') as f:
+            f.write(final_report)
+    except TypeError as e:
+        # 再次捕获 write 错误，确保用户看到报告内容
+        print(f"写入报告文件时发生错误: {e}. 最终报告内容如下:\n")
+        print(final_report)
+        exit(1)
 
     print(f"\n--- 回测报告已生成 ---\n报告文件: {report_filename}\n")
-    print(final_report)
-    print("------------------------\n脚本执行完毕。")
+    print("脚本执行完毕。")
