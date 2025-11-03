@@ -1,4 +1,4 @@
-name: 历史回测
+name: 基金策略历史回测与推送
 
 # 触发工作流的条件
 on:
@@ -49,25 +49,29 @@ jobs:
       # --- 关键步骤 2: 推送结果到 YYYYMM 目录 ---
       - name: 提交报告到年月目录并推送
         run: |
-          # 1. 配置 Git 用户为 github-actions[bot]
+          # 1. 清理临时生成的日志文件，避免Git报错
+          if [ -f "backtest.log" ]; then
+            rm backtest.log
+          fi
+          
+          # 2. 配置 Git 用户
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-          # 2. 获取上海时间 YYYYMM 目录名
-          # 使用 TZ='Asia/Shanghai' 确保时间基准正确
+          # 3. 获取上海时间 YYYYMM 目录名
           REPORT_DIR=$(TZ='Asia/Shanghai' date +%Y%m)
           
-          # 获取生成的报告文件名 (backtester.py 确保只有一个)
+          # 获取生成的报告文件名
           REPORT_FILENAME=$(ls backtest_report_*.md)
 
           echo "目标目录: ${REPORT_DIR}"
           echo "报告文件: ${REPORT_FILENAME}"
 
-          # 3. 创建目录并移动文件
+          # 4. 创建目录并移动文件
           mkdir -p ${REPORT_DIR}
           mv ${REPORT_FILENAME} ${REPORT_DIR}/
 
-          # 4. 提交并推送
+          # 5. 提交并推送
           # 检查是否有文件变动 (新目录或新报告)
           if [ -n "$(git status --porcelain)" ]; then
             git add ${REPORT_DIR}
