@@ -1,0 +1,59 @@
+name: Fund Analysis Automation (C Class)
+
+on:
+  push:
+    branches:
+      - main # 或你的主要分支名称
+    paths:
+      - '基金分析脚本.py' # 假设你的脚本文件名为 基金分析脚本.py
+      - 'C类.txt'
+      - '.github/workflows/run_analysis.yml' # 自身变动时也触发
+
+jobs:
+  run_script_and_push_results:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python environment
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        # 安装你脚本所需的库
+        python -m pip install --upgrade pip
+        pip install pandas requests lxml numpy PyQt5
+
+    - name: Set up Shanghai Time Zone
+      # 设置时区为上海，确保时间戳是上海时间
+      run: |
+        sudo timedatectl set-timezone Asia/Shanghai
+
+    - name: Run Python Script (Assuming script is named 'fund_analysis_c_class.py')
+      # 将上方修改后的 Python 代码保存为一个文件，例如 fund_analysis_c_class.py
+      run: python fund_analysis_c_class.py
+
+    - name: Configure Git
+      run: |
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions-bot@users.github.com"
+      
+    - name: Commit and Push Results
+      # 查找所有新生成的 CSV 文件并提交
+      run: |
+        # 查找所有 CSV 文件并添加到 Git
+        git add --all *.csv
+        # 查找年月目录下的所有 CSV 文件并添加到 Git (确保 Python脚本中的保存逻辑正确创建了目录)
+        git add --all 20*/
+        
+        # 检查是否有文件变动
+        if ! git diff --cached --exit-code; then
+          git commit -m "Auto-generated: Fund analysis results for C Class funds (Shanghai Time)"
+          git push
+        else
+          echo "No changes in generated CSV files. Skipping commit."
+        fi
