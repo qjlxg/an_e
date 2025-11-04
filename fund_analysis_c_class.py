@@ -6,7 +6,6 @@ import pandas as pd
 import requests
 from lxml import etree
 import re
-import numpy as np
 import time
 from datetime import datetime
 import os
@@ -37,7 +36,7 @@ if not c_class_codes:
 
 # In[]:
 # --- 2. 参数设置 ---
-# 假设 season 参数为硬编码的 1，您可以根据需要手动修改
+# season=1 表示爬取最新一期（即 div[1]）的持仓数据。
 season = 1 
 MAX_WORKERS = 20 # 并发线程数，可根据网络情况调整
 total = len(c_class_codes)
@@ -50,10 +49,7 @@ head = {
 
 
 def fetch_fund_holdings(code, season, head):
-    """
-    爬取单个基金的持仓数据和简称，返回一个结构化列表。
-    返回: code, fund_name, list_of_holdings (每个持仓是 [股票简称, 占净值比例, 持股数_万, 持仓市值_万])
-    """
+    """爬取单个基金的持仓数据和简称，并解析"""
     url = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={}&topline=10&year=&month=&rt=0.5032668912422176".format(code)
     try:
         response = requests.get(url, headers=head, timeout=10)
@@ -63,48 +59,67 @@ def fetch_fund_holdings(code, season, head):
         fund_name_match = re.search(r'name:\'(.*?)\'', text)
         fund_name = fund_name_match.group(1) if fund_name_match else '简称缺失'
 
+        # 提取 HTML 内容块
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
         if not div_match:
-            return code, fund_name, [] # 返回空持仓
+            return code, fund_name, []
 
         div = div_match[0]
         html_body = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>test</title></head><body>%s</body></html>' % (div)
         html = etree.HTML(html_body)
         
-        stock_info = html.xpath('//div[{}]/div/table/tbody/tr/td/a'.format(season))
-        stock_money = html.xpath('//div[{}]/div/table/tbody/tr/td[@class="tor"]'.format(season))
-        if stock_money == []:
-            stock_money = html.xpath('//div[{}]/div/table/tbody/tr/td[@class="toc"]'.format(season))
+        # 使用 season 变量定位最新的季度表格
+        xpath_base = f'//div[{season}]/div/table/tbody/tr'
         
-        stock_money_text = []
-        for ii in stock_money:
-            ii_text = ii.text
-            if ii_text is not None:
-                ii_text = ii_text.replace('---','0')
-                stock_money_text.append(float(ii_text.replace(',','').replace('%','')))
+        # 获取股票名称 (a 标签) 和 股票代码 (a 标签的父节点 td 的前一个 td 的内容)
+        rows = html.xpath(xpath_base)
         
         stock_one_fund = []
-        if len(stock_info) != 0 and len(stock_money_text) != 0:
-            count = -1
-            for i in range(0, len(stock_info)):
-                stock = stock_info[i]
-                stock_text = stock.text if stock.text is not None else '缺失'
-                tmp0 = stock_text.split('.')
-                tmp = tmp0[0]
-                
-                if stock_text and (tmp.isdigit() or (tmp.isupper() and tmp.isalnum() and len(tmp0)>1)):
-                    count += 1
-                    if len(stock_money_text) > 3*count + 2:
-                        stock_one_fund.append([stock_info[i+1].text, # 股票简称
-                                                stock_money_text[3*count+0], # 占净值比例
-                                                stock_money_text[3*count+1], # 持股数_万
-                                                stock_money_text[3*count+2]]) # 持仓市值_万
+        for row in rows:
+            # 检查行是否是有效的持仓行
+            stock_code_td = row.xpath('./td[2]/a')
+            if not stock_code_td:
+                 continue
+            
+            # 股票名称位于第 3 个 td (td[3] 及其内部的 a 标签)
+            stock_name = row.xpath('./td[3]/a/text()')[0] if row.xpath('./td[3]/a/text()') else '名称缺失'
+            
+            # 数据列：占净值比例 (td[5])、持股数（万股）(td[6])、持仓市值（万元）(td[7])
+            # 注意：如果表格有 '最新价' 和 '涨跌幅' 列，索引会后移两位。
+            # 我们直接使用 row.xpath('./td[position()>=5 and position()<=7 and @class="tor"]') 尝试定位数据。
+            
+            # 由于网站结构不固定，使用绝对索引更容易出错，这里采用更稳定的方式提取文本并清理
+            # 占净值比例 (td[X+0]), 持股数 (td[X+1]), 持仓市值 (td[X+2])
+            data_fields = []
+            # 尝试从第5个td开始，提取接下来的3个数字列（它们通常带有 right-align 类名 tor 或 toc）
+            for i in [5, 6, 7]:
+                text = row.xpath(f'./td[{i}]/text()')
+                if text:
+                    data_fields.append(text[0].strip().replace('---','0').replace(',','').replace('%',''))
+
+            # 过滤非数字数据，并转换类型
+            stock_money_text = []
+            for item in data_fields:
+                try:
+                    stock_money_text.append(float(item))
+                except ValueError:
+                    # 如果转换失败，可能是列偏移或数据缺失，跳过此行
+                    continue
+
+            # 确保我们有全部3个关键数值
+            if len(stock_money_text) >= 3:
+                # [股票简称, 占净值比例, 持股数_万, 持仓市值_万]
+                stock_one_fund.append([stock_name, 
+                                        stock_money_text[0], 
+                                        stock_money_text[1], 
+                                        stock_money_text[2]])
         
         return code, fund_name, stock_one_fund
 
     except requests.exceptions.RequestException:
         return code, '爬取失败', []
     except Exception:
+        # 捕获所有其他解析错误，避免中断整个并发过程
         return code, '处理失败', []
 
 # In[]:
@@ -113,7 +128,6 @@ print(f"从 C类.txt 中读取到 {total} 支基金，开始并发爬取持仓..
 start_time = time.time()
 futures = []
 all_holdings = [] # 用于存储所有基金的所有持仓记录
-fund_info_list = [] # 用于存储基金代码和简称
 
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     # 提交所有爬取任务到线程池
@@ -125,13 +139,10 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     for i, future in enumerate(as_completed(futures)):
         code, fund_name, holdings_list = future.result()
         
-        # 更新进度 (每 10% 报告一次)
+        # 更新进度
         if total > 0 and (i + 1) % (total // 10 + 1) == 0:
-            print(f"<" * 20 + f"进度: {i+1}/{total} ({((i+1)/total)*100:.1f}%)" + ">" * 20)
+            print(f"进度: {i+1}/{total} ({((i+1)/total)*100:.1f}%)")
 
-        # 存储基金基本信息
-        fund_info_list.append({'基金代码': code, '基金简称': fund_name})
-        
         # 存储所有持仓数据
         for holding in holdings_list:
             # 扩展持仓记录：[基金代码, 基金简称, 股票简称, 占净值比例, 持股数_万, 持仓市值_万]
@@ -139,7 +150,7 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
 
 end_time = time.time()
-print("\n" + "<" * 30 + "并发获取基金持仓数据完成!!!"+ ">" * 30)
+print("\n" + "=" * 30 + " 并发获取基金持仓数据完成 " + "=" * 30)
 print(f"总耗时: {end_time - start_time:.2f} 秒")
 
 # In[]:
@@ -151,8 +162,7 @@ df_holdings = pd.DataFrame(
     columns=['基金代码', '基金简称', '股票简称', '占净值比例', '持股数_万', '持仓市值_万']
 )
 
-# 保存最终的持仓数据文件
-# 文件名将包含时间戳，并放在年月目录中
+# 添加时间戳并保存文件
 current_time_shanghai = datetime.now()
 timestamp = current_time_shanghai.strftime("%Y%m%d_%H%M%S")
 year_month = current_time_shanghai.strftime("%Y%m")
