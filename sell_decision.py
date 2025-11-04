@@ -9,7 +9,7 @@ big_market_path = 'index_data/000300.csv'
 fund_data_dir = 'fund_data/'
 
 # --- 配置：策略门槛参数 ---
-MIN_PROFIT_FOR_T1 = 5.5  # T1 止盈最小盈利门槛 (新增)
+MIN_PROFIT_FOR_T1 = 5.5  # T1 止盈最小盈利门槛
 
 # 加载配置文件
 try:
@@ -178,7 +178,7 @@ for code, cost_nav in holdings_config.items():
         print(f"警告: 基金 {code} 无法加载。原因: {e}。跳过该基金。")
 
 
-# 决策函数 (T1 止盈门槛已修改, 移动止盈已修复)
+# 决策函数 (T1 止盈门槛已修改, 移动止盈已修复并加固)
 def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_data, big_trend):
     profit_rate = holding['profit_rate']
     latest_net_value = holding['latest_net_value']
@@ -252,8 +252,14 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
 
     # 仅当移动止盈价高于成本价时，且最新净值跌破止盈价时触发
     if trailing_stop_nav > cost_nav:
-        # 核心修复点: 仅当当前净值 <= 止盈价时才触发
-        if latest_net_value <= trailing_stop_nav:
+        # 使用 np.isclose 进行更安全的浮点数比较，并确保 latest_net_value 严格低于或非常接近止盈价
+        if latest_net_value <= trailing_stop_nav or np.isclose(latest_net_value, trailing_stop_nav, atol=1e-4):
+            
+            # --- DEBUG: 打印触发数据，用于问题排查 ---
+            if code == '009645':
+                 print(f"DEBUG: 基金 {code} 移动止盈触发。NAV: {latest_net_value}, Target: {trailing_stop_nav}. (应为 latest_nav <= Target)")
+            # ------------------------------------------
+
             decision = '因移动止盈卖出'
             sell_reasons.append(f'移动止盈触发 (止盈价: {trailing_stop_nav})')
             return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
@@ -287,6 +293,12 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
 
             # 增加回撤必须亏损的判断 (防止高位巨幅回撤但仍盈利)
             if drawdown > 0.10 and current_nav < cost_nav: 
+                
+                # --- DEBUG: 打印回撤止损触发数据 ---
+                if code == '009645':
+                     print(f"DEBUG: 基金 {code} 最大回撤止损触发。 Drawdown: {drawdown:.4f}, Current NAV: {current_nav}, Cost NAV: {cost_nav}.")
+                # ------------------------------------------
+
                 decision = '因最大回撤止损20%'
                 sell_reasons.append('14天内最大回撤>10%且低于成本价触发')
                 return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
