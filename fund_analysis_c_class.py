@@ -14,12 +14,9 @@ import sys
 
 # --- 1. 读取 C 类基金代码列表 ---
 try:
-    # 尝试获取文件内容。如果文件不可用，则跳过。
-    # 因为您提到文件已上传，我们假设可以直接读取。
     with open('C类.txt', 'r', encoding='utf-8') as f:
         all_lines = [line.strip() for line in f if line.strip()]
     
-    # 检查并移除可能的列标题 'code'
     if all_lines and all_lines[0].lower() in ['code', '基金代码']:
         c_class_codes = all_lines[1:]
     else:
@@ -38,9 +35,8 @@ if not c_class_codes:
 
 # In[]:
 # --- 2. 参数设置 ---
-# season=1 表示爬取最新一期（即 div[1]）的持仓数据。
 season = 1 
-MAX_WORKERS = 20 # 并发线程数
+MAX_WORKERS = 20 
 total = len(c_class_codes)
 
 # 爬虫 headers
@@ -59,18 +55,17 @@ def fetch_fund_holdings(code, season, head):
         response = requests.get(url, headers=head, timeout=10)
         text = response.text
         
-        # --- 核心修正：基金简称提取逻辑 ---
-        
-        # 1. 尝试从 content 变量的头部提取，这是最稳定的来源
-        content_match = re.search(r'content:\\"(.*?)\s+\d{4}年\d季度股票投资明细', text)
+        # --- 最终修正：基金简称提取逻辑 ---
+        # 匹配 content 块开头到第一个季度信息前的所有文本
+        # Pattern: content:"[基金简称]  [季度信息]..."
+        content_match = re.search(r'content:\\"(.*?)\s{2,}\d{4}年\d季度股票投资明细', text)
         if content_match:
             fund_name = content_match.group(1).strip()
         else:
-            # 2. 如果方法1失败，尝试从 name:'...' 模式提取 (备份方法)
+             # 备用模式：寻找 name:'...' (例如: name:'华夏成长混合')
             name_match = re.search(r'name:\'(.*?)\'', text)
             if name_match:
-                 fund_name = name_match.group(1).strip()
-
+                fund_name = name_match.group(1).strip()
         # ----------------------------
 
         # 提取 HTML 内容块
@@ -95,24 +90,20 @@ def fetch_fund_holdings(code, season, head):
             
             stock_name = stock_name_list[0].strip()
             
-            # --- 关键修正：重新定位数据列 ---
-            # 尝试通过 XPath 提取最后四个 td 元素，通常是 涨跌幅、占净值比例、持股数、持仓市值
+            # --- 股票数据提取逻辑 (保持稳定) ---
             data_tds = row.xpath('./td[position() >= last()-3]') 
             
             money_data = []
             for td in data_tds:
-                # 提取 td 内所有文本并清理
                 text = "".join(td.xpath('.//text()')).strip()
                 text = text.replace('---','0').replace(',','').replace('%','')
                 try:
-                    # 如果能成功转换成浮点数，就认为是有效数据
                     money_data.append(float(text))
                 except ValueError:
-                    pass # 转换失败，跳过
+                    pass
             
             # 确保有足够的数字：占净值比例、持股数、持仓市值
             if len(money_data) >= 3:
-                # 假设所需数据（占净值比例、持股数、持仓市值）是 money_data 中的最后三个
                 stock_one_fund.append([stock_name, 
                                         money_data[-3], # 占净值比例
                                         money_data[-2], # 持股数_万
@@ -131,7 +122,7 @@ def fetch_fund_holdings(code, season, head):
 print(f"从 C类.txt 中读取到 {total} 支基金，开始并发爬取持仓...")
 start_time = time.time()
 futures = []
-all_holdings = [] # 用于存储所有基金的所有持仓记录
+all_holdings = [] 
 
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     # 提交所有爬取任务到线程池
@@ -149,7 +140,6 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
         # 存储所有持仓数据
         for holding in holdings_list:
-            # 扩展持仓记录：[基金代码, 基金简称, 股票简称, 占净值比例, 持股数_万, 持仓市值_万]
             all_holdings.append([code, fund_name] + holding)
 
 
