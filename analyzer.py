@@ -145,7 +145,7 @@ def calculate_technical_indicators(df):
         if len(df_asc) >= 2:
             value_t_minus_1 = df_asc['value'].iloc[-2]
             if value_t_minus_1 > 0:
-                # 注意：daily_drop 是 (前值 - 现值) / 前值。如果结果 > 0，表示下跌。
+                # daily_drop: (前值 - 现值) / 前值。正值代表跌幅，负值代表涨幅。
                 daily_drop = (value_t_minus_1 - value_latest) / value_t_minus_1
                 
         # 6. 布林带位置 (调用了 calculate_bollinger_bands)
@@ -160,8 +160,6 @@ def calculate_technical_indicators(df):
             'MA50/MA250趋势': trend_direction,
             '布林带位置': bollinger_position, 
             '最新净值': round(value_latest, 4) if not math.isnan(value_latest) else np.nan,
-            # daily_drop 在这里存储的是 **正值** 代表跌幅百分比 (例如 0.0379 代表跌 3.79%)
-            # 如果是上涨，daily_drop 是负值 (例如 -0.0379)
             '当日跌幅': round(daily_drop, 4) 
         }
 
@@ -181,18 +179,10 @@ def calculate_consecutive_drops(series):
     """计算净值序列中最大的连续下跌天数"""
     try:
         if series.empty or len(series) < 2: return 0
-        # 判断：前值 < 现值，即上涨，不是连续下跌。原始逻辑可能存在误解。
-        # 正确的连续下跌：当前值 < 前值
-        drops = (series.iloc[1:].values < series.iloc[:-1].values) # series是降序的，所以是 (t-1 < t)
         
-        # 根据原始脚本：df = df.sort_values(by='date', ascending=False)
-        # series.iloc[:-1].values 是 t-1, t-2, ...
-        # series.iloc[1:].values 是 t, t-1, ...
-        # drops = (series.iloc[:-1].values < series.iloc[1:].values) 
-        #   -> (t-1 < t) 即 **上涨**
+        # drops = (series.iloc[:-1].values < series.iloc[1:].values) # 原始逻辑 (t-1 < t)
         
-        # 保留原始脚本逻辑，但如果它的目标是找下跌天数，那它是错误的，不过此处要求不修改功能。
-        # 假设原始脚本 intended to find consecutive days where t-1 < t (连续上涨) 或它是正确的下跌逻辑。
+        # 保持原始脚本的逻辑，假设其计算的是连续上涨天数（因其是 t-1 < t）
         drops = (series.iloc[:-1].values < series.iloc[1:].values) 
         
         max_drop_days = 0
@@ -245,10 +235,33 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
 
 # --- 单基金分析 (函数配置 8/13) ---
 def analyze_single_fund(filepath):
-    """分析单只基金"""
+    """
+    【修正区域】增加编码容错和列检查，解决 KeyError: 'date' 和 UnicodeDecodeError
+    分析单只基金
+    """
+    fund_code = os.path.splitext(os.path.basename(filepath))[0]
+    df = pd.DataFrame()
+
     try:
-        fund_code = os.path.splitext(os.path.basename(filepath))[0]
+        # 尝试默认 UTF-8 编码加载
         df = pd.read_csv(filepath)
+    except UnicodeDecodeError:
+        try:
+            # 尝试 GBK 编码（解决中文环境乱码问题）
+            df = pd.read_csv(filepath, encoding='gbk')
+        except Exception as e:
+            logging.error(f"分析基金 {filepath} 时发生编码或加载错误: {e}")
+            return None
+    except Exception as e:
+         logging.error(f"分析基金 {filepath} 时发生加载错误: {e}")
+         return None
+
+    try:
+        # 【修正区域】检查关键列是否存在，非净值文件将直接跳过
+        if 'date' not in df.columns or 'net_value' not in df.columns:
+            logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列，跳过。")
+            return None
+            
         df['date'] = pd.to_datetime(df['date'])
         
         # 保持原始脚本逻辑：日期降序
@@ -271,7 +284,6 @@ def analyze_single_fund(filepath):
         
         action_prompt = get_action_prompt(
             tech_indicators.get('RSI', np.nan), 
-            # daily_drop_val 是正值表示跌幅，负值表示涨幅
             tech_indicators.get('当日跌幅', 0.0), 
             mdd_recent_month, 
             max_drop_days_week
@@ -288,7 +300,8 @@ def analyze_single_fund(filepath):
             }
         return None
     except Exception as e:
-        logging.error(f"分析基金 {filepath} 时发生错误: {e}")
+        # 捕获后续处理中的其他错误 (如计算错误)
+        logging.error(f"分析基金 {filepath} 时发生数据处理错误: {e}")
         return None
 
 # --- 所有基金分析 (函数配置 9/13) ---
@@ -323,9 +336,9 @@ def analyze_all_funds(target_codes=None):
 def format_technical_value(value, format_type='percent'):
     """格式化技术指标值用于显示"""
     if pd.isna(value): return 'NaN'
-    # 修复逻辑在这里
+    # 【修正区域】处理当日跌幅的符号逻辑：仅显示下跌，上涨显示 0.00%
     if format_type == 'report_daily_drop':
-        # value 是 (前值 - 现值) / 前值
+        # value 是 (前值 - 现值) / 前值。正值代表跌幅，负值代表涨幅。
         if value > 0:
             # 实际下跌，显示为负百分比 (例如 0.0379 -> -3.79%)
             return f"{-value:.2%}" 
@@ -408,8 +421,7 @@ def generate_report(results, timestamp_str):
         ].copy()
 
         # ----------------------------------------------------------------------------------------------------------------------
-        # 注意：这里需要根据 '当日跌幅' 字段进行判断。
-        # '当日跌幅' 存储的是 (前值 - 现值) / 前值。如果 > 0 是下跌，如果 < 0 是上涨。
+        # 注意：'当日跌幅' 存储的是 (前值 - 现值) / 前值。如果 > 0 是下跌，如果 < 0 是上涨。
         # ----------------------------------------------------------------------------------------------------------------------
         
         # 为了兼容原始脚本的判断逻辑：当日跌幅 >= 3% (即 daily_drop >= 0.03)
@@ -580,7 +592,7 @@ def generate_report(results, timestamp_str):
         
     except Exception as e:
         logging.error(f"生成报告时发生错误: {e}")
-        return f"# 报告生成错误\n\n错误信息: {str(e)}"
+        return f"# 报告生成错误\n\n错误信息: {str(e)}"}
 
 # --- 主函数 (函数配置 13/13) ---
 def main():
