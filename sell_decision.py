@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 big_market_path = 'index_data/000300.csv'
 fund_data_dir = 'fund_data/'
 
+# --- 配置：T1 止盈最小盈利门槛 (新增) ---
+MIN_PROFIT_FOR_T1 = 5.5
+
 # 加载配置文件
 try:
     with open('holdings_config.yaml', 'r', encoding='utf-8') as f:
@@ -175,7 +178,7 @@ for code, cost_nav in holdings_config.items():
         print(f"警告: 基金 {code} 无法加载。原因: {e}。跳过该基金。")
 
 
-# 决策函数 (修复移动止盈逻辑)
+# 决策函数 (T1 止盈门槛已修改)
 def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_data, big_trend):
     profit_rate = holding['profit_rate']
     latest_net_value = holding['latest_net_value']
@@ -237,10 +240,10 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             if (recent_macd.iloc[-1]['macd'] < 0 and recent_macd.iloc[-1]['signal'] < 0): macd_zero_dead_cross = True
     
     
-    # --- 关键新增：T1 止盈规则（布林带中轨） ---
-    if profit_rate > 0 and bb_pos == '中轨':
+    # --- 关键修改：T1 止盈规则（增加 5.5% 盈利门槛） ---
+    if profit_rate > MIN_PROFIT_FOR_T1 and bb_pos == '中轨':
           decision = '【T1止盈】布林中轨已达，建议卖出 30% - 50% 仓位'
-          sell_reasons.append('布林中轨已达（T1），锁定部分利润')
+          sell_reasons.append(f'布林中轨已达（T1），盈利>{MIN_PROFIT_FOR_T1}%，锁定部分利润')
           return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
     # ----------------------------------------
     
@@ -260,8 +263,6 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
         recent_data = full_fund_data.tail(macd_divergence_window)
         if not recent_data.empty:
             is_nav_peak = (full_fund_data['net_value'].iloc[-1] == current_peak)
-            # 简化 MACD 顶背离判断：净值创新高但 MACD 未创新高
-            # 注: 严格的 MACD 顶背离判断较为复杂，此处沿用原代码的简化逻辑
             is_macd_divergence = is_nav_peak and (recent_data['macd'].iloc[-1] < recent_data['macd'].max())
             if is_macd_divergence:
                 decision = '因MACD顶背离减仓70%'
@@ -285,7 +286,8 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             # 记录短期回撤止损价
             target_nav['short_drawdown_nav'] = round(peak_nav * (1 - 0.10), 4)
 
-            if drawdown > 0.10 and current_nav < cost_nav: # 增加回撤必须亏损的判断 (防止高位巨幅回撤但仍盈利)
+            # 增加回撤必须亏损的判断 (防止高位巨幅回撤但仍盈利)
+            if drawdown > 0.10 and current_nav < cost_nav: 
                 decision = '因最大回撤止损20%'
                 sell_reasons.append('14天内最大回撤>10%且低于成本价触发')
                 return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
