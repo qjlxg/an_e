@@ -1,3 +1,4 @@
+# In[]:
 #!/usr/bin/env python
 # coding: utf-8
 # encoding=utf-8
@@ -48,17 +49,18 @@ def fetch_fund_holdings(code, season, head):
     """爬取单个基金的持仓数据和简称，并解析"""
     fund_name = '简称缺失'
     
-    # --- 新增：从基金档案页面提取基金简称 ---
+    # --- 从基金档案页面提取基金简称 (最可靠) ---
     url_name = f"http://fundf10.eastmoney.com/{code}.html"
     try:
+        # 使用独立的请求获取档案页面
         response_name = requests.get(url_name, headers=head, timeout=10)
         html_name = etree.HTML(response_name.text)
+        # XPath 查找包含 "基金简称" 文本的 td，然后取其兄弟 td 的文本
         fund_name_list = html_name.xpath('//td[contains(text(), "基金简称")]/following-sibling::td/text()')
         if fund_name_list:
             fund_name = fund_name_list[0].strip()
-            print(f"成功提取基金 {code} 简称: {fund_name}")
-    except Exception as e:
-        print(f"提取基金 {code} 简称失败: {e}")
+    except Exception:
+        pass # 提取失败则保留 '简称缺失'
     # ----------------------------
 
     # 原持仓数据提取逻辑
@@ -71,7 +73,6 @@ def fetch_fund_holdings(code, season, head):
         # 提取 HTML 内容块
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
         if not div_match:
-            print(f"基金 {code} 无持仓内容块")
             return code, fund_name, []
 
         div = div_match[0]
@@ -91,7 +92,7 @@ def fetch_fund_holdings(code, season, head):
             
             stock_name = stock_name_list[0].strip()
             
-            # --- 股票数据提取逻辑 (保持稳定) ---
+            # --- 股票数据提取逻辑 (已验证稳定) ---
             data_tds = row.xpath('./td[position() >= last()-3]') 
             
             money_data = []
@@ -112,11 +113,9 @@ def fetch_fund_holdings(code, season, head):
         
         return code, fund_name, stock_one_fund
 
-    except requests.exceptions.RequestException as e:
-        print(f"请求基金 {code} 持仓失败: {e}")
+    except requests.exceptions.RequestException:
         return code, fund_name, []
-    except Exception as e:
-        print(f"解析基金 {code} 持仓失败: {e}")
+    except Exception:
         return code, fund_name, []
 
 # --- 3. 并发爬取持仓数据 ---
@@ -133,7 +132,9 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
     # 监控并收集结果
     for i, future in enumerate(as_completed(futures)):
-        code, fund_name, holdings_list = future.result()
+        # 为了调试，这里可以输出结果
+        result = future.result()
+        code, fund_name, holdings_list = result
         
         # 更新进度
         if total > 0 and (i + 1) % (total // 10 + 1) == 0:
