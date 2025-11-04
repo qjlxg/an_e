@@ -1,510 +1,314 @@
 import pandas as pd
-import akshare as ak
-from datetime import datetime, timedelta
-import numpy as np
-import time
-import requests
-from bs4 import BeautifulSoup
-import re
-import json
+import glob
 import os
+import numpy as np
+from datetime import datetime
+import pytz
 import logging
-import sys # 确保引入 sys
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
-# 导入并发执行库
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 
-# 配置日志记录 (使用 utf-8-sig，与 CSV 文件保持一致性)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        # 使用 utf-8-sig 编码写入日志文件
-        logging.FileHandler('fund_analyzer.log', encoding='utf-8-sig'), 
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger('FundAnalyzer')
+# --- 配置参数 (完整保留) ---
+FUND_DATA_DIR = 'fund_data'
+MIN_CONSECUTIVE_DROP_DAYS = 3
+MIN_MONTH_DRAWDOWN = 0.06
+HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
+MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
+REPORT_BASE_NAME = 'fund_warning_report'
 
-# --- 辅助类：SeleniumFetcher ---
-class SeleniumFetcher:
-    """
-    使用 Selenium 模拟浏览器进行数据抓取。
-    """
-    def __init__(self):
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")  # 无头模式，不显示浏览器窗口
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
-        # 从环境变量获取路径
-        # 注意: 这部分路径设置依赖于运行环境，保持原样
-        chrome_options.binary_location = os.getenv('CHROME_BINARY_PATH', '/usr/bin/chromium-browser')
-        service = ChromeService(executable_path=os.getenv('CHROMEDRIVER_PATH', '/usr/bin/chromedriver'))
-        try:
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        except WebDriverException as e:
-            logger.error(f"Selenium WebDriver 初始化失败: {e}")
-            self.driver = None
+# --- 核心阈值调整 (完整保留) ---
+EXTREME_RSI_THRESHOLD_P1 = 29.0 
+STRONG_RSI_THRESHOLD_P2 = 35.0
 
-    def get_page_source(self, url, wait_for_element=None, timeout=30):
-        if not self.driver:
-            return None
-        try:
-            self.driver.get(url)
-            if wait_for_element:
-                WebDriverWait(self.driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_element))
-                )
-            return self.driver.page_source
-        except (TimeoutException, WebDriverException) as e:
-            logger.error(f"Selenium 抓取失败: {e}")
-            return None
+# --- 设置日志 (函数配置 1/13) ---
+def setup_logging():
+    """设置日志配置"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('fund_analysis.log', encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
 
-    def __del__(self):
-        # 避免在 __del__ 中调用 quit()
-        pass
+# --- 验证数据 (函数配置 2/13) ---
+def validate_fund_data(df, fund_code):
+    """验证基金数据的完整性和质量"""
+    if df.empty: 
+        return False, "数据为空"
+    # 注意：根据您的CSV文件，净值列名为 'net_value'
+    if 'net_value' not in df.columns: 
+        return False, "缺少净值列 'net_value'"
+    if len(df) < 250: 
+        return False, f"数据点不足 (当前: {len(df)})"
+    
+    # 检查是否有缺失值 (只检查关键列)
+    if df['net_value'].isnull().any():
+         return False, "关键列 'net_value' 存在缺失值"
+         
+    return True, "数据有效"
 
-# --- 核心分析类：FundAnalyzer ---
-
-class FundAnalyzer:
-    """
-    一个用于自动化分析中国公募基金的类。
-    """
-    def __init__(self, risk_free_rate=0.01858, cache_file='fund_cache.json', cache_data=True, max_workers=10):
-        self.fund_data = {}
-        self.manager_data = {}
-        self.holdings_data = {}
-        self.market_data = {}
-        self.report_data = []
-        self.cache_file = cache_file
-        self.cache_data = cache_data
-        self.cache = self._load_cache()
-        self.risk_free_rate = risk_free_rate
-        self._selenium_fetcher = None 
-        # 新增最大工作线程数 (用于并发)
-        self.max_workers = max_workers
-
-    @property
-    def selenium_fetcher(self):
-        if self._selenium_fetcher is None:
-            self._selenium_fetcher = SeleniumFetcher()
-        return self._selenium_fetcher
+# --- 数据加载和预处理 (函数配置 3/13) ---
+def load_and_prepare_data(file_path):
+    """加载数据，确保格式正确，并计算回报率"""
+    try:
+        df = pd.read_csv(file_path)
+        # 统一列名
+        df.columns = [col.lower() for col in df.columns]
         
-    def _log(self, message, level='info'):
-        """统一的日志记录方法"""
-        if level == 'info':
-            logger.info(message)
-        elif level == 'warning':
-            logger.warning(message)
-        elif level == 'error':
-            logger.error(message)
-
-    def _load_cache(self):
-        """从文件加载缓存数据 (使用 utf-8 读取)"""
-        if self.cache_data and os.path.exists(self.cache_file):
-            try:
-                # 缓存文件通常用 utf-8 保存
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                 self._log("缓存文件 fund_cache.json 损坏，正在重新创建。", level='warning')
-                 return {}
-        return {}
-
-    def _save_cache(self):
-        """将缓存数据保存到文件 (使用 utf-8 保存)"""
-        if self.cache_data:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.cache, f, ensure_ascii=False, indent=4)
-
-    # 封装核心抓取逻辑为独立方法，便于多线程调用
-    def _fetch_and_calculate_fund_data(self, fund_code: str):
-        """
-        获取基金的单位净值和累计净值数据，并计算夏普比率和最大回撤。
-        """
-        if fund_code in self.cache.get('fund', {}):
-            return fund_code, self.cache['fund'][fund_code]
-
-        for attempt in range(3):
-            try:
-                fund_data = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
-                fund_data['净值日期'] = pd.to_datetime(fund_data['净值日期'])
-                fund_data.set_index('净值日期', inplace=True)
-                
-                fund_data = fund_data.dropna()
-                if len(fund_data) < 252:
-                    raise ValueError("数据不足，无法计算可靠的夏普比率和回撤")
-
-                returns = fund_data['单位净值'].pct_change().dropna()
-                
-                annual_returns = returns.mean() * 252
-                annual_volatility = returns.std() * (252**0.5)
-                sharpe_ratio = (annual_returns - self.risk_free_rate) / annual_volatility if annual_volatility != 0 else 0
-                
-                rolling_max = fund_data['单位净值'].cummax()
-                daily_drawdown = (fund_data['单位净值'] - rolling_max) / rolling_max
-                max_drawdown = daily_drawdown.min() * -1
-                
-                result = {
-                    'latest_nav': float(fund_data['单位净值'].iloc[-1]),
-                    'sharpe_ratio': float(sharpe_ratio),
-                    'max_drawdown': float(max_drawdown)
-                }
-                # 保存到缓存
-                if self.cache_data:
-                    self.cache.setdefault('fund', {})[fund_code] = result
-                    self._save_cache()
-                return fund_code, result
-            except Exception as e:
-                self._log(f"获取基金 {fund_code} 数据失败 (尝试 {attempt+1}/3): {e}")
-                time.sleep(1) # 缩短等待时间
-
-        return fund_code, {'latest_nav': np.nan, 'sharpe_ratio': np.nan, 'max_drawdown': np.nan}
-
-
-    def _scrape_manager_data_from_web(self, fund_code: str) -> dict:
-        """从天天基金网通过网页抓取获取基金经理数据"""
-        manager_url = f"http://fundf10.eastmoney.com/jjjl_{fund_code}.html"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        try:
-            response = requests.get(manager_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            title_label = soup.find('label', string='基金经理变动一览')
-            if not title_label:
-                return None
-            
-            manager_table = title_label.find_parent().find_next_sibling('table')
-            if not manager_table:
-                return None
-            
-            rows = manager_table.find_all('tr')
-            if len(rows) < 2:
-                return None
-            
-            latest_manager_row = rows[1]
-            cols = latest_manager_row.find_all('td')
-            
-            if len(cols) < 5:
-                return None
-            
-            manager_name = cols[2].text.strip()
-            tenure_str = cols[3].text.strip()
-            cumulative_return_str = cols[4].text.strip()
-            
-            tenure_days = np.nan
-            if '年又' in tenure_str:
-                tenure_parts = tenure_str.split('年又')
-                years_match = re.search(r'\d+', tenure_parts[0])
-                days_match = re.search(r'\d+', tenure_parts[1])
-                years = float(years_match.group()) if years_match else 0
-                days = float(days_match.group()) if days_match else 0
-                tenure_days = years * 365 + days
-            elif '天' in tenure_str:
-                days_match = re.search(r'\d+', tenure_str)
-                tenure_days = float(days_match.group()) if days_match else np.nan
-            elif '年' in tenure_str:
-                years_match = re.search(r'\d+', tenure_str)
-                tenure_days = float(years_match.group()) * 365 if years_match else np.nan
-            else:
-                tenure_days = np.nan
-                
-            cumulative_return = float(re.search(r'[-+]?\d*\.?\d+', cumulative_return_str).group()) if '%' in cumulative_return_str else np.nan
-
-            return {
-                'name': manager_name,
-                'tenure_years': float(tenure_days) / 365.0 if pd.notna(tenure_days) else np.nan,
-                'cumulative_return': cumulative_return
-            }
-        except requests.exceptions.RequestException as e:
-            self._log(f"网页抓取基金 {fund_code} 经理数据失败: {e}", level='warning')
-            return None
-        except Exception as e:
-            self._log(f"解析网页内容失败: {e}", level='warning')
-            return None
-
-
-    def _fetch_manager_data(self, fund_code: str):
-        """
-        获取基金经理数据（首先尝试使用 akshare，失败则通过网页抓取）
-        """
-        if fund_code in self.cache.get('manager', {}):
-            return fund_code, self.cache['manager'][fund_code]
-
-        try:
-            manager_info = ak.fund_manager_em(symbol=fund_code)
-            if not manager_info.empty:
-                latest_manager = manager_info.sort_values(by='上任日期', ascending=False).iloc[0]
-                name = latest_manager.get('姓名', 'N/A')
-                tenure_days = latest_manager.get('任职天数', np.nan)
-                cumulative_return = latest_manager.get('任职回报', '0%')
-                cumulative_return = float(str(cumulative_return).replace('%', '')) if isinstance(cumulative_return, str) else float(cumulative_return)
-                result = {
-                    'name': name,
-                    'tenure_years': float(tenure_days) / 365.0 if pd.notna(tenure_days) else np.nan,
-                    'cumulative_return': cumulative_return
-                }
-                # 保存到缓存
-                if self.cache_data:
-                    self.cache.setdefault('manager', {})[fund_code] = result
-                    self._save_cache()
-                return fund_code, result
-        except Exception as e:
-            self._log(f"通过akshare获取基金 {fund_code} 经理数据失败: {e}")
-            
-        # 如果akshare失败，尝试网页抓取
-        scraped_data = self._scrape_manager_data_from_web(fund_code)
-        if scraped_data:
-            # 保存到缓存
-            if self.cache_data:
-                self.cache.setdefault('manager', {})[fund_code] = scraped_data
-                self._save_cache()
-            return fund_code, scraped_data
-
-        return fund_code, {'name': 'N/A', 'tenure_years': np.nan, 'cumulative_return': np.nan}
-
-
-    def get_fund_holdings_data(self, fund_code: str):
-        """ 
-        抓取基金的股票持仓数据。
-        注意: 为保持脚本完整性，此处沿用原脚本结构，但实际网页抓取持仓可能更复杂。
-        """
-        if fund_code in self.cache.get('holdings', {}):
-            self.holdings_data[fund_code] = self.cache['holdings'][fund_code]
-            self._log(f"使用缓存的基金 {fund_code} 持仓数据")
-            return True
-            
-        self._log(f"正在获取基金 {fund_code} 的持仓数据...")
+        # 确保日期是升序排列，这是计算时间序列指标的基础
+        df.sort_values(by='date', inplace=True)
         
-        # 优先使用 akshare 接口
-        try:
-            # 默认获取最新一期十大重仓股
-            holdings_df = ak.fund_portfolio_hold_em(symbol=fund_code)
-            if not holdings_df.empty:
-                # 假设 holdings_df 有 '股票代码' 和 '占净值比例' 等列
-                self.holdings_data[fund_code] = holdings_df.to_dict('records')
-                self._log(f"基金 {fund_code} 持仓数据已通过akshare获取。")
-                if self.cache_data:
-                    self.cache.setdefault('holdings', {})[fund_code] = self.holdings_data[fund_code]
-                    self._save_cache()
-                return True
-        except Exception as e:
-            self._log(f"通过akshare获取基金 {fund_code} 持仓数据失败: {e}")
+        # 计算每日回报率（百分比形式，例如 0.0379 -> 3.79）
+        df['daily_return'] = df['net_value'].pct_change() * 100
+        
+        # 移除任何可能因 pct_change 产生的 NaN（通常是第一行）
+        df.dropna(subset=['net_value', 'daily_return'], inplace=True)
+        
+        return df
+    except Exception as e:
+        logging.error(f"加载或预处理数据 {file_path} 时发生错误: {e}")
+        return pd.DataFrame()
 
-        # 如果 akshare 失败，尝试网页抓取 (简化版)
-        holdings_url = f"http://fundf10.eastmoney.com/ccmx_{fund_code}.html"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        try:
-            response = requests.get(holdings_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+# --- RSI 计算 (函数配置 4/13) ---
+def calculate_rsi(df, period=14):
+    """计算 RSI (相对强弱指数)"""
+    df['up'] = df['daily_return'].apply(lambda x: x if x > 0 else 0)
+    df['down'] = df['daily_return'].apply(lambda x: -x if x < 0 else 0)
+
+    # 使用 ewm (指数加权移动平均)
+    df['avg_up'] = df['up'].ewm(span=period, adjust=False).mean()
+    df['avg_down'] = df['down'].ewm(span=period, adjust=False).mean()
+
+    # 计算 RS (相对强度)
+    # 避免除以零，如果 avg_down 为零，则 rs 设为无穷大
+    df['rs'] = df['avg_up'] / df['avg_down'].replace(0, np.inf)
+
+    # 计算 RSI
+    df['rsi'] = 100 - (100 / (1 + df['rs']))
+    
+    # 返回最新的 RSI 值
+    return df['rsi'].iloc[-1]
+
+# --- 最大回撤计算 (函数配置 5/13) ---
+def calculate_max_drawdown(df, period_days):
+    """计算指定周期内的最大回撤"""
+    
+    if len(df) < period_days:
+        return 0.0
+    
+    # 选取最近 period_days 的数据
+    period_df = df.iloc[-period_days:].copy() # 使用 copy 避免 SettingWithCopyWarning
+    
+    # 1. 计算累计最高净值
+    period_df['cumulative_max'] = period_df['net_value'].cummax()
+    
+    # 2. 计算回撤 (Drawdown)
+    period_df['drawdown'] = (period_df['cumulative_max'] - period_df['net_value']) / period_df['cumulative_max']
+    
+    # 3. 找到最大回撤
+    max_drawdown = period_df['drawdown'].max()
+    
+    return max_drawdown
+
+# --- 连跌天数计算 (函数配置 6/13) ---
+def calculate_consecutive_drop_days(df):
+    """计算最新的连续下跌天数"""
+    df['is_drop'] = df['daily_return'] < 0
+    
+    # 反转 is_drop 列，然后计算连续 True 的天数
+    consecutive_drop = 0
+    for is_drop in reversed(df['is_drop'].iloc[:-1]): # 不计算最新一天，因为最新一天可能上涨（已在每日回报率中体现）
+        if is_drop:
+            consecutive_drop += 1
+        else:
+            break
             
-            # 简化：仅检查是否有表格存在
-            data_table = soup.find('div', class_='boxitem w790')
-            if data_table:
-                # 实际解析逻辑可能很复杂，此处仅记录成功
-                self.holdings_data[fund_code] = [{'stock_code': 'Web Scraped Data', 'ratio': np.nan}] 
-                self._log(f"基金 {fund_code} 持仓数据已通过网页抓取获取 (简化)。")
-                if self.cache_data:
-                    self.cache.setdefault('holdings', {})[fund_code] = self.holdings_data[fund_code]
-                    self._save_cache()
-                return True
+    return consecutive_drop
 
-        except Exception as e:
-            self._log(f"网页抓取基金 {fund_code} 持仓数据失败: {e}", level='warning')
-        
-        self.holdings_data[fund_code] = [] # 抓取失败，返回空列表
-        return False
-        
-    def get_market_data(self, index_code='000300'):
-        """获取市场指数数据（例如沪深300）并计算夏普比率"""
-        if index_code in self.cache.get('market', {}):
-            self.market_data[index_code] = self.cache['market'][index_code]
-            self._log(f"使用缓存的市场指数 {index_code} 数据")
-            return
-        
-        try:
-            # 沪深300 代码 '000300'
-            df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date="20100101", end_date=datetime.now().strftime("%Y%m%d"))
-            df.columns = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额', '换手率']
-            df['日期'] = pd.to_datetime(df['日期'])
-            df.set_index('日期', inplace=True)
-            
-            # 计算夏普比率等指标
-            returns = df['收盘'].pct_change().dropna()
-            annual_returns = returns.mean() * 252
-            annual_volatility = returns.std() * (252**0.5)
-            sharpe_ratio = (annual_returns - self.risk_free_rate) / annual_volatility if annual_volatility != 0 else 0
-            
-            self.market_data[index_code] = {
-                'annual_returns': float(annual_returns),
-                'sharpe_ratio': float(sharpe_ratio)
-            }
-            self.cache.setdefault('market', {})[index_code] = self.market_data[index_code]
-            self._save_cache()
-            self._log(f"市场指数 {index_code} 数据获取成功。")
-        except Exception as e:
-            self._log(f"获取市场指数 {index_code} 数据失败: {e}", level='error')
-            self.market_data[index_code] = {'annual_returns': np.nan, 'sharpe_ratio': np.nan}
+# --- 策略判断 (函数配置 7/13) ---
+def determine_strategy_tip(rsi, max_drawdown_1m, max_drawdown_1y, latest_daily_return):
+    """根据指标确定行动提示 (Strategy Tip)"""
+    action_tip = ""
 
+    # P1: 极值超卖 (RSI 极低)
+    if rsi <= EXTREME_RSI_THRESHOLD_P1:
+        action_tip += f"🌟 P1-极值超卖 (RSI<={EXTREME_RSI_THRESHOLD_P1})"
 
-    def generate_full_report(self, fund_info_dict):
-        """整合所有数据并生成最终报告"""
-        logger.info("开始生成最终分析报告...")
-        
-        # 准备市场基准数据 (使用沪深300作为基准)
-        market_sharpe = self.market_data.get('000300', {}).get('sharpe_ratio', np.nan)
-        
-        # 构建报告 DataFrame
-        report_data = []
-        # 确保只遍历已成功抓取数据的基金代码
-        processed_codes = set(self.fund_data.keys()) | set(self.manager_data.keys()) 
-        
-        for code in processed_codes:
-            fund_name = fund_info_dict.get(code, 'N/A')
-            
-            fund_stats = self.fund_data.get(code, {})
-            manager_stats = self.manager_data.get(code, {})
-            
-            report_data.append({
-                '基金代码': code,
-                '基金名称': fund_name,
-                '最新净值': fund_stats.get('latest_nav', np.nan),
-                '夏普比率': fund_stats.get('sharpe_ratio', np.nan),
-                '最大回撤': fund_stats.get('max_drawdown', np.nan),
-                '经理姓名': manager_stats.get('name', 'N/A'),
-                '任职年限': manager_stats.get('tenure_years', np.nan),
-                '任职回报(%)': manager_stats.get('cumulative_return', np.nan),
-                '夏普(基准000300)': market_sharpe
-            })
-            
-        df_report = pd.DataFrame(report_data)
-        
-        # 数据清洗和格式化
-        # 修正：将回撤格式化为负百分比字符串
-        df_report['最大回撤'] = df_report['最大回撤'].apply(lambda x: f"{-x*100:.2f}%" if pd.notna(x) else 'N/A')
-        df_report['夏普比率'] = df_report['夏普比率'].round(4)
-        df_report['夏普(基准000300)'] = df_report['夏普(基准000300)'].round(4)
-        df_report['任职年限'] = df_report['任职年限'].round(2)
-        df_report['最新净值'] = df_report['最新净值'].round(4)
-        
-        # 排序 (例如：按夏普比率降序)
-        df_report = df_report.sort_values(by='夏普比率', ascending=False)
-        
-        # 保存报告 (使用 utf-8-sig 编码，兼容 Excel)
-        report_filename = 'fund_report.csv'
-        try:
-            df_report.to_csv(report_filename, index=False, encoding='utf-8-sig')
-            logger.info(f"分析报告已保存到 {report_filename}")
-        except Exception as e:
-            logger.error(f"保存报告失败: {e}")
+    # P2: 强力超卖 (RSI 低)
+    elif rsi <= STRONG_RSI_THRESHOLD_P2:
+        action_tip += f"💫 P2-强力超卖 (RSI<={STRONG_RSI_THRESHOLD_P2})"
 
+    # 其它策略条件... (例如高弹性、连跌等，此处仅展示与RSI相关的)
 
-# --- 主执行逻辑 ---
-if __name__ == '__main__':
-    # **********************************************
-    # * 修改点：从 C类.txt 读取基金代码
-    # **********************************************
-    funds_list_file = 'C类.txt' 
+    # 补充信息：最大回撤过大
+    if max_drawdown_1m > HIGH_ELASTICITY_MIN_DRAWDOWN:
+        if action_tip:
+             action_tip += " | "
+        action_tip += "⚠️ 1M回撤过大"
+        
+    # 如果没有任何提示，提供默认信息
+    if not action_tip:
+        action_tip = "👀 持续观察"
 
-    fund_codes_to_analyze = []
-    fund_info_dict = {}
+    return action_tip
+
+# --- 单基金分析 (函数配置 8/13) ---
+def analyze_single_fund(file_path):
+    """分析单个基金数据并返回结果字典"""
+    fund_code = os.path.basename(file_path).split('.')[0]
+    df = load_and_prepare_data(file_path)
+    
+    is_valid, reason = validate_fund_data(df, fund_code)
+    if not is_valid:
+        logging.warning(f"基金 {fund_code} 数据无效: {reason}")
+        return None
 
     try:
-        logger.info(f"正在从 {funds_list_file} 导入基金代码列表...")
-        # C类.txt 是一个纯文本文件，每行一个代码
-        # 默认使用 utf-8 编码读取
-        with open(funds_list_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        # 1. 计算 RSI
+        rsi = calculate_rsi(df, period=14)
         
-        # 过滤掉空行和首行的 'code' 标识 (如果存在，不区分大小写)
-        raw_codes = [line.strip() for line in lines if line.strip() and line.strip().lower() != 'code']
+        # 2. 计算最大回撤
+        max_drawdown_1m = calculate_max_drawdown(df, period_days=20) # 假设 1M 约为 20 个交易日
+        max_drawdown_1y = calculate_max_drawdown(df, period_days=250) # 假设 1Y 约为 250 个交易日
         
-        # 格式化基金代码 (补零到六位)
-        fund_codes_to_analyze = [str(code).zfill(6) for code in raw_codes]
+        # 3. 获取最新回报率 (百分比)
+        latest_daily_return = df['daily_return'].iloc[-1]
         
-        # 由于 C类.txt 只包含代码，我们创建一个简化的 fund_info_dict
-        # 基金名称统一使用占位符 'N/A'，以适应后续分析逻辑对 fund_info_dict 的依赖
-        fund_info_dict = {code: 'N/A' for code in fund_codes_to_analyze}
+        # 4. 获取当日净值 (用于后续判断和报告)
+        latest_net_value = df['net_value'].iloc[-1]
         
-        logger.info(f"导入成功，共 {len(fund_codes_to_analyze)} 个基金代码从 {funds_list_file} 读取。")
-        
-    except FileNotFoundError:
-        logger.error(f"基金代码文件 {funds_list_file} 未找到！")
-        sys.exit(1)
+        # 5. 确定行动提示
+        action_tip = determine_strategy_tip(rsi, max_drawdown_1m, max_drawdown_1y, latest_daily_return)
+
+        result = {
+            'fund_code': fund_code,
+            'rsi': rsi,
+            'max_drawdown_1m': max_drawdown_1m,
+            'max_drawdown_1y': max_drawdown_1y,
+            'latest_daily_return': latest_daily_return,
+            'latest_net_value': latest_net_value,
+            'action_tip': action_tip
+        }
+        return result
+
     except Exception as e:
-        logger.error(f"读取基金代码文件 {funds_list_file} 失败: {e}")
-        sys.exit(1)
+        logging.error(f"分析基金 {fund_code} 时发生错误: {e}")
+        return None
+
+# --- 所有基金分析 (函数配置 9/13) ---
+def analyze_all_funds():
+    """遍历所有基金数据文件进行分析"""
+    # glob.glob 用于查找当前目录下的所有 .csv 文件，模拟 FUND_DATA_DIR 的行为
+    file_list = glob.glob('*.csv') # 假设 .csv 文件就在当前目录
+    
+    results = []
+    for file_path in file_list:
+        result = analyze_single_fund(file_path)
+        if result:
+            results.append(result)
+            
+    return results
+
+# --- 排序键 (函数配置 10/13) ---
+def sort_key_for_report(result):
+    """报告排序逻辑: 主要按 RSI 升序 (RSI越低越靠前)"""
+    return result['rsi']
+
+# --- 报告生成 (函数配置 11/13) ---
+def generate_report(results, timestamp):
+    """生成 Markdown 格式的报告"""
+    try:
+        report_parts = [
+            f"# 基金超卖和高回撤警示报告\n",
+            f"\n> **报告生成时间：** {timestamp}\n",
+            f"\n## 🔴 P1/P2 策略触发基金列表\n",
+            f"\n| 排名 | 基金代码 | 最大回撤 (1M) | 当日跌幅 | RSI(14) | 行动提示 |\n",
+            f"|:---:|:---:|:---:|:---:|:---:|:---|\n"
+        ]
+
+        # 按照排序键进行排序
+        sorted_results = sorted(results, key=sort_key_for_report, reverse=False)
+
+        report_table_rows = []
         
-    if not fund_codes_to_analyze:
-        logger.error("未找到任何基金代码，请检查文件内容。")
-        sys.exit(1)
+        for rank, result in enumerate(sorted_results, 1):
+            
+            action_tip = result.get('action_tip', 'N/A')
+            
+            # 1. 提取原始回报率 (例如: 3.79)
+            latest_daily_return = result.get('latest_daily_return', 0.0) 
+            
+            # 2. *** 核心修正逻辑：仅在下跌时显示负百分比 ***
+            if latest_daily_return < 0:
+                # 实际下跌时，显示负百分比
+                display_percent = latest_daily_return
+            else:
+                # 实际上涨或持平时，显示 0.00%
+                display_percent = 0.00 
+            # **********************************************
+
+            # 格式化输出到表格
+            report_table_rows.append(
+                f"|{rank}|{result['fund_code']}|{result['max_drawdown_1m']:.2%}|{display_percent:.2%}|{result['rsi']:.2f}|{action_tip}|"
+            )
+            
+        report_parts.extend(report_table_rows)
+
+        # 报告总结和操作建议 (保持不变)
+        report_parts.extend([
+            f"\n## 🛠️ 策略说明与操作建议\n",
+            f"\n**1. 指标定义：**\n",
+            f"    * **RSI(14)：** 基于 14 天收盘价的相对强弱指数，低于 {EXTREME_RSI_THRESHOLD_P1} 为极值超卖 (P1)。\n",
+            f"    * **最大回撤 (1M)：** 最近 20 个交易日内，基金净值从最高点下跌的百分比最大值。\n",
+            f"\n**2. 行动提示等级：**\n",
+            f"    * 🌟 P1-极值超卖：市场情绪极度恐慌，达到强烈观察或底仓建仓条件。\n",
+            f"    * 💫 P2-强力超卖：处于底部区域，可进行少量关注和分批试探。\n",
+            f"\n**3. 投资建议：** 建议只在 **P1/P2 提示** 出现时，根据个人风险偏好，考虑**小仓位**或**I 级试水**。\n",
+            f"    * **注意：** 本报告仅为技术分析参考，不构成投资建议。请结合基本面和市场环境综合判断。\n",
+            f"\n**4. 风险控制：**\n",
+            f"    * 严格止损线：平均成本价**跌幅达到 8%-10%**，立即清仓止损。\n"
+        ])
+
+        return "".join(report_parts)
         
-    # 初始化分析器
-    # 保持原有的初始化参数
-    analyzer = FundAnalyzer(cache_data=True, max_workers=10) 
-    
-    # 提前获取市场数据，供报告使用 (如果未缓存)
-    analyzer.get_market_data('000300')
-    
-    # 并发抓取所有基金的数据
-    logger.info(f"开始并发抓取和计算 {len(fund_codes_to_analyze)} 个基金的数据...")
-    
-    with ThreadPoolExecutor(max_workers=analyzer.max_workers) as executor:
-        # 提交基金数据抓取任务 (净值、夏普、回撤)
-        fund_futures = {executor.submit(analyzer._fetch_and_calculate_fund_data, code): code for code in fund_codes_to_analyze}
-        # 提交基金经理数据抓取任务
-        manager_futures = {executor.submit(analyzer._fetch_manager_data, code): code for code in fund_codes_to_analyze}
-        # 提交持仓数据抓取任务
-        holdings_futures = {executor.submit(analyzer.get_fund_holdings_data, code): code for code in fund_codes_to_analyze}
+    except Exception as e:
+        logging.error(f"生成报告时发生错误: {e}")
+        return f"# 报告生成错误\n\n错误信息: {str(e)}"
+
+# --- 主函数 (函数配置 12/13) ---
+def main():
+    """主函数"""
+    try:
+        setup_logging()
+        try:
+            # 使用带时区的当前时间
+            tz = pytz.timezone('Asia/Shanghai')
+            now = datetime.now(tz)
+        except:
+            now = datetime.now()
+            logging.warning("使用时区失败，使用本地时间")
         
-        # 处理基金数据结果
-        for future in as_completed(fund_futures):
-            fund_code = fund_futures[future]
-            try:
-                code, data = future.result()
-                if pd.isna(data['latest_nav']):
-                    logger.warning(f"基金 {code} 数据无效，跳过。")
-                else:
-                    analyzer.fund_data[code] = data
-            except Exception as e:
-                logger.error(f"处理基金 {fund_code} 数据失败: {e}")
+        timestamp_for_report = now.strftime('%Y-%m-%d %H:%M:%S')
+        timestamp_for_filename = now.strftime('%Y%m%d_%H%M%S')
+        dir_name = now.strftime('%Y%m')
 
-        # 处理基金经理数据结果
-        for future in as_completed(manager_futures):
-            fund_code = manager_futures[future]
-            try:
-                code, data = future.result()
-                analyzer.manager_data[code] = data
-            except Exception as e:
-                logger.error(f"处理基金经理 {fund_code} 数据失败: {e}")
-                
-        # 处理持仓数据结果
-        for future in as_completed(holdings_futures):
-             # 仅等待任务完成，实际数据已在 get_fund_holdings_data 中写入 analyzer.holdings_data
-             try:
-                 future.result()
-             except Exception as e:
-                 # get_fund_holdings_data 内部有日志记录，此处仅捕获异常防止中断
-                 logger.debug(f"处理基金持仓任务意外失败: {e}")
+        os.makedirs(dir_name, exist_ok=True)
+        report_file = os.path.join(dir_name, f"{REPORT_BASE_NAME}_{timestamp_for_filename}.md")
 
+        logging.info("开始分析基金数据...")
+        
+        results = analyze_all_funds()
+        
+        report_content = generate_report(results, timestamp_for_report)
+        
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(report_content)
+            
+        logging.info(f"分析完成。报告已保存至 {report_file}")
 
-    logger.info("所有基金数据抓取和计算完成。")
-    
-    # 运行报告生成逻辑
-    analyzer.generate_full_report(fund_info_dict)
+    except Exception as e:
+        logging.error(f"主程序运行失败: {e}")
 
-    logger.info("报告生成完成，请查看 fund_analyzer.log 和 fund_report.csv 文件。")
+if __name__ == '__main__':
+    main()
