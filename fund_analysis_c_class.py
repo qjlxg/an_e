@@ -38,7 +38,7 @@ if not c_class_codes:
 # --- 2. 参数设置 ---
 # season=1 表示爬取最新一期（即 div[1]）的持仓数据。
 season = 1 
-MAX_WORKERS = 20 # 并发线程数，可根据网络情况调整
+MAX_WORKERS = 20 # 并发线程数
 total = len(c_class_codes)
 
 # 爬虫 headers
@@ -70,49 +70,54 @@ def fetch_fund_holdings(code, season, head):
         
         # 使用 season 变量定位最新的季度表格
         xpath_base = f'//div[{season}]/div/table/tbody/tr'
-        
-        # 获取股票名称 (a 标签) 和 股票代码 (a 标签的父节点 td 的前一个 td 的内容)
         rows = html.xpath(xpath_base)
         
         stock_one_fund = []
         for row in rows:
-            # 检查行是否是有效的持仓行
-            stock_code_td = row.xpath('./td[2]/a')
-            if not stock_code_td:
+            # 股票名称位于 td[3]/a/text()
+            stock_name_list = row.xpath('./td[3]/a/text()')
+            if not stock_name_list:
                  continue
             
-            # 股票名称位于第 3 个 td (td[3] 及其内部的 a 标签)
-            stock_name = row.xpath('./td[3]/a/text()')[0] if row.xpath('./td[3]/a/text()') else '名称缺失'
+            stock_name = stock_name_list[0].strip()
             
-            # 数据列：占净值比例 (td[5])、持股数（万股）(td[6])、持仓市值（万元）(td[7])
-            # 注意：如果表格有 '最新价' 和 '涨跌幅' 列，索引会后移两位。
-            # 我们直接使用 row.xpath('./td[position()>=5 and position()<=7 and @class="tor"]') 尝试定位数据。
+            # --- 关键修正：重新定位数据列 ---
+            # 找到包含占净值比例、持股数、持仓市值的 td 元素，它们通常在表格的右侧且class为 'tor' 或 'toc'
+            # 尝试通过 XPath 提取最后三个数字列
             
-            # 由于网站结构不固定，使用绝对索引更容易出错，这里采用更稳定的方式提取文本并清理
-            # 占净值比例 (td[X+0]), 持股数 (td[X+1]), 持仓市值 (td[X+2])
-            data_fields = []
-            # 尝试从第5个td开始，提取接下来的3个数字列（它们通常带有 right-align 类名 tor 或 toc）
-            for i in [5, 6, 7]:
-                text = row.xpath(f'./td[{i}]/text()')
-                if text:
-                    data_fields.append(text[0].strip().replace('---','0').replace(',','').replace('%',''))
-
-            # 过滤非数字数据，并转换类型
-            stock_money_text = []
-            for item in data_fields:
+            # 尝试提取最后四个 td 元素，通常是 涨跌幅、占净值比例、持股数、持仓市值
+            data_tds = row.xpath('./td[position() >= last()-3]') 
+            
+            # 过滤掉非数字列（如“变动详情”链接），只保留数字
+            money_data = []
+            for td in data_tds:
+                text = "".join(td.xpath('.//text()')).strip()
+                # 清理数据：移除百分号、逗号和'---'
+                text = text.replace('---','0').replace(',','').replace('%','')
                 try:
-                    stock_money_text.append(float(item))
+                    # 如果能成功转换成浮点数，就认为是有效数据
+                    money_data.append(float(text))
                 except ValueError:
-                    # 如果转换失败，可能是列偏移或数据缺失，跳过此行
-                    continue
-
-            # 确保我们有全部3个关键数值
-            if len(stock_money_text) >= 3:
-                # [股票简称, 占净值比例, 持股数_万, 持仓市值_万]
+                    # 转换失败，跳过
+                    pass
+            
+            # 期望数据：[占净值比例, 持股数, 持仓市值]
+            # 根据经验，所需数据通常是最后三个数值
+            if len(money_data) >= 3:
+                # 假设所需数据（占净值比例、持股数、持仓市值）是 money_data 中的最后三个
+                
+                # 注意：如果表格有4个数字列 (最新价, 占净值比例, 持股数, 持仓市值)
+                # 则占净值比例是 money_data[-3]，持股数是 money_data[-2]，持仓市值是 money_data[-1]
+                
+                # 假设网站的结构稳定：占净值比例、持股数、持仓市值
+                # 根据您提供的原始数据片段，这三列通常是连续的：
+                # 华夏成长混合 2025年3季度：[4.06, 250.00, 12827.64]
+                
+                # 尝试提取最后三个有效数值
                 stock_one_fund.append([stock_name, 
-                                        stock_money_text[0], 
-                                        stock_money_text[1], 
-                                        stock_money_text[2]])
+                                        money_data[-3], # 占净值比例
+                                        money_data[-2], # 持股数_万
+                                        money_data[-1]]) # 持仓市值_万
         
         return code, fund_name, stock_one_fund
 
@@ -129,6 +134,7 @@ start_time = time.time()
 futures = []
 all_holdings = [] # 用于存储所有基金的所有持仓记录
 
+# ... [并发执行逻辑保持不变] ...
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     # 提交所有爬取任务到线程池
     for code in c_class_codes:
