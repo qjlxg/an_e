@@ -1,4 +1,3 @@
-# In[]:
 #!/usr/bin/env python
 # coding: utf-8
 # encoding=utf-8
@@ -33,7 +32,6 @@ if not c_class_codes:
     print("基金代码列表为空，脚本将提前退出。")
     sys.exit(1)
 
-# In[]:
 # --- 2. 参数设置 ---
 season = 1 
 MAX_WORKERS = 20 
@@ -41,36 +39,39 @@ total = len(c_class_codes)
 
 # 爬虫 headers
 head = {
-"Cookie": "EMFUND1=null; EMFUND2=null; EMFUND3=null; EMFUND4=null; EMFUND5=null; EMFUND6=null; EMFUND7=null; EMFUND8=null; EMFUND0=null; st_si=44023331838789; st_asi=delete; EMFUND9=08-16 22:04:25@#$%u4E07%u5BB6%u65B0%u5229%u7075%u6D3B%u914D%u7F6E%u6DF7%u5408@%23%24519191; ASP.NET_SessionId=45qdofapdlm1hlgxapxuxhe1; st_pvi=87492384111747; st_sp=2020-08-16%2000%3A05%3A17; st_inirUrl=http%3A%2F%2Ffund.eastmoney.com%2Fdata%2Ffundranking.html; st_sn=12; st_psi=2020081622103685-0-6169905557"
-,
-"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.125 Safari/537.36"}
+    "Cookie": "EMFUND1=null; EMFUND2=null; EMFUND3=null; EMFUND4=null; EMFUND5=null; EMFUND6=null; EMFUND7=null; EMFUND8=null; EMFUND0=null; st_si=44023331838789; st_asi=delete; EMFUND9=08-16 22:04:25@#$%u4E07%u5BB6%u65B0%u5229%u7075%u6D3B%u914D%u7F6E%u6DF7%u5408@%23%24519191; ASP.NET_SessionId=45qdofapdlm1hlgxapxuxhe1; st_pvi=87492384111747; st_sp=2020-08-16%2000%3A05%3A17; st_inirUrl=http%3A%2F%2Ffund.eastmoney.com%2Fdata%2Ffundranking.html; st_sn=12; st_psi=2020081622103685-0-6169905557",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.125 Safari/537.36"
+}
 
 
 def fetch_fund_holdings(code, season, head):
     """爬取单个基金的持仓数据和简称，并解析"""
-    url = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={}&topline=10&year=&month=&rt=0.5032668912422176".format(code)
     fund_name = '简称缺失'
+    
+    # --- 新增：从基金档案页面提取基金简称 ---
+    url_name = f"http://fundf10.eastmoney.com/{code}.html"
+    try:
+        response_name = requests.get(url_name, headers=head, timeout=10)
+        html_name = etree.HTML(response_name.text)
+        fund_name_list = html_name.xpath('//td[contains(text(), "基金简称")]/following-sibling::td/text()')
+        if fund_name_list:
+            fund_name = fund_name_list[0].strip()
+            print(f"成功提取基金 {code} 简称: {fund_name}")
+    except Exception as e:
+        print(f"提取基金 {code} 简称失败: {e}")
+    # ----------------------------
+
+    # 原持仓数据提取逻辑
+    url = f"http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={code}&topline=10&year=&month=&rt=0.5032668912422176"
     
     try:
         response = requests.get(url, headers=head, timeout=10)
         text = response.text
         
-        # --- 最终修正：基金简称提取逻辑 ---
-        # 匹配 content 块开头到第一个季度信息前的所有文本
-        # Pattern: content:"[基金简称]  [季度信息]..."
-        content_match = re.search(r'content:\\"(.*?)\s{2,}\d{4}年\d季度股票投资明细', text)
-        if content_match:
-            fund_name = content_match.group(1).strip()
-        else:
-             # 备用模式：寻找 name:'...' (例如: name:'华夏成长混合')
-            name_match = re.search(r'name:\'(.*?)\'', text)
-            if name_match:
-                fund_name = name_match.group(1).strip()
-        # ----------------------------
-
         # 提取 HTML 内容块
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
         if not div_match:
+            print(f"基金 {code} 无持仓内容块")
             return code, fund_name, []
 
         div = div_match[0]
@@ -86,7 +87,7 @@ def fetch_fund_holdings(code, season, head):
             # 股票名称位于 td[3]/a/text()
             stock_name_list = row.xpath('./td[3]/a/text()')
             if not stock_name_list:
-                 continue
+                continue
             
             stock_name = stock_name_list[0].strip()
             
@@ -105,19 +106,19 @@ def fetch_fund_holdings(code, season, head):
             # 确保有足够的数字：占净值比例、持股数、持仓市值
             if len(money_data) >= 3:
                 stock_one_fund.append([stock_name, 
-                                        money_data[-3], # 占净值比例
-                                        money_data[-2], # 持股数_万
-                                        money_data[-1]]) # 持仓市值_万
+                                       money_data[-3], # 占净值比例
+                                       money_data[-2], # 持股数_万
+                                       money_data[-1]]) # 持仓市值_万
         
         return code, fund_name, stock_one_fund
 
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        print(f"请求基金 {code} 持仓失败: {e}")
         return code, fund_name, []
-    except Exception:
-        # 捕获所有其他解析错误，避免中断整个并发过程
+    except Exception as e:
+        print(f"解析基金 {code} 持仓失败: {e}")
         return code, fund_name, []
 
-# In[]:
 # --- 3. 并发爬取持仓数据 ---
 print(f"从 C类.txt 中读取到 {total} 支基金，开始并发爬取持仓...")
 start_time = time.time()
@@ -147,7 +148,6 @@ end_time = time.time()
 print("\n" + "=" * 30 + " 并发获取基金持仓数据完成 " + "=" * 30)
 print(f"总耗时: {end_time - start_time:.2f} 秒")
 
-# In[]:
 # --- 4. 整合结果并保存 ---
 
 # 创建包含所有持仓记录的 DataFrame
