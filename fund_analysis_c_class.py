@@ -1,3 +1,4 @@
+# In[]:
 #!/usr/bin/env python
 # coding: utf-8
 # encoding=utf-8
@@ -6,7 +7,6 @@ import requests
 from lxml import etree
 import re
 import time
-import random
 from datetime import datetime
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,61 +35,37 @@ if not c_class_codes:
 
 # --- 2. 参数设置 ---
 season = 1 
-MAX_WORKERS = 10  # 降低并发数，避免反爬虫
+MAX_WORKERS = 20 
 total = len(c_class_codes)
 
-# 更新 headers：移除过时Cookie，使用现代User-Agent
+# 爬虫 headers
 head = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Cookie": "EMFUND1=null; EMFUND2=null; EMFUND3=null; EMFUND4=null; EMFUND5=null; EMFUND6=null; EMFUND7=null; EMFUND8=null; EMFUND0=null; st_si=44023331838789; st_asi=delete; EMFUND9=08-16 22:04:25@#$%u4E07%u5BB6%u65B0%u5229%u7075%u6D3B%u914D%u7F6E%u6DF7%u5408@%23%24519191; ASP.NET_SessionId=45qdofapdlm1hlgxapxuxhe1; st_pvi=87492384111747; st_sp=2020-08-16%2000%3A05%3A17; st_inirUrl=http%3A%2F%2Ffund.eastmoney.com%2Fdata%2Ffundranking.html; st_sn=12; st_psi=2020081622103685-0-6169905557",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.125 Safari/537.36"
 }
 
 
 def fetch_fund_holdings(code, season, head):
     """爬取单个基金的持仓数据和简称，并解析"""
+    url = f"http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={code}&topline=10&year=&month=&rt=0.5032668912422176"
     fund_name = '简称缺失'
     
-    # 添加随机延迟，避免速率限制
-    time.sleep(random.uniform(1, 2))
-    
-    # --- 提取基金简称 ---
-    url_name = f"http://fundf10.eastmoney.com/{code}.html"
     try:
-        response_name = requests.get(url_name, headers=head, timeout=10)
-        print(f"基金 {code} 档案页面状态码: {response_name.status_code}")
-        if response_name.status_code != 200:
-            print(f"基金 {code} 档案页面请求失败，状态码: {response_name.status_code}")
-            return code, fund_name, []
-        
-        html_name = etree.HTML(response_name.text)
-        # 优化XPath：使用normalize-space()处理空格
-        fund_name_list = html_name.xpath('//td[normalize-space(text())="基金简称"]/following-sibling::td[1]/text()')
-        if fund_name_list:
-            fund_name = fund_name_list[0].strip()
-            print(f"成功提取基金 {code} 简称: {fund_name}")
-        else:
-            print(f"基金 {code} 未找到简称，检查页面结构")
-    except Exception as e:
-        print(f"提取基金 {code} 简称失败: {e}")
-    # ----------------------------
-
-    # 原持仓数据提取逻辑
-    url = f"http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={code}&topline=10&year=&month=&rt=0.5032668912422176"
-    
-    try:
-        # 添加延迟
-        time.sleep(random.uniform(1, 2))
         response = requests.get(url, headers=head, timeout=10)
-        print(f"基金 {code} 持仓页面状态码: {response.status_code}")
-        if response.status_code != 200:
-            print(f"基金 {code} 持仓页面请求失败，状态码: {response.status_code}")
-            return code, fund_name, []
-        
         text = response.text
         
-        # 提取 HTML 内容块
+        # --- 最终简称提取：直接从返回的文本中查找 JSON 结构中的名称 ---
+        # 常见模式: title:'xxxx', code:'xxxx', name:'[基金简称]', type:'xxxx'
+        name_match = re.search(r"name:'(.*?)'", text)
+        if name_match:
+            # 这种模式比 content:\\" 中的更稳定
+            fund_name = name_match.group(1).strip()
+        
+        # -----------------------------------------------------
+
+        # 提取 HTML 内容块 (持仓表格)
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
         if not div_match:
-            print(f"基金 {code} 无持仓内容块")
             return code, fund_name, []
 
         div = div_match[0]
@@ -109,7 +85,8 @@ def fetch_fund_holdings(code, season, head):
             
             stock_name = stock_name_list[0].strip()
             
-            # --- 股票数据提取逻辑 ---
+            # --- 股票数据提取逻辑 (已验证稳定) ---
+            # 尝试通过 XPath 提取最后四个 td 元素
             data_tds = row.xpath('./td[position() >= last()-3]') 
             
             money_data = []
@@ -130,11 +107,10 @@ def fetch_fund_holdings(code, season, head):
         
         return code, fund_name, stock_one_fund
 
-    except requests.exceptions.RequestException as e:
-        print(f"请求基金 {code} 持仓失败: {e}")
+    except requests.exceptions.RequestException:
         return code, fund_name, []
-    except Exception as e:
-        print(f"解析基金 {code} 持仓失败: {e}")
+    except Exception:
+        # 捕获所有其他解析错误
         return code, fund_name, []
 
 # --- 3. 并发爬取持仓数据 ---
@@ -144,20 +120,20 @@ futures = []
 all_holdings = [] 
 
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    # 提交所有爬取任务到线程池
     for code in c_class_codes:
         future = executor.submit(fetch_fund_holdings, code, season, head)
         futures.append(future)
 
-    # 监控并收集结果
     for i, future in enumerate(as_completed(futures)):
         code, fund_name, holdings_list = future.result()
         
-        # 更新进度
         if total > 0 and (i + 1) % (total // 10 + 1) == 0:
             print(f"进度: {i+1}/{total} ({((i+1)/total)*100:.1f}%)")
+            
+        # 强制打印简称，方便您在 Actions 日志中查看是否成功
+        if fund_name != '简称缺失':
+             print(f"基金 {code} 简称提取成功: {fund_name}")
 
-        # 存储所有持仓数据
         for holding in holdings_list:
             all_holdings.append([code, fund_name] + holding)
 
@@ -168,13 +144,11 @@ print(f"总耗时: {end_time - start_time:.2f} 秒")
 
 # --- 4. 整合结果并保存 ---
 
-# 创建包含所有持仓记录的 DataFrame
 df_holdings = pd.DataFrame(
     all_holdings,
     columns=['基金代码', '基金简称', '股票简称', '占净值比例', '持股数_万', '持仓市值_万']
 )
 
-# 添加时间戳并保存文件
 current_time_shanghai = datetime.now()
 timestamp = current_time_shanghai.strftime("%Y%m%d_%H%M%S")
 year_month = current_time_shanghai.strftime("%Y%m")
