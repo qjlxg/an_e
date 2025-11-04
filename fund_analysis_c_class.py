@@ -40,7 +40,7 @@ total = len(c_class_codes)
 
 # 爬虫 headers
 head = {
-    "Cookie": "EMFUND1=null; EMFUND2=null; EMFUND3=null; EMFUND4=null; EMFUND5=null; EMFUND6=null; EMFUND7=null; EMFUND8=null; EMFUND0=null; st_si=44023331838789; st_asi=delete; EMFUND9=08-16 22:04:25@#$%u4E07%u5BB6%u65B0%u5229%u7075%u6D3B%u914D%u7F6E%u6DF7%u5408@%23%24519191; ASP.NET_SessionId=45qdofapdlm1hlgxapxuxhe1; st_pvi=87492384111747; st_sp=2020-08-16%2000%3A05%3A17; st_inirUrl=http%3A%2F%2Ffund.eastmoney.com%2Fdata%2Ffundranking.html; st_sn=12; st_psi=2020081622103685-0-6169905557",
+    "Cookie": "EMFUND1=null; EMFUND2=null; EMFUND3=null; EMFUND4=null; EMFUND5=null; EMFUND6=null; EMFUND7=null; EMFUND8=null; EMFUND0=null; st_si=44023331838789; st_asi=delete; EMFUND9=08-16 22:04:25@#$%u4E07%u5BB6%u65B0%u5229%u7075%u6DFB%u5408@%23%24519191; ASP.NET_SessionId=45qdofapdlm1hlgxapxuxhe1; st_pvi=87492384111747; st_sp=2020-08-16%2000%3A05%3A17; st_inirUrl=http%3A%2F%2Ffund.eastmoney.com%2Fdata%2Ffundranking.html; st_sn=12; st_psi=2020081622103685-0-6169905557",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.125 Safari/537.36"
 }
 
@@ -54,25 +54,27 @@ def fetch_fund_holdings(code, season, head):
         response = requests.get(url, headers=head, timeout=10)
         text = response.text
         
-        # --- 最终简称提取：直接从返回的文本中查找 JSON 结构中的名称 ---
-        # 常见模式: title:'xxxx', code:'xxxx', name:'[基金简称]', type:'xxxx'
-        name_match = re.search(r"name:'(.*?)'", text)
-        if name_match:
-            # 这种模式比 content:\\" 中的更稳定
-            fund_name = name_match.group(1).strip()
-        
-        # -----------------------------------------------------
-
-        # 提取 HTML 内容块 (持仓表格)
+        # 1. 提取 HTML 内容块 (包含基金简称和持仓表格)
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
         if not div_match:
+            # 备用简称提取：从 name:'...' 模式提取
+            name_match = re.search(r"name:'(.*?)'", text)
+            if name_match:
+                fund_name = name_match.group(1).strip()
             return code, fund_name, []
 
         div = div_match[0]
         html_body = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>test</title></head><body>%s</body></html>' % (div)
         html = etree.HTML(html_body)
         
-        # 使用 season 变量定位最新的季度表格
+        # --- 最终简称提取：使用 XPath 定位 h4 标签内的链接文本 ---
+        # XPath: //h4/label[@class='left']/a[1] 
+        name_list = html.xpath('//h4/label/a[1]/text()')
+        if name_list:
+            fund_name = name_list[0].strip()
+        # -----------------------------------------------------
+        
+        # 2. 提取持仓数据
         xpath_base = f'//div[{season}]/div/table/tbody/tr'
         rows = html.xpath(xpath_base)
         
@@ -86,7 +88,6 @@ def fetch_fund_holdings(code, season, head):
             stock_name = stock_name_list[0].strip()
             
             # --- 股票数据提取逻辑 (已验证稳定) ---
-            # 尝试通过 XPath 提取最后四个 td 元素
             data_tds = row.xpath('./td[position() >= last()-3]') 
             
             money_data = []
