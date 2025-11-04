@@ -30,7 +30,7 @@ profit_lock_days = params.get('profit_lock_days', 14)
 volatility_window = params.get('volatility_window', 7)
 volatility_threshold = params.get('volatility_threshold', 0.03)
 decline_days_threshold = params.get('decline_days_threshold', 5)
-trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.08)
+trailing_stop_loss_pct = params.get('trailing_stop_loss_pct', 0.08) # 8%回撤
 macd_divergence_window = params.get('macd_divergence_window', 60)
 adx_window = params.get('adx_window', 14)
 adx_threshold = params.get('adx_threshold', 30)
@@ -178,7 +178,7 @@ for code, cost_nav in holdings_config.items():
         print(f"警告: 基金 {code} 无法加载。原因: {e}。跳过该基金。")
 
 
-# 决策函数 (T1 止盈门槛已修改, 移动止盈已修复并加固)
+# 决策函数 (最终加固版)
 def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_data, big_trend):
     profit_rate = holding['profit_rate']
     latest_net_value = holding['latest_net_value']
@@ -247,23 +247,32 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
           return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
     
     
-    # 3. 移动止盈 (修复逻辑：最新净值必须跌破止盈价)
-    trailing_stop_nav = target_nav['trailing_stop_nav']
+    # 3. 移动止盈 (核心逻辑重写：基于实际回撤百分比检查)
+    trailing_stop_nav = target_nav['trailing_stop_nav'] 
+    current_peak = holding['current_peak'] 
 
-    # 仅当移动止盈价高于成本价时，且最新净值跌破止盈价时触发
+    # 1. 确保止盈价高于成本，防止亏损止盈
     if trailing_stop_nav > cost_nav:
-        # 使用 np.isclose 进行更安全的浮点数比较，并确保 latest_net_value 严格低于或非常接近止盈价
-        if latest_net_value <= trailing_stop_nav or np.isclose(latest_net_value, trailing_stop_nav, atol=1e-4):
+        
+        # 2. 只有在当前净值低于历史峰值时，才计算回撤
+        if latest_net_value < current_peak:
             
-            # --- DEBUG: 打印触发数据，用于问题排查 ---
-            if code == '009645':
-                 print(f"DEBUG: 基金 {code} 移动止盈触发。NAV: {latest_net_value}, Target: {trailing_stop_nav}. (应为 latest_nav <= Target)")
-            # ------------------------------------------
+            # 计算当前净值相对历史峰值的实际回撤百分比
+            actual_drawdown_pct = (current_peak - latest_net_value) / current_peak
+            
+            # 3. 检查是否达到或超过 8% 的回撤止盈点
+            if actual_drawdown_pct >= trailing_stop_loss_pct:
+                
+                # --- DEBUG: 打印触发数据 ---
+                if code == '009645':
+                     print(f"DEBUG: 基金 {code} [移动止盈 - 触发成功] NAV: {latest_net_value}, Peak: {current_peak}, Drawdown: {actual_drawdown_pct:.4f} (>= {trailing_stop_loss_pct})")
+                # ------------------------------------------
 
-            decision = '因移动止盈卖出'
-            sell_reasons.append(f'移动止盈触发 (止盈价: {trailing_stop_nav})')
-            return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
-    
+                decision = '因移动止盈卖出'
+                sell_reasons.append(f'移动止盈触发 (止盈价: {trailing_stop_nav})')
+                return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
+
+
     # 4. MACD 顶背离 
     if len(full_fund_data) >= macd_divergence_window:
         recent_data = full_fund_data.tail(macd_divergence_window)
