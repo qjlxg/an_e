@@ -14,11 +14,13 @@ import sys
 
 # --- 1. 读取 C 类基金代码列表 ---
 try:
+    # 尝试获取文件内容。如果文件不可用，则跳过。
+    # 因为您提到文件已上传，我们假设可以直接读取。
     with open('C类.txt', 'r', encoding='utf-8') as f:
         all_lines = [line.strip() for line in f if line.strip()]
     
     # 检查并移除可能的列标题 'code'
-    if all_lines and all_lines[0].lower().startswith('code'):
+    if all_lines and all_lines[0].lower() in ['code', '基金代码']:
         c_class_codes = all_lines[1:]
     else:
         c_class_codes = all_lines
@@ -51,13 +53,25 @@ head = {
 def fetch_fund_holdings(code, season, head):
     """爬取单个基金的持仓数据和简称，并解析"""
     url = "http://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code={}&topline=10&year=&month=&rt=0.5032668912422176".format(code)
+    fund_name = '简称缺失'
+    
     try:
         response = requests.get(url, headers=head, timeout=10)
         text = response.text
         
-        # 提取基金简称
-        fund_name_match = re.search(r'name:\'(.*?)\'', text)
-        fund_name = fund_name_match.group(1) if fund_name_match else '简称缺失'
+        # --- 核心修正：基金简称提取逻辑 ---
+        
+        # 1. 尝试从 content 变量的头部提取，这是最稳定的来源
+        content_match = re.search(r'content:\\"(.*?)\s+\d{4}年\d季度股票投资明细', text)
+        if content_match:
+            fund_name = content_match.group(1).strip()
+        else:
+            # 2. 如果方法1失败，尝试从 name:'...' 模式提取 (备份方法)
+            name_match = re.search(r'name:\'(.*?)\'', text)
+            if name_match:
+                 fund_name = name_match.group(1).strip()
+
+        # ----------------------------
 
         # 提取 HTML 内容块
         div_match = re.findall('content:\\"(.*)\\",arryear', text)
@@ -82,38 +96,23 @@ def fetch_fund_holdings(code, season, head):
             stock_name = stock_name_list[0].strip()
             
             # --- 关键修正：重新定位数据列 ---
-            # 找到包含占净值比例、持股数、持仓市值的 td 元素，它们通常在表格的右侧且class为 'tor' 或 'toc'
-            # 尝试通过 XPath 提取最后三个数字列
-            
-            # 尝试提取最后四个 td 元素，通常是 涨跌幅、占净值比例、持股数、持仓市值
+            # 尝试通过 XPath 提取最后四个 td 元素，通常是 涨跌幅、占净值比例、持股数、持仓市值
             data_tds = row.xpath('./td[position() >= last()-3]') 
             
-            # 过滤掉非数字列（如“变动详情”链接），只保留数字
             money_data = []
             for td in data_tds:
+                # 提取 td 内所有文本并清理
                 text = "".join(td.xpath('.//text()')).strip()
-                # 清理数据：移除百分号、逗号和'---'
                 text = text.replace('---','0').replace(',','').replace('%','')
                 try:
                     # 如果能成功转换成浮点数，就认为是有效数据
                     money_data.append(float(text))
                 except ValueError:
-                    # 转换失败，跳过
-                    pass
+                    pass # 转换失败，跳过
             
-            # 期望数据：[占净值比例, 持股数, 持仓市值]
-            # 根据经验，所需数据通常是最后三个数值
+            # 确保有足够的数字：占净值比例、持股数、持仓市值
             if len(money_data) >= 3:
                 # 假设所需数据（占净值比例、持股数、持仓市值）是 money_data 中的最后三个
-                
-                # 注意：如果表格有4个数字列 (最新价, 占净值比例, 持股数, 持仓市值)
-                # 则占净值比例是 money_data[-3]，持股数是 money_data[-2]，持仓市值是 money_data[-1]
-                
-                # 假设网站的结构稳定：占净值比例、持股数、持仓市值
-                # 根据您提供的原始数据片段，这三列通常是连续的：
-                # 华夏成长混合 2025年3季度：[4.06, 250.00, 12827.64]
-                
-                # 尝试提取最后三个有效数值
                 stock_one_fund.append([stock_name, 
                                         money_data[-3], # 占净值比例
                                         money_data[-2], # 持股数_万
@@ -122,10 +121,10 @@ def fetch_fund_holdings(code, season, head):
         return code, fund_name, stock_one_fund
 
     except requests.exceptions.RequestException:
-        return code, '爬取失败', []
+        return code, fund_name, []
     except Exception:
         # 捕获所有其他解析错误，避免中断整个并发过程
-        return code, '处理失败', []
+        return code, fund_name, []
 
 # In[]:
 # --- 3. 并发爬取持仓数据 ---
@@ -134,7 +133,6 @@ start_time = time.time()
 futures = []
 all_holdings = [] # 用于存储所有基金的所有持仓记录
 
-# ... [并发执行逻辑保持不变] ...
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     # 提交所有爬取任务到线程池
     for code in c_class_codes:
