@@ -1,3 +1,0 @@
-﻿Date,Fund_Code,Action,Shares_Change,Amount_Change,Net_Value,Shares_Remaining,Avg_Cost_Nav_Remaining,Cash_Remaining,Profit_Rate(%),Decision_Reason,Total_Assets
-2020-06-29,009645,Sell,-5455.54,5455.54,1.0,0.0,0.0,5455.54,-45.44,因绝对止损（亏损>20%）卖出100%,5455.54
-2023-11-30,019548,Sell,-7231.18,7231.18,1.0,0.0,0.0,7231.18,-27.69,因绝对止损（亏损>20%）卖出100%,7231.18
