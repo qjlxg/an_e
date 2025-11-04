@@ -1,13 +1,18 @@
 name: Fund Analysis Automation (C Class)
 
 on:
+  # 自动触发：当指定的路径文件变动时自动运行
   push:
     branches:
       - main # 或你的主要分支名称
     paths:
-      - '基金分析脚本.py' # 假设你的脚本文件名为 基金分析脚本.py
+      - 'fund_analysis_c_class.py' 
       - 'C类.txt'
       - '.github/workflows/run_analysis.yml' # 自身变动时也触发
+      
+  # 手动触发：允许用户通过 GitHub Actions 界面点击按钮运行
+  workflow_dispatch:
+    # 可以在手动运行时添加参数，这里不加，保持简单。
 
 jobs:
   run_script_and_push_results:
@@ -34,7 +39,7 @@ jobs:
         sudo timedatectl set-timezone Asia/Shanghai
 
     - name: Run Python Script (Assuming script is named 'fund_analysis_c_class.py')
-      # 将上方修改后的 Python 代码保存为一个文件，例如 fund_analysis_c_class.py
+      # 确保你的 Python 脚本名与此处的 'fund_analysis_c_class.py' 对应
       run: python fund_analysis_c_class.py
 
     - name: Configure Git
@@ -47,12 +52,14 @@ jobs:
       run: |
         # 查找所有 CSV 文件并添加到 Git
         git add --all *.csv
-        # 查找年月目录下的所有 CSV 文件并添加到 Git (确保 Python脚本中的保存逻辑正确创建了目录)
+        # 查找年月目录下的所有 CSV 文件并添加到 Git 
         git add --all 20*/
         
         # 检查是否有文件变动
         if ! git diff --cached --exit-code; then
-          git commit -m "Auto-generated: Fund analysis results for C Class funds (Shanghai Time)"
+          # 使用 GITHUB_SHA 作为提交信息的一部分，区分自动/手动触发
+          COMMIT_MSG="Auto-generated: Fund analysis results for C Class funds (Shanghai Time) triggered by ${{ github.event_name }}"
+          git commit -m "${COMMIT_MSG}"
           git push
         else
           echo "No changes in generated CSV files. Skipping commit."
