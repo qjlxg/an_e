@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 big_market_path = 'index_data/000300.csv'
 fund_data_dir = 'fund_data/'
 
-# --- 配置：T1 止盈最小盈利门槛 (新增) ---
-MIN_PROFIT_FOR_T1 = 5.5
+# --- 配置：策略门槛参数 ---
+MIN_PROFIT_FOR_T1 = 5.5  # T1 止盈最小盈利门槛 (新增)
 
 # 加载配置文件
 try:
@@ -35,7 +35,7 @@ macd_divergence_window = params.get('macd_divergence_window', 60)
 adx_window = params.get('adx_window', 14)
 adx_threshold = params.get('adx_threshold', 30)
 
-# --- 加载大盘数据 (移除模拟数据) ---
+# --- 加载大盘数据 (强制依赖文件) ---
 try:
     if not os.path.exists(big_market_path):
         raise FileNotFoundError(f"大盘数据文件未找到: {big_market_path}")
@@ -133,7 +133,7 @@ if len(big_market_data) >= 2:
             if big_market_latest['rsi'] > 75:
                  big_trend = '弱势'
             
-# 加载基金数据 (移除模拟数据)
+# 加载基金数据 (强制依赖文件)
 fund_nav_data = {}
 holdings = {}
 for code, cost_nav in holdings_config.items():
@@ -178,7 +178,7 @@ for code, cost_nav in holdings_config.items():
         print(f"警告: 基金 {code} 无法加载。原因: {e}。跳过该基金。")
 
 
-# 决策函数 (T1 止盈门槛已修改)
+# 决策函数 (T1 止盈门槛已修改, 移动止盈已修复)
 def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_data, big_trend):
     profit_rate = holding['profit_rate']
     latest_net_value = holding['latest_net_value']
@@ -210,7 +210,7 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
 
     # --- 高优先级规则（包含决策和净值记录） ---
     
-    # 分级止损 
+    # 1. 分级止损 (最高优先级)
     if profit_rate < -20:
         decision = '因绝对止损（亏损>20%）卖出100%'
         sell_reasons.append(f'绝对止损（亏损>20%，触发净值: {target_nav["abs_stop_20_nav"]}）触发')
@@ -225,7 +225,7 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
         return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
 
 
-    # 指标计算 
+    # 指标计算 (非决策逻辑)
     if len(full_fund_data) >= 2:
         recent_data = full_fund_data.tail(2)
         if (recent_data['net_value'] > recent_data['bb_upper']).all(): bb_pos = '上轨'
@@ -240,25 +240,25 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             if (recent_macd.iloc[-1]['macd'] < 0 and recent_macd.iloc[-1]['signal'] < 0): macd_zero_dead_cross = True
     
     
-    # --- 关键修改：T1 止盈规则（增加 5.5% 盈利门槛） ---
+    # 2. T1 止盈规则 (已集成 5.5% 门槛)
     if profit_rate > MIN_PROFIT_FOR_T1 and bb_pos == '中轨':
           decision = '【T1止盈】布林中轨已达，建议卖出 30% - 50% 仓位'
           sell_reasons.append(f'布林中轨已达（T1），盈利>{MIN_PROFIT_FOR_T1}%，锁定部分利润')
           return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
-    # ----------------------------------------
     
-    # --- 移动止盈 (修复逻辑) ---
+    
+    # 3. 移动止盈 (修复逻辑：最新净值必须跌破止盈价)
     trailing_stop_nav = target_nav['trailing_stop_nav']
 
     # 仅当移动止盈价高于成本价时，且最新净值跌破止盈价时触发
     if trailing_stop_nav > cost_nav:
+        # 核心修复点: 仅当当前净值 <= 止盈价时才触发
         if latest_net_value <= trailing_stop_nav:
             decision = '因移动止盈卖出'
             sell_reasons.append(f'移动止盈触发 (止盈价: {trailing_stop_nav})')
             return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
-    # ---------------------------------------------
-
-    # MACD 顶背离 
+    
+    # 4. MACD 顶背离 
     if len(full_fund_data) >= macd_divergence_window:
         recent_data = full_fund_data.tail(macd_divergence_window)
         if not recent_data.empty:
@@ -269,13 +269,13 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
                 sell_reasons.append('MACD顶背离触发')
                 return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
 
-    # ADX 趋势转弱 
+    # 5. ADX 趋势转弱 
     if not np.isnan(adx) and adx >= adx_threshold and macd_zero_dead_cross:
         decision = '因ADX趋势转弱减仓50%'
         sell_reasons.append('ADX趋势转弱触发')
         return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
 
-    # 最大回撤止损
+    # 6. 最大回撤止损
     if len(full_fund_data) >= profit_lock_days:
         recent_data = full_fund_data.tail(profit_lock_days)
         if not recent_data.empty:
@@ -283,7 +283,6 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             current_nav = recent_data['net_value'].iloc[-1]
             drawdown = (peak_nav - current_nav) / peak_nav
             
-            # 记录短期回撤止损价
             target_nav['short_drawdown_nav'] = round(peak_nav * (1 - 0.10), 4)
 
             # 增加回撤必须亏损的判断 (防止高位巨幅回撤但仍盈利)
@@ -292,9 +291,8 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
                 sell_reasons.append('14天内最大回撤>10%且低于成本价触发')
                 return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
 
-    # ... (其余规则)
     
-    # RSI和布林带锁定利润
+    # 7. RSI和布林带锁定利润
     if len(full_fund_data) >= profit_lock_days:
         recent_data = full_fund_data.tail(profit_lock_days)
         recent_rsi = recent_data['rsi']
@@ -307,7 +305,7 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
             sell_reasons.append('RSI>75且连续突破布林带上轨，减仓50%锁定利润')
             # 不返回，让它进入超规则和三要素
 
-    # 超规则（指标钝化）
+    # 8. 超规则（指标钝化）
     is_overbought_consecutive = False
     if len(full_fund_data) >= consecutive_days_threshold:
         recent_rsi = full_fund_data.tail(consecutive_days_threshold)['rsi']
@@ -327,7 +325,7 @@ def decide_sell(code, holding, full_fund_data, big_market_latest, big_market_dat
              sell_reasons.append(f'持续强势，RSI>{rsi_overbought_threshold}，暂停卖出')
              return { 'code': code, 'latest_nav': latest_net_value, 'cost_nav': cost_nav, 'profit_rate': round(profit_rate, 2), 'rsi': round(rsi, 2), 'macd_signal': macd_signal, 'bb_pos': bb_pos, 'big_trend': big_trend, 'decision': decision, 'target_nav': target_nav }
 
-    # --- 三要素综合决策（最低优先级） ---
+    # --- 9. 三要素综合决策（最低优先级） ---
 
     # 收益率要素
     if profit_rate > 50: sell_profit = '卖50%'
