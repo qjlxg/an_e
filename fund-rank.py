@@ -332,8 +332,8 @@ def main(argv):
         print('fund:' + strfundcode + '\n')
         
         # 新增 MA 趋势输出
-        print(f'{strsdate}\t{stredate}\t净增长\t增长率\t最大回撤\t夏普比率\tMA趋势 (20日>60日)')
-        print(f'{jingzhimin}\t\t{jingzhimax}\t\t{str(jingzhidif)}\t{str(jingzhirise)}%\t\t{str(max_drawdown)}%\t\t{str(sharpe_ratio)}\t\t{ma_trend}')
+        print(f'增长率\t\t夏普比率\t\tMA趋势 (20日>60日)\t净增长\t最大回撤\t{strsdate}\t{stredate}')
+        print(f'{str(jingzhirise)}%\t\t{str(sharpe_ratio)}\t\t{ma_trend}\t\t\t{str(jingzhidif)}\t{str(max_drawdown)}%\t\t{jingzhimin}\t\t{jingzhimax}')
         sys.exit(0)
         
     # --- 基金列表获取 (从 C类.txt 获取代码) ---
@@ -390,27 +390,28 @@ def main(argv):
     # 排序：按增长率 (fund[8]) 降序排列
     all_funds_list.sort(key=lambda fund: fund[8], reverse=True) 
     
-    # 新增 MA 趋势输出头
+    # *** 报告头部：调整列顺序，将增长率、夏普比率、MA趋势提前 ***
     strhead = '排序\t' + '编码\t\t' + '名称\t\t' + '类型\t\t' + \
-    strsdate + '\t' + stredate + '\t' + '净增长\t' + '增长率\t' + '最大回撤\t' + '夏普比率\t' + 'MA趋势' + '\n'
+              '增长率\t' + '夏普比率\t' + 'MA趋势\t\t' + \
+              '净增长\t' + '最大回撤\t' + strsdate + '\t' + stredate + '\n'
     print(strhead)
     fileobject.write(strhead)
     
     # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率, 11:MA趋势]
     for index in range(len(all_funds_list)):
         fund_data = all_funds_list[index]
-        # 新增 MA 趋势输出内容 (索引 11)
+        # *** 报告内容：按新的顺序输出 ***
         strcontent = f"{index+1}\t" \
                      f"{fund_data[0]}\t" \
                      f"{fund_data[2]}\t\t" \
                      f"{fund_data[3]}\t\t" \
-                     f"{fund_data[5]}\t\t" \
-                     f"{fund_data[6]}\t\t" \
-                     f"{str(fund_data[7])}\t" \
                      f"{str(fund_data[8])}%\t\t" \
-                     f"{str(fund_data[9])}%\t\t" \
                      f"{str(fund_data[10])}\t\t" \
-                     f"{fund_data[11]}\n"
+                     f"{fund_data[11]}\t\t\t" \
+                     f"{str(fund_data[7])}\t" \
+                     f"{str(fund_data[9])}%\t\t" \
+                     f"{fund_data[5]}\t\t" \
+                     f"{fund_data[6]}\n"
                      
         print(strcontent)
         fileobject.write(strcontent)
