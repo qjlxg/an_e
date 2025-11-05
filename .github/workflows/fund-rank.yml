@@ -15,10 +15,8 @@ on:
     paths:
       - 'fund-rank.py'              # 基金分析脚本
       - 'fund-rank.yml'             # 工作流文件本身
-      - 'C类.txt'                   # 基金列表文件
-    
-      - 'recommended_cn_funds.csv'  
-      - 'fund_data/**'              # 监测 fund_data 目录下文件变动（可选）
+      - 'C类.txt'                   # 基金列表数据源文件
+      - 'fund_data/**'              # 监控 fund_data 目录下文件变动（可选）
 
 jobs:
   # 定义一个名为 'run-fund-analysis' 的作业
@@ -48,17 +46,16 @@ jobs:
           echo "无外部依赖需要安装。"
 
       # 步骤 4: 运行 Python 脚本并传入动态日期参数
+      # *** 此步骤已修正日期范围 ***
       - name: 运行基金分析脚本 (Run fund analysis script)
         id: run-script
-        # 注意：此处使用 'bash' 确保 date 命令在所有 GitHub Runner 上兼容
         shell: bash
         run: |
           # 确保 fund_data 目录存在，避免脚本因目录不存在而报错
           mkdir -p fund_data
           
-          # 计算起始日期 (30天前) 和结束日期 (昨天)，格式为 YYYY-MM-DD
-          # Linux date 语法：--date='30 days ago'
-          START_DATE=$(date --date='30 days ago' +'%Y-%m-%d')
+          # 修正日期：计算起始日期 (90天前，以确保有足够数据计算60日均线) 和结束日期 (昨天)
+          START_DATE=$(date --date='90 days ago' +'%Y-%m-%d')
           END_DATE=$(date --date='yesterday' +'%Y-%m-%d')
           
           echo "脚本运行日期范围: $START_DATE 到 $END_DATE"
@@ -81,14 +78,12 @@ jobs:
           git add result_*.txt || true  
           
           # 3. 检查是否有新的文件变更需要提交 
-          # git diff --cached --exit-code 返回非零代码表示无差异
           if ! git diff --cached --exit-code; then
             # 4. 提交变更
             git commit -m "chore: 自动更新基金排名文件 for ${END_DATE}"
             
             # 5. 推送变更到 GitHub 仓库
             echo "--- 正在推送文件到仓库 ---"
-            # 推送到当前分支
             git push
           else
             echo "没有新的排名文件生成或内容无变化，跳过提交。"
