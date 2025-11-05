@@ -1,11 +1,12 @@
 # 工作流名称：基金排名分析
 name: 排名
+
 # 工作流触发条件
 on:
-  # 1. 允许手动触发工作流
+  # 1. 允许手动触发工作流（用于测试或临时运行）
   workflow_dispatch:
   
-  # 2. 定时调度运行
+  # 2. 定时调度运行（每3小时运行一次，从0分开始）
   schedule:
     - cron: '0 */3 * * *'
     
@@ -14,7 +15,10 @@ on:
     paths:
       - 'fund-rank.py'              # 基金分析脚本
       - 'fund-rank.yml'             # 工作流文件本身
-      - 'recommended_cn_funds.csv'  # 基金数据源文件
+      - 'C类.txt'                   # 基金列表文件
+    
+      - 'recommended_cn_funds.csv'  
+      - 'fund_data/**'              # 监测 fund_data 目录下文件变动（可选）
 
 jobs:
   # 定义一个名为 'run-fund-analysis' 的作业
@@ -29,6 +33,8 @@ jobs:
         with:
           # 关键：使用 GITHUB_TOKEN，以便能够推送到仓库
           token: ${{ secrets.GITHUB_TOKEN }}
+          # 确保获取完整历史记录，否则 push 可能会失败
+          fetch-depth: 0 
 
       # 步骤 2: 设置 Python 环境
       - name: 设置 Python 环境 (Set up Python)
@@ -44,18 +50,26 @@ jobs:
       # 步骤 4: 运行 Python 脚本并传入动态日期参数
       - name: 运行基金分析脚本 (Run fund analysis script)
         id: run-script
+        # 注意：此处使用 'bash' 确保 date 命令在所有 GitHub Runner 上兼容
+        shell: bash
         run: |
+          # 确保 fund_data 目录存在，避免脚本因目录不存在而报错
+          mkdir -p fund_data
+          
           # 计算起始日期 (30天前) 和结束日期 (昨天)，格式为 YYYY-MM-DD
+          # Linux date 语法：--date='30 days ago'
           START_DATE=$(date --date='30 days ago' +'%Y-%m-%d')
           END_DATE=$(date --date='yesterday' +'%Y-%m-%d')
           
           echo "脚本运行日期范围: $START_DATE 到 $END_DATE"
-          # 执行 Python 脚本
+          # 执行 Python 脚本，生成 result_[START]_[END]_C类_Local_Analysis.txt
           python fund-rank.py "$START_DATE" "$END_DATE"
           
-      # 步骤 5: 将结果文件提交并推送到仓库 (使用 Git 替代 Artifact)
+      # 步骤 5: 将结果文件提交并推送到仓库
       - name: 提交并推送结果文件 (Commit and Push results)
+        shell: bash
         run: |
+          # 重新计算 END_DATE 用于 Commit Message
           END_DATE=$(date --date='yesterday' +'%Y-%m-%d')
           
           # 1. 配置 Git 身份
@@ -64,16 +78,17 @@ jobs:
           
           # 2. 将生成的结果文件添加到 Git 暂存区
           # '|| true' 确保即使文件不存在也不会导致作业失败
-          git add result_*.txt || true 
+          git add result_*.txt || true  
           
-          # 3. 检查是否有新的文件变更需要提交 (如果 git diff --cached 成功返回 0，表示有变更)
-          # 注意: --exit-code 返回非 0 表示没有差异
+          # 3. 检查是否有新的文件变更需要提交 
+          # git diff --cached --exit-code 返回非零代码表示无差异
           if ! git diff --cached --exit-code; then
             # 4. 提交变更
             git commit -m "chore: 自动更新基金排名文件 for ${END_DATE}"
             
             # 5. 推送变更到 GitHub 仓库
             echo "--- 正在推送文件到仓库 ---"
+            # 推送到当前分支
             git push
           else
             echo "没有新的排名文件生成或内容无变化，跳过提交。"
