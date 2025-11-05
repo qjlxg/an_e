@@ -180,8 +180,6 @@ def calculate_consecutive_drops(series):
     try:
         if series.empty or len(series) < 2: return 0
         
-        # drops = (series.iloc[:-1].values < series.iloc[1:].values) # 原始逻辑 (t-1 < t)
-        
         # 保持原始脚本的逻辑，假设其计算的是连续上涨天数（因其是 t-1 < t）
         drops = (series.iloc[:-1].values < series.iloc[1:].values) 
         
@@ -236,7 +234,7 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
 # --- 单基金分析 (函数配置 8/13) ---
 def analyze_single_fund(filepath):
     """
-    【修正区域】增加编码容错和列检查，解决 KeyError: 'date' 和 UnicodeDecodeError
+    【容错已添加】增加编码容错和列检查，解决 KeyError: 'date' 和 UnicodeDecodeError
     分析单只基金
     """
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
@@ -257,9 +255,9 @@ def analyze_single_fund(filepath):
          return None
 
     try:
-        # 【修正区域】检查关键列是否存在，非净值文件将直接跳过
+        # 检查关键列是否存在，非净值文件将直接跳过
         if 'date' not in df.columns or 'net_value' not in df.columns:
-            logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列，跳过。")
+            # logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列，跳过。")
             return None
             
         df['date'] = pd.to_datetime(df['date'])
@@ -311,8 +309,7 @@ def analyze_all_funds(target_codes=None):
         if target_codes:
             csv_files = [os.path.join(FUND_DATA_DIR, f'{code}.csv') for code in target_codes if os.path.exists(os.path.join(FUND_DATA_DIR, f'{code}.csv'))]
         else:
-            # 原始脚本使用了 glob.glob('*.csv')，这里假设它应该搜索 FUND_DATA_DIR
-            # 由于运行环境限制，我使用 glob.glob('*.csv') 兼容您的运行结果
+            # 原始脚本使用了 glob.glob('*.csv')，这里使用它兼容您的运行环境
             csv_files = glob.glob('*.csv')
         
         if not csv_files:
@@ -336,7 +333,7 @@ def analyze_all_funds(target_codes=None):
 def format_technical_value(value, format_type='percent'):
     """格式化技术指标值用于显示"""
     if pd.isna(value): return 'NaN'
-    # 【修正区域】处理当日跌幅的符号逻辑：仅显示下跌，上涨显示 0.00%
+    # 处理当日跌幅的符号逻辑：仅显示下跌，上涨显示 0.00%
     if format_type == 'report_daily_drop':
         # value 是 (前值 - 现值) / 前值。正值代表跌幅，负值代表涨幅。
         if value > 0:
@@ -354,7 +351,6 @@ def format_technical_value(value, format_type='percent'):
 # --- 表格行格式化 (函数配置 11/13) ---
 def format_table_row(index, row, table_part=1):
     """
-    【格式优化】
     格式化 Markdown 表格行，包含颜色/符号标记，确保清晰度。
     根据 table_part 输出表的某一部分，以解决滚动条问题。
     """
@@ -372,7 +368,7 @@ def format_table_row(index, row, table_part=1):
         trend_display = f"**{trend_display}**"
         ma_ratio_display = f"**{ma_ratio_display}**"
         
-    # *** 重点：此处使用新的格式化类型 'report_daily_drop' ***
+    # 此处使用新的格式化类型 'report_daily_drop'
     daily_drop_display = format_technical_value(row['当日跌幅'], 'report_daily_drop')
 
 
@@ -393,8 +389,7 @@ def format_table_row(index, row, table_part=1):
 # --- 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
     """
-    【格式优化】
-    生成完整的Markdown格式报告，优化段落和标题间距，并拆分表格以消除滚动条。
+    生成完整的Markdown格式报告，已修复语法错误。
     """
     try:
         if not results:
@@ -419,10 +414,6 @@ def generate_report(results, timestamp_str):
             (df_results['最大回撤'] >= HIGH_ELASTICITY_MIN_DRAWDOWN) &
             (df_results['近一周连跌'] == 1)
         ].copy()
-
-        # ----------------------------------------------------------------------------------------------------------------------
-        # 注意：'当日跌幅' 存储的是 (前值 - 现值) / 前值。如果 > 0 是下跌，如果 < 0 是上涨。
-        # ----------------------------------------------------------------------------------------------------------------------
         
         # 为了兼容原始脚本的判断逻辑：当日跌幅 >= 3% (即 daily_drop >= 0.03)
         CRITICAL_DROP_INT = MIN_DAILY_DROP_PERCENT
@@ -592,7 +583,8 @@ def generate_report(results, timestamp_str):
         
     except Exception as e:
         logging.error(f"生成报告时发生错误: {e}")
-        return f"# 报告生成错误\n\n错误信息: {str(e)}"}
+        # 【语法修复】删除多余的 '}'
+        return f"# 报告生成错误\n\n错误信息: {str(e)}"
 
 # --- 主函数 (函数配置 13/13) ---
 def main():
