@@ -13,8 +13,13 @@ import os
 import math
 
 # --- 常量定义 ---
+# 假设年化交易日为252天
 ANNUALIZATION_FACTOR = 252
+# 假设年化无风险收益率为3% (可根据实际情况调整)
 RISK_FREE_RATE = 0.03
+# 均线周期定义
+SHORT_MA_PERIOD = 20 # 短期均线 (约一个月交易日)
+LONG_MA_PERIOD = 60  # 长期均线 (约一个季度交易日)
 
 # --- 原始使用方法 ---
 def usage():
@@ -62,15 +67,14 @@ def get_jingzhi(strfundcode, strdate):
 
     return jingzhi
     
-# --- 新增函数：从本地文件加载历史净值数据 (已修改为读取累计净值) ---
+# --- 新增函数：从本地文件加载历史净值数据 (已适应 CSV 格式) ---
 def load_local_data(strfundcode, strsdate, stredate):
     """
     从fund_data目录加载基金历史净值数据，适应 CSV 格式：
-    日期,单位净值,累计净值,日增长率...
-    我们读取：第1列(日期) 和 第3列(累计净值)
+    读取：第1列(日期) 和 第3列(累计净值)
     """
+    # 优先尝试 .txt，再尝试 .csv
     data_file = os.path.join('fund_data', f'{strfundcode}.txt')
-    # 兼容 .csv 扩展名，虽然您的代码中一直使用 .txt，但如果文件是 .csv，也尝试加载
     if not os.path.exists(data_file):
         data_file = os.path.join('fund_data', f'{strfundcode}.csv')
         if not os.path.exists(data_file):
@@ -81,20 +85,17 @@ def load_local_data(strfundcode, strsdate, stredate):
     try:
         with open(data_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
-            # 跳过第一行表头
-            for line in lines[1:]: 
+            for line in lines[1:]: # 跳过第一行表头
                 parts = line.strip().split(',')
                 # 检查至少有3列：日期,单位净值,累计净值
                 if len(parts) >= 3:
                     date_str = parts[0].strip()
                     try:
-                        # *** 核心修改：从索引 2 读取累计净值 ***
-                        net_value = float(parts[2].strip()) 
+                        net_value = float(parts[2].strip()) # 从索引 2 读取累计净值
                         net_values_map[date_str] = net_value
                     except ValueError:
-                        continue # 跳过无效的净值行
+                        continue
     except Exception as e:
-        # print(f"Error reading local data for {strfundcode}: {e}")
         return None
     
     # 筛选出在指定日期范围内的数据，并按日期排序
@@ -105,6 +106,19 @@ def load_local_data(strfundcode, strsdate, stredate):
 
     # 返回所有在范围内的日期和净值序列
     return sorted_dates, [net_values_map[d] for d in sorted_dates]
+
+# --- 新增函数：计算简单移动平均 (SMA) ---
+def calculate_moving_average(net_values, period):
+    """
+    计算净值序列末尾的简单移动平均。
+    如果数据点数量不足 period，则返回 None。
+    """
+    if len(net_values) < period:
+        return None
+    
+    # 截取序列末尾 period 个数据点
+    ma_values = net_values[-period:]
+    return sum(ma_values) / period
 
 # --- 新增函数：计算最大回撤 ---
 def calculate_mdd(net_values):
@@ -126,10 +140,10 @@ def calculate_mdd(net_values):
 
     return round(max_drawdown * 100, 2) # 返回百分比
 
-# --- 新增函数：计算夏普比率 (已修改) ---
+# --- 新增函数：计算夏普比率 (已添加健壮性处理) ---
 def calculate_sharpe_ratio(net_values):
     """
-    计算夏普比率（Sharpe Ratio），如果数据量不足或波动率为零，返回0.0并给出警告类型。
+    计算夏普比率（Sharpe Ratio）。
     返回: (sharpe_ratio, warning_type)
     """
     if len(net_values) < 2:
@@ -146,24 +160,20 @@ def calculate_sharpe_ratio(net_values):
     if num_trading_days < 10: 
         return 0.0, "INSUFFICIENT_DATA"
 
-    # 计算日收益率的平均值和标准差
     avg_daily_return = sum(daily_returns) / num_trading_days
     
-    # 计算方差 (用于标准差)
     variance = sum([(r - avg_daily_return) ** 2 for r in daily_returns]) / num_trading_days
     std_dev_daily_return = math.sqrt(variance)
 
-    # 检查波动率，防止除以零
     if std_dev_daily_return == 0:
         return 0.0, "ZERO_VOLATILITY"
 
-    # 年化夏普比率
     sharpe_ratio = (avg_daily_return * ANNUALIZATION_FACTOR - RISK_FREE_RATE) / \
                    (std_dev_daily_return * math.sqrt(ANNUALIZATION_FACTOR))
     
     return round(sharpe_ratio, 4), "OK"
 
-# --- 新增的线程工作函数 (已修改以处理夏普比率警告) ---
+# --- 线程工作函数 (已加入 MA 逻辑) ---
 def worker(q, strsdate, stredate, result_queue):
     while not q.empty():
         fund = q.get()
@@ -177,6 +187,7 @@ def worker(q, strsdate, stredate, result_queue):
         jingzhirise = 0.0
         max_drawdown = 0.0
         sharpe_ratio = 0.0
+        ma_trend = 'N/A' # 均线趋势
 
         if local_data:
             sorted_dates, net_values = local_data
@@ -193,6 +204,22 @@ def worker(q, strsdate, stredate, result_queue):
                 max_drawdown = calculate_mdd(net_values)
                 sharpe_ratio, warning_type = calculate_sharpe_ratio(net_values)
                 
+                # --- 均线计算和趋势判断 ---
+                # 注意：这里计算均线，使用的是整个时间段内的净值序列
+                sma20 = calculate_moving_average(net_values, SHORT_MA_PERIOD)
+                sma60 = calculate_moving_average(net_values, LONG_MA_PERIOD)
+                
+                if sma20 is not None and sma60 is not None:
+                    if sma20 > sma60:
+                        ma_trend = '↑' # 短期均线高于长期均线：多头/上涨趋势
+                    elif sma20 < sma60:
+                        ma_trend = '↓' # 短期均线低于长期均线：空头/下跌趋势
+                    else:
+                        ma_trend = '—' # 持平
+                else:
+                    ma_trend = 'N/A' # 数据不足，无法计算均线
+                # --- 均线计算结束 ---
+
                 if warning_type != "OK":
                     if warning_type == "INSUFFICIENT_DATA":
                         print(f"Warning: Fund {strfundcode} ({fund[2]}) data is too short for reliable annualization. Sharpe set to 0.0.")
@@ -204,19 +231,20 @@ def worker(q, strsdate, stredate, result_queue):
              print(f"Warning: Fund {strfundcode} ({fund[2]}) local data not found or incomplete.")
 
 
-        # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率]
+        # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率, 11:MA趋势]
         fund.append(jingzhimin)     # 5
         fund.append(jingzhimax)     # 6
         fund.append(jingzhidif)     # 7
         fund.append(jingzhirise)    # 8
-        fund.append(max_drawdown)   # 9 (新增)
-        fund.append(sharpe_ratio)   # 10 (新增)
+        fund.append(max_drawdown)   # 9 
+        fund.append(sharpe_ratio)   # 10
+        fund.append(ma_trend)       # 11 
         
         result_queue.put(fund)
         print('process fund:\t' + fund[0] + '\t' + fund[2])
         q.task_done()
 
-# --- 主函数 (不变) ---
+# --- 主函数 (已更新输出格式) ---
 def main(argv):
     gettopnum = 50
     
@@ -230,7 +258,6 @@ def main(argv):
     strtoday = datetime.datetime.strftime(datetime.datetime.now(), '%Y-%m-%d')
     tdatetime = datetime.datetime.strptime(strtoday, '%Y-%m-%d')
     
-    # 原始的日期有效性处理（保留）
     sdatetime = datetime.datetime.strptime(strsdate, '%Y-%m-%d')
     if sdatetime.isoweekday() in [6, 7]:
         sdatetime += datetime.timedelta(days=- (sdatetime.isoweekday() - 5))
@@ -246,7 +273,7 @@ def main(argv):
         usage()
         sys.exit(1)
 
-    # --- 处理单个基金查询 (已修改) ---
+    # --- 处理单个基金查询 (已更新输出格式和逻辑) ---
     if len(sys.argv) == 4:
         strfundcode = sys.argv[3]
         
@@ -273,6 +300,20 @@ def main(argv):
         max_drawdown = calculate_mdd(net_values)
         sharpe_ratio, warning_type = calculate_sharpe_ratio(net_values)
         
+        # --- 单个基金的均线计算 ---
+        sma20 = calculate_moving_average(net_values, SHORT_MA_PERIOD)
+        sma60 = calculate_moving_average(net_values, LONG_MA_PERIOD)
+        ma_trend = 'N/A'
+        
+        if sma20 is not None and sma60 is not None:
+            if sma20 > sma60:
+                ma_trend = '↑' 
+            elif sma20 < sma60:
+                ma_trend = '↓' 
+            else:
+                ma_trend = '—'
+        # --- 均线计算结束 ---
+
         if warning_type != "OK":
             if warning_type == "INSUFFICIENT_DATA":
                 print(f"Warning: Fund {strfundcode} data is too short for reliable annualization. Sharpe set to 0.0.")
@@ -280,8 +321,10 @@ def main(argv):
                  print(f"Warning: Fund {strfundcode} has zero volatility (net value unchanged). Sharpe set to 0.0.")
                  
         print('fund:' + strfundcode + '\n')
-        print(f'{strsdate}\t{stredate}\t净增长\t增长率\t最大回撤\t夏普比率')
-        print(f'{jingzhimin}\t\t{jingzhimax}\t\t{str(jingzhidif)}\t{str(jingzhirise)}%\t\t{str(max_drawdown)}%\t\t{str(sharpe_ratio)}')
+        
+        # 新增 MA 趋势输出
+        print(f'{strsdate}\t{stredate}\t净增长\t增长率\t最大回撤\t夏普比率\tMA趋势 (20日>60日)')
+        print(f'{jingzhimin}\t\t{jingzhimax}\t\t{str(jingzhidif)}\t{str(jingzhirise)}%\t\t{str(max_drawdown)}%\t\t{str(sharpe_ratio)}\t\t{ma_trend}')
         sys.exit(0)
         
     # --- 基金列表获取 (从 C类.txt 获取代码) ---
@@ -297,7 +340,7 @@ def main(argv):
         with open(c_list_file, 'r', encoding='utf-8') as f:
             for line in f:
                 code = line.strip()
-                if code:
+                if code and code != 'code': # 排除文件中的 'code' 表头，如果存在的话
                     # 格式：[代码, 简写, 名称, 类型, 状态]
                     c_funds_list.append([code, 'N/A', 'N/A', 'C类', 'N/A'])
     except Exception as e:
@@ -335,15 +378,19 @@ def main(argv):
 
     fileobject = open('result_' + strsdate + '_' + stredate + '_C类_Local_Analysis.txt', 'w')
     
+    # 排序：按增长率 (fund[8]) 降序排列
     all_funds_list.sort(key=lambda fund: fund[8], reverse=True) 
     
+    # 新增 MA 趋势输出头
     strhead = '排序\t' + '编码\t\t' + '名称\t\t' + '类型\t\t' + \
-    strsdate + '\t' + stredate + '\t' + '净增长\t' + '增长率\t' + '最大回撤\t' + '夏普比率' + '\n'
+    strsdate + '\t' + stredate + '\t' + '净增长\t' + '增长率\t' + '最大回撤\t' + '夏普比率\t' + 'MA趋势' + '\n'
     print(strhead)
     fileobject.write(strhead)
     
+    # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率, 11:MA趋势]
     for index in range(len(all_funds_list)):
         fund_data = all_funds_list[index]
+        # 新增 MA 趋势输出内容 (索引 11)
         strcontent = f"{index+1}\t" \
                      f"{fund_data[0]}\t" \
                      f"{fund_data[2]}\t\t" \
@@ -353,7 +400,8 @@ def main(argv):
                      f"{str(fund_data[7])}\t" \
                      f"{str(fund_data[8])}%\t\t" \
                      f"{str(fund_data[9])}%\t\t" \
-                     f"{str(fund_data[10])}\n"
+                     f"{str(fund_data[10])}\t\t" \
+                     f"{fund_data[11]}\n"
                      
         print(strcontent)
         fileobject.write(strcontent)
