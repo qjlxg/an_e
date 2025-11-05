@@ -54,8 +54,8 @@ jobs:
           # 确保 fund_data 目录存在，避免脚本因目录不存在而报错
           mkdir -p fund_data
           
-          # 修正日期：计算起始日期 (90天前，以确保有足够数据计算60日均线) 和结束日期 (昨天)
-          START_DATE=$(date --date='90 days ago' +'%Y-%m-%d')
+          
+          START_DATE=$(date --date='120 days ago' +'%Y-%m-%d')
           END_DATE=$(date --date='yesterday' +'%Y-%m-%d')
           
           echo "脚本运行日期范围: $START_DATE 到 $END_DATE"
