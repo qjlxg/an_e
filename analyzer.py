@@ -307,15 +307,23 @@ def analyze_all_funds(target_codes=None):
     """分析所有基金数据"""
     try:
         if target_codes:
+            # 目标代码模式：从 FUND_DATA_DIR 中查找特定文件
             csv_files = [os.path.join(FUND_DATA_DIR, f'{code}.csv') for code in target_codes if os.path.exists(os.path.join(FUND_DATA_DIR, f'{code}.csv'))]
         else:
-            # 原始脚本使用了 glob.glob('*.csv')，这里使用它兼容您的运行环境
-            csv_files = glob.glob('*.csv')
+            # 明确指定查找 FUND_DATA_DIR 目录下的所有 CSV 文件
+            # 【修正点】使用 FUND_DATA_DIR
+            csv_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
         
         if not csv_files:
             logging.warning(f"在目录 '{FUND_DATA_DIR}' 中未找到CSV文件")
-            return []
+            # 如果 FUND_DATA_DIR 不存在，则尝试在当前目录查找，兼容之前运行环境
+            if FUND_DATA_DIR and not os.path.exists(FUND_DATA_DIR):
+                logging.warning(f"目录 '{FUND_DATA_DIR}' 不存在，尝试在当前目录查找...")
+                csv_files = glob.glob('*.csv')
         
+        if not csv_files:
+             return []
+            
         logging.info(f"找到 {len(csv_files)} 个基金数据文件，开始分析...")
         qualifying_funds = []
         for filepath in csv_files:
@@ -373,7 +381,7 @@ def format_table_row(index, row, table_part=1):
 
 
     if table_part == 1:
-        # 表格 1 (6列): 排名, 基金代码, 最大回撤, 当日跌幅, RSI(14), 行动提示
+        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日跌幅, RSI(14), 行动提示
         return (
             f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
             f"**{daily_drop_display}** | **{row['RSI']:.2f}** | **{row['行动提示']}** |\n"
@@ -389,7 +397,7 @@ def format_table_row(index, row, table_part=1):
 # --- 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
     """
-    生成完整的Markdown格式报告，已修复语法错误。
+    生成完整的Markdown格式报告。
     """
     try:
         if not results:
@@ -583,7 +591,6 @@ def generate_report(results, timestamp_str):
         
     except Exception as e:
         logging.error(f"生成报告时发生错误: {e}")
-        # 【语法修复】删除多余的 '}'
         return f"# 报告生成错误\n\n错误信息: {str(e)}"
 
 # --- 主函数 (函数配置 13/13) ---
