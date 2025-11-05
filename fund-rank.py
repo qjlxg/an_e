@@ -173,7 +173,7 @@ def calculate_sharpe_ratio(net_values):
     
     return round(sharpe_ratio, 4), "OK"
 
-# --- 线程工作函数 (已加入 MA 逻辑) ---
+# --- 线程工作函数 (已加入 MA 逻辑和调试输出) ---
 def worker(q, strsdate, stredate, result_queue):
     while not q.empty():
         fund = q.get()
@@ -192,6 +192,10 @@ def worker(q, strsdate, stredate, result_queue):
         if local_data:
             sorted_dates, net_values = local_data
             
+            # === 调试输出：打印加载到的数据点数量 ===
+            print(f"DEBUG: Fund {strfundcode} ({fund[2]}) loaded {len(net_values)} data points for period {strsdate} to {stredate}. MA needs {LONG_MA_PERIOD}.")
+            # ======================================
+
             if len(net_values) > 1:
                 jingzhimin = '%.4f' % net_values[0]
                 jingzhimax = '%.4f' % net_values[-1]
@@ -217,7 +221,8 @@ def worker(q, strsdate, stredate, result_queue):
                     else:
                         ma_trend = '—' # 持平
                 else:
-                    ma_trend = 'N/A' # 数据不足，无法计算均线
+                    # 如果任一均线无法计算，则 MA趋势为 N/A
+                    ma_trend = 'N/A' 
                 # --- 均线计算结束 ---
 
                 if warning_type != "OK":
@@ -285,6 +290,10 @@ def main(argv):
             sys.exit(1)
 
         sorted_dates, net_values = local_data
+        
+        # === 调试输出：打印加载到的数据点数量 (单基金模式) ===
+        print(f"DEBUG: Fund {strfundcode} loaded {len(net_values)} data points for period {strsdate} to {stredate}. MA needs {LONG_MA_PERIOD}.")
+        # ===================================================
         
         if len(net_values) < 2:
              print(f'Local data for {strfundcode} has fewer than 2 entries in the period!\n')
