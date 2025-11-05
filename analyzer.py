@@ -85,9 +85,11 @@ def calculate_bollinger_bands(series, window=20):
 
 # --- 技术指标计算 (函数配置 4/13) ---
 def calculate_technical_indicators(df):
-    """计算基金净值的完整技术指标 (RSI, MACD, MA, 趋势等)"""
-    # 确保最新值在最后
-    df_asc = df.iloc[::-1].copy().reset_index(drop=True)
+    """
+    计算基金净值的完整技术指标 (RSI, MACD, MA, 趋势等)
+    假设 df 是按时间升序排列的（最新值在末尾）。
+    """
+    df_asc = df.copy()
 
     try:
         # 这里的判断也从 250 降低到 60，以兼容 MA50 和 RSI
@@ -156,7 +158,7 @@ def calculate_technical_indicators(df):
         if len(df_asc) >= 2:
             value_t_minus_1 = df_asc['value'].iloc[-2]
             if value_t_minus_1 > 0:
-                # 【已修正】: (现值 - 前值) / 前值。负值代表跌幅，正值代表涨幅 (标准涨跌幅定义)。
+                # 标准涨跌幅：(现值 - 前值) / 前值。负值代表跌幅，正值代表涨幅。
                 daily_drop = (value_latest - value_t_minus_1) / value_t_minus_1
                 
         # 6. 布林带位置 (调用了 calculate_bollinger_bands)
@@ -189,13 +191,13 @@ def calculate_technical_indicators(df):
 def calculate_consecutive_drops(series):
     """
     计算净值序列中最大的连续下跌天数 (t < t-1)
-    series是降序的，所以先反转为升序计算。
+    假设 series 是按时间升序排列的（最新值在末尾）。
     """
     try:
         if series.empty or len(series) < 2: return 0
         
-        # 1. 反转 series 使其按时间升序排列 (t-1 -> t)
-        series_asc = series.iloc[::-1].reset_index(drop=True)
+        # 1. 直接使用 series (已是升序)
+        series_asc = series
         
         # 2. 标记每一天相对于前一天是否下跌（当前值 < 前值）
         # diff() 计算 t - t-1。如果结果 < 0，则代表下跌。
@@ -220,16 +222,17 @@ def calculate_consecutive_drops(series):
 
 # --- 最大回撤计算 (函数配置 6/13) ---
 def calculate_max_drawdown(series):
-    """计算最大回撤"""
+    """
+    计算最大回撤
+    假设 series 是按时间升序排列的（最新值在末尾）。
+    """
     try:
         if series.empty: return 0.0
-        # series 是降序的，所以需要先反转以获得 cummax 的正确计算顺序
-        series_asc = series.iloc[::-1]
         
-        # 重新计算 cummax, 然后再次反转以匹配原始 series 的索引
-        rolling_max = series_asc.cummax().iloc[::-1]
+        # 1. 计算累计最高点
+        rolling_max = series.cummax()
         
-        # 最大回撤 = (最高点 - 当前点) / 最高点
+        # 2. 最大回撤 = (最高点 - 当前点) / 最高点
         drawdown = (rolling_max - series) / rolling_max
         return drawdown.max()
     except Exception as e:
@@ -290,8 +293,8 @@ def analyze_single_fund(filepath):
             
         df['date'] = pd.to_datetime(df['date'])
         
-        # 保持原始脚本逻辑：日期降序
-        df = df.sort_values(by='date', ascending=False).reset_index(drop=True)
+        # 【已修正】强制升序排列 (最早日期在最前面，最新日期在最后面)
+        df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
         # 保持原始脚本逻辑：重命名列
         df = df.rename(columns={'net_value': 'value'})
         
@@ -300,12 +303,14 @@ def analyze_single_fund(filepath):
              logging.warning(f"基金 {fund_code} 数据无效: {msg}")
              return None
         
-        df_recent_month = df.head(30)
-        df_recent_week = df.head(5)
-        mdd_recent_month = calculate_max_drawdown(df_recent_month['value'])
-        max_drop_days_week = calculate_consecutive_drops(df_recent_week['value'])
+        # 截取近一个月/一周的数据，因为是升序，所以用 tail()
+        df_recent_month = df['value'].tail(30)
+        df_recent_week = df['value'].tail(5)
         
-        # 注意：calculate_technical_indicators 内部会再次反转数据
+        mdd_recent_month = calculate_max_drawdown(df_recent_month)
+        max_drop_days_week = calculate_consecutive_drops(df_recent_week)
+        
+        # calculate_technical_indicators 现在接收升序的df
         tech_indicators = calculate_technical_indicators(df)
         
         action_prompt = get_action_prompt(
@@ -320,7 +325,7 @@ def analyze_single_fund(filepath):
             return {
                 '基金代码': fund_code,
                 '最大回撤': mdd_recent_month,
-                '最大连续下跌': calculate_consecutive_drops(df_recent_month['value']),
+                '最大连续下跌': calculate_consecutive_drops(df['value'].tail(30)), # 再次使用近一个月数据
                 '近一周连跌': max_drop_days_week,
                 **tech_indicators,
                 '行动提示': action_prompt
@@ -370,9 +375,15 @@ def format_technical_value(value, format_type='percent'):
     """格式化技术指标值用于显示"""
     if pd.isna(value): return 'NaN'
     
-    # 【已修正】 report_daily_drop 类型直接显示实际涨跌幅，负号表示下跌。
+    # report_daily_drop 类型直接显示实际涨跌幅，负号表示下跌。
     if format_type == 'report_daily_drop':
-        return f"{value:.2%}"
+        # 如果是负值（下跌），用红色粗体显示；如果是正值（上涨），用绿色粗体显示。
+        if value < 0:
+            return f"**{value:.2%}**"
+        elif value > 0:
+            return f"{value:.2%}" # 原始没有颜色，但习惯上是绿色，这里保持原样
+        else:
+            return "0.00%"
             
     if format_type == 'percent': return f"{value:.2%}"
     elif format_type == 'decimal2': return f"{value:.2f}"
@@ -408,10 +419,10 @@ def format_table_row(index, row, table_part=1):
 
 
     if table_part == 1:
-        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日跌幅, RSI(14), 行动提示
+        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日涨跌幅, RSI(14), 行动提示
         return (
             f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
-            f"**{daily_drop_display}** | **{row['RSI']:.2f}** | **{row['行动提示']}** |\n"
+            f"{daily_drop_display} | **{row['RSI']:.2f}** | **{row['行动提示']}** |\n"
         )
     else:
         # 表格 2 (8列): 基金代码, MACD信号, 布林带位置, 净值/MA50, MA50/MA250, 趋势, 净值/MA250, 试水买价 (跌3%)
@@ -449,19 +460,19 @@ def generate_report(results, timestamp_str):
             (df_results['最大回撤'] >= HIGH_ELASTICITY_MIN_DRAWDOWN)
         ].copy()
         
-        # 为了兼容原始脚本的判断逻辑：当日跌幅 >= 3% (即 daily_drop >= 0.03)
+        # 为了兼容原始脚本的判断逻辑：当日跌幅 >= 3% (即 daily_drop <= -0.03)
         CRITICAL_DROP_INT = MIN_DAILY_DROP_PERCENT
         
-        # P1A：即时恐慌买入 (当日跌幅 >= 3%)
+        # P1A：即时恐慌买入 (当日跌幅 <= -3%)
         df_p1 = df_base_elastic[df_base_elastic['RSI'] <= EXTREME_RSI_THRESHOLD_P1].copy()
-        # 判断：当日跌幅 >= 0.03 (即实际跌幅大于等于 3%)
-        # 【注意】修正后 daily_drop < 0 代表下跌。所以判断大跌是 daily_drop <= -CRITICAL_DROP_INT
+        # 判断：当日跌幅 <= -0.03 (即实际跌幅大于等于 3%)
+        # 修正后 daily_drop < 0 代表下跌。所以判断大跌是 daily_drop <= -CRITICAL_DROP_INT
         df_p1a = df_p1[df_p1['当日跌幅'] <= -CRITICAL_DROP_INT].copy() 
-        # P1B：技术共振建仓 (当日跌幅 < 3%)
+        # P1B：技术共振建仓 (当日跌幅 > -3%)
         df_p1b = df_p1[df_p1['当日跌幅'] > -CRITICAL_DROP_INT].copy()  
         
         # 定义两个表格的头部和对齐分隔符
-        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日跌幅, RSI(14), 行动提示
+        # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日涨跌幅, RSI(14), 行动提示
         TABLE_1_HEADER = f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日涨跌幅** | RSI(14) | 行动提示 |\n"
         TABLE_1_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: |\n" 
         
