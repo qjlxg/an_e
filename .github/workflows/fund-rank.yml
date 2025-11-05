@@ -14,7 +14,7 @@ on:
   push:
     paths:
       - 'fund-rank.py'              # 基金分析脚本
-      - 'fund-rank.yml'             # 工作流文件本身
+      - '.github/workflows/fund-rank.yml'             # 工作流文件本身
       - 'C类.txt'                   # 基金列表数据源文件
       - 'fund_data/**'              # 监控 fund_data 目录下文件变动（可选）
 
