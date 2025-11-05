@@ -156,7 +156,8 @@ def calculate_technical_indicators(df):
         if len(df_asc) >= 2:
             value_t_minus_1 = df_asc['value'].iloc[-2]
             if value_t_minus_1 > 0:
-                # daily_drop: (前值 - 现值) / 前值。正值代表跌幅，负值代表涨幅。
+                # daily_drop: (前值 - 现值) / 前值。正值代表跌幅（如 0.03），负值代表涨幅（如 -0.01）。
+                # 报告中显示为 -3% 或 0.00%
                 daily_drop = (value_t_minus_1 - value_latest) / value_t_minus_1
                 
         # 6. 布林带位置 (调用了 calculate_bollinger_bands)
@@ -187,21 +188,32 @@ def calculate_technical_indicators(df):
 
 # --- 连续下跌计算 (函数配置 5/13) ---
 def calculate_consecutive_drops(series):
-    """计算净值序列中最大的连续下跌天数"""
+    """
+    【已修正】计算净值序列中最大的连续下跌天数 (t < t-1)
+    series是降序的，所以先反转为升序计算。
+    """
     try:
         if series.empty or len(series) < 2: return 0
         
-        # 保持原始脚本的逻辑，假设其计算的是连续上涨天数（因其是 t-1 < t）
-        drops = (series.iloc[:-1].values < series.iloc[1:].values) 
+        # 1. 反转 series 使其按时间升序排列 (t-1 -> t)
+        series_asc = series.iloc[::-1].reset_index(drop=True)
+        
+        # 2. 标记每一天相对于前一天是否下跌（当前值 < 前值）
+        # diff() 计算 t - t-1。如果结果 < 0，则代表下跌。
+        # drops 是布尔数组，True 代表下跌。
+        drops = (series_asc.diff() < 0).values
         
         max_drop_days = 0
         current_drop_days = 0
+        
+        # 从第二个元素开始遍历 (第一个 diff 是 NaN，已经是 False)
         for is_dropped in drops:
-            if is_dropped:
+            if is_dropped: # 如果是下跌 (t < t-1)
                 current_drop_days += 1
                 max_drop_days = max(max_drop_days, current_drop_days)
-            else:
+            else: # 如果是上涨或持平 (t >= t-1)
                 current_drop_days = 0
+        
         return max_drop_days
     except Exception as e:
         logging.error(f"计算连续下跌天数时发生错误: {e}")
@@ -227,8 +239,12 @@ def calculate_max_drawdown(series):
 
 # --- 行动提示生成 (函数配置 7/13) ---
 def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_week):
-    """根据技术指标生成基础行动提示"""
-    if mdd_recent_month >= HIGH_ELASTICITY_MIN_DRAWDOWN and max_drop_days_week == 1:
+    """
+    【已修正】根据技术指标生成基础行动提示，移除 max_drop_days_week == 1 的干扰条件。
+    """
+    
+    # 优先筛选：一个月回撤 >= 10% (HIGH_ELASTICITY_MIN_DRAWDOWN)
+    if mdd_recent_month >= HIGH_ELASTICITY_MIN_DRAWDOWN:
         if pd.isna(rsi_val): return '高回撤观察 (RSI数据缺失)'
         
         # P1 极值超卖
@@ -239,13 +255,16 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
             return f'🔥 P2-强力超卖 (RSI<={STRONG_RSI_THRESHOLD_P2:.0f})'
         else:
             return '观察中 (RSI未超卖)'
-    else:
-        return '不适用 (非高弹性精选)'
+    
+    # 次要筛选：基础回撤 6% <= 回撤 < 10%
+    if mdd_recent_month >= MIN_MONTH_DRAWDOWN:
+         return f'关注 (回撤 {mdd_recent_month:.2%})'
+    
+    return '不适用 (未达基础回撤)'
 
 # --- 单基金分析 (函数配置 8/13) ---
 def analyze_single_fund(filepath):
     """
-    【容错已添加】增加编码容错和列检查，解决 KeyError: 'date' 和 UnicodeDecodeError
     分析单只基金
     """
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
@@ -268,7 +287,6 @@ def analyze_single_fund(filepath):
     try:
         # 检查关键列是否存在，非净值文件将直接跳过
         if 'date' not in df.columns or 'net_value' not in df.columns:
-            # logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列，跳过。")
             return None
             
         df['date'] = pd.to_datetime(df['date'])
@@ -298,6 +316,7 @@ def analyze_single_fund(filepath):
             max_drop_days_week
         )
         
+        # 注意：这里的条件现在只检查 MIN_MONTH_DRAWDOWN >= 6%
         if mdd_recent_month >= MIN_MONTH_DRAWDOWN:
             return {
                 '基金代码': fund_code,
@@ -433,8 +452,7 @@ def generate_report(results, timestamp_str):
 
         # 核心筛选：高弹性基金
         df_base_elastic = df_results[
-            (df_results['最大回撤'] >= HIGH_ELASTICITY_MIN_DRAWDOWN) &
-            (df_results['近一周连跌'] == 1)
+            (df_results['最大回撤'] >= HIGH_ELASTICITY_MIN_DRAWDOWN)
         ].copy()
         
         # 为了兼容原始脚本的判断逻辑：当日跌幅 >= 3% (即 daily_drop >= 0.03)
