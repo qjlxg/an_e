@@ -13,9 +13,7 @@ import os
 import math
 
 # --- 常量定义 ---
-# 假设年化交易日为252天
 ANNUALIZATION_FACTOR = 252
-# 假设年化无风险收益率为3% (可根据实际情况调整)
 RISK_FREE_RATE = 0.03
 
 # --- 原始使用方法 ---
@@ -64,25 +62,34 @@ def get_jingzhi(strfundcode, strdate):
 
     return jingzhi
     
-# --- 新增函数：从本地文件加载历史净值数据 ---
+# --- 新增函数：从本地文件加载历史净值数据 (已修改为读取累计净值) ---
 def load_local_data(strfundcode, strsdate, stredate):
-    """从fund_data目录加载基金历史净值数据，返回日期范围内的 {date: net_value} 字典"""
+    """
+    从fund_data目录加载基金历史净值数据，适应 CSV 格式：
+    日期,单位净值,累计净值,日增长率...
+    我们读取：第1列(日期) 和 第3列(累计净值)
+    """
     data_file = os.path.join('fund_data', f'{strfundcode}.txt')
-    net_values_map = {} # {date: net_value}
-
+    # 兼容 .csv 扩展名，虽然您的代码中一直使用 .txt，但如果文件是 .csv，也尝试加载
     if not os.path.exists(data_file):
-        # print(f"Warning: Local data file not found: {data_file}")
-        return None
+        data_file = os.path.join('fund_data', f'{strfundcode}.csv')
+        if not os.path.exists(data_file):
+            return None
+
+    net_values_map = {} # {date: net_value}
 
     try:
         with open(data_file, 'r', encoding='utf-8') as f:
-            # 假设文件格式为：日期,累计净值,其他数据... (如 2023-01-01,1.5430,...)
-            for line in f:
+            lines = f.readlines()
+            # 跳过第一行表头
+            for line in lines[1:]: 
                 parts = line.strip().split(',')
-                if len(parts) >= 2:
+                # 检查至少有3列：日期,单位净值,累计净值
+                if len(parts) >= 3:
                     date_str = parts[0].strip()
                     try:
-                        net_value = float(parts[1].strip())
+                        # *** 核心修改：从索引 2 读取累计净值 ***
+                        net_value = float(parts[2].strip()) 
                         net_values_map[date_str] = net_value
                     except ValueError:
                         continue # 跳过无效的净值行
@@ -135,8 +142,8 @@ def calculate_sharpe_ratio(net_values):
 
     num_trading_days = len(daily_returns)
     
-    # 警告：交易日不足以进行可靠的年化
-    if num_trading_days < 10: # 假设少于10个交易日数据量不足，可根据需要调整
+    # 警告：交易日不足以进行可靠的年化 (少于10个交易日)
+    if num_trading_days < 10: 
         return 0.0, "INSUFFICIENT_DATA"
 
     # 计算日收益率的平均值和标准差
@@ -162,7 +169,6 @@ def worker(q, strsdate, stredate, result_queue):
         fund = q.get()
         strfundcode = fund[0]
         
-        # 1. 从本地加载历史数据
         local_data = load_local_data(strfundcode, strsdate, stredate)
 
         jingzhimin = '0'
@@ -175,18 +181,15 @@ def worker(q, strsdate, stredate, result_queue):
         if local_data:
             sorted_dates, net_values = local_data
             
-            # 确保有足够数据计算
             if len(net_values) > 1:
                 jingzhimin = '%.4f' % net_values[0]
                 jingzhimax = '%.4f' % net_values[-1]
                 
-                # 收益计算
                 jingzhidif = float('%.4f' % (net_values[-1] - net_values[0]))
                 
                 if float(jingzhimin) != 0:
                     jingzhirise = float('%.2f' % (jingzhidif * 100 / float(jingzhimin)))
                 
-                # 风险指标计算
                 max_drawdown = calculate_mdd(net_values)
                 sharpe_ratio, warning_type = calculate_sharpe_ratio(net_values)
                 
@@ -201,7 +204,6 @@ def worker(q, strsdate, stredate, result_queue):
              print(f"Warning: Fund {strfundcode} ({fund[2]}) local data not found or incomplete.")
 
 
-        # fund 列表后续追加数据：
         # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率]
         fund.append(jingzhimin)     # 5
         fund.append(jingzhimax)     # 6
@@ -248,7 +250,6 @@ def main(argv):
     if len(sys.argv) == 4:
         strfundcode = sys.argv[3]
         
-        # 从本地文件获取净值序列
         local_data = load_local_data(strfundcode, strsdate, stredate)
         
         if not local_data:
@@ -272,7 +273,6 @@ def main(argv):
         max_drawdown = calculate_mdd(net_values)
         sharpe_ratio, warning_type = calculate_sharpe_ratio(net_values)
         
-        # 单个基金查询时，直接打印警告
         if warning_type != "OK":
             if warning_type == "INSUFFICIENT_DATA":
                 print(f"Warning: Fund {strfundcode} data is too short for reliable annualization. Sharpe set to 0.0.")
@@ -335,20 +335,15 @@ def main(argv):
 
     fileobject = open('result_' + strsdate + '_' + stredate + '_C类_Local_Analysis.txt', 'w')
     
-    # 根据夏普比率（或增长率）排序，这里优先使用增长率 (原脚本逻辑)
     all_funds_list.sort(key=lambda fund: fund[8], reverse=True) 
     
-    # 增加最大回撤和夏普比率的输出
     strhead = '排序\t' + '编码\t\t' + '名称\t\t' + '类型\t\t' + \
     strsdate + '\t' + stredate + '\t' + '净增长\t' + '增长率\t' + '最大回撤\t' + '夏普比率' + '\n'
     print(strhead)
     fileobject.write(strhead)
     
-    # fund: [0:代码, 1:简写, 2:名称, 3:类型, 4:状态, 5:净值min, 6:净值max, 7:净增长, 8:增长率, 9:最大回撤, 10:夏普比率]
     for index in range(len(all_funds_list)):
         fund_data = all_funds_list[index]
-        # 统一格式化输出
-        # 使用 str(fund_data[10]) 保证在警告情况下输出 0.0
         strcontent = f"{index+1}\t" \
                      f"{fund_data[0]}\t" \
                      f"{fund_data[2]}\t\t" \
