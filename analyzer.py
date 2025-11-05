@@ -15,7 +15,7 @@ HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%
 MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report'
 
-# --- 核心阈值调整 (完整保留) ---
+# --- 核心阈值调整 (完整保留) --
 EXTREME_RSI_THRESHOLD_P1 = 29.0 
 STRONG_RSI_THRESHOLD_P2 = 35.0
 
@@ -36,7 +36,8 @@ def validate_fund_data(df, fund_code):
     """验证基金数据的完整性和质量"""
     if df.empty: return False, "数据为空"
     if 'value' not in df.columns: return False, "缺少净值列"
-    if len(df) < 250: return False, f"数据不足250条，当前只有{len(df)}条"
+    # 【已修改】将最小数据要求从 250 降低到 60 (确保能计算 MA50 和 RSI)
+    if len(df) < 60: return False, f"数据不足60条，当前只有{len(df)}条"
     if (df['value'] <= 0).any(): return False, "存在无效净值(<=0)"
     return True, "数据有效"
 
@@ -89,7 +90,8 @@ def calculate_technical_indicators(df):
     df_asc = df.iloc[::-1].copy().reset_index(drop=True)
 
     try:
-        if 'value' not in df_asc.columns or len(df_asc) < 250:
+        # 这里的判断也从 250 降低到 60，以兼容 MA50 和 RSI
+        if 'value' not in df_asc.columns or len(df_asc) < 60:
             return {
                 'RSI': np.nan, 'MACD信号': '数据不足', '净值/MA50': np.nan,
                 '净值/MA250': np.nan, 'MA50/MA250': np.nan, 
@@ -122,17 +124,26 @@ def calculate_technical_indicators(df):
 
         # 3. 移动平均线和趋势分析
         df_asc['MA50'] = df_asc['value'].rolling(window=50, min_periods=1).mean()
-        df_asc['MA250'] = df_asc['value'].rolling(window=250, min_periods=1).mean()
+        # MA250 计算仍然保留，数据不足时会自动产生 NaN
+        df_asc['MA250'] = df_asc['value'].rolling(window=250, min_periods=1).mean() 
+        
         ma50_latest = df_asc['MA50'].iloc[-1]
         ma250_latest = df_asc['MA250'].iloc[-1]
         value_latest = df_asc['value'].iloc[-1]
+        
         net_to_ma50 = value_latest / ma50_latest if ma50_latest and ma50_latest != 0 else np.nan
-        net_to_ma250 = value_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
-        ma50_to_ma250 = ma50_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
-
-        # 4. MA50/MA250 趋势方向判断
-        trend_direction = '数据不足'
-        if len(df_asc) >= 250:
+        
+        # 只有在数据足够时才计算 MA250 相关指标
+        if len(df_asc) < 250:
+            net_to_ma250 = np.nan
+            ma50_to_ma250 = np.nan
+            trend_direction = '数据不足'
+        else:
+            net_to_ma250 = value_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
+            ma50_to_ma250 = ma50_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
+        
+            # 4. MA50/MA250 趋势方向判断
+            trend_direction = '数据不足'
             recent_ratio = (df_asc['MA50'] / df_asc['MA250']).tail(20).dropna()
             if len(recent_ratio) >= 5:
                 slope = np.polyfit(np.arange(len(recent_ratio)), recent_ratio.values, 1)[0]
@@ -311,7 +322,6 @@ def analyze_all_funds(target_codes=None):
             csv_files = [os.path.join(FUND_DATA_DIR, f'{code}.csv') for code in target_codes if os.path.exists(os.path.join(FUND_DATA_DIR, f'{code}.csv'))]
         else:
             # 明确指定查找 FUND_DATA_DIR 目录下的所有 CSV 文件
-            # 【修正点】使用 FUND_DATA_DIR
             csv_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
         
         if not csv_files:
@@ -348,7 +358,7 @@ def format_technical_value(value, format_type='percent'):
             # 实际下跌，显示为负百分比 (例如 0.0379 -> -3.79%)
             return f"{-value:.2%}" 
         else:
-            # 实际上涨或持平，显示 0.00%
+            # 实际上涨或持平，显示 0.00%" 
             return "0.00%" 
             
     if format_type == 'percent': return f"{value:.2%}"
@@ -372,6 +382,10 @@ def format_table_row(index, row, table_part=1):
     if trend_display == '向下' and row['MA50/MA250'] < 0.95:
          trend_display = f"⚠️ **{trend_display}**"
          ma_ratio_display = f"⚠️ **{ma_ratio_display}**"
+    elif pd.isna(row['MA50/MA250']) or row['MA50/MA250趋势'] == '数据不足':
+        # 数据不足 250 条时，这些字段会是 NaN 或 '数据不足'
+        trend_display = "---"
+        ma_ratio_display = "---"
     else:
         trend_display = f"**{trend_display}**"
         ma_ratio_display = f"**{ma_ratio_display}**"
@@ -391,7 +405,7 @@ def format_table_row(index, row, table_part=1):
         return (
             f"| `{row['基金代码']}` | {row['MACD信号']} | {row['布林带位置']} | "
             f"{format_technical_value(row['净值/MA50'], 'decimal2')} | {ma_ratio_display} | {trend_display} | "
-            f"{format_technical_value(row['净值/MA250'], 'decimal2')} | `{trial_price:.4f}` |\n"
+            f"{format_technical_value(row['净值/MA250'], 'decimal2') if not pd.isna(row['净值/MA250']) else '---'} | `{trial_price:.4f}` |\n"
         )
 
 # --- 报告生成 (函数配置 12/13) ---
@@ -578,6 +592,7 @@ def generate_report(results, timestamp_str):
             f"**1. 🛑 趋势健康度（MA50/MA250 决定能否买）：**\n",
             f"    * **MA50/MA250 $\\ge 0.95$ 且 趋势方向为 '向上' 或 '平稳'** 的基金，视为 **趋势健康**，允许试水。\n",
             f"    * **若基金趋势显示 ⚠️ 向下，或 MA50/MA250 $< 0.95$，** 则表明长期处于熊市通道，**必须放弃**，无论短期超跌有多严重。\n",
+            f"    * **【新基金提示】**：对于数据不足 250 条的基金，MA50/MA250 相关指标将显示 **'---'**，需结合其他指标和人工审查来判断。\n",
             f"**2. 🔍 人工行业与K线审查（排除接飞刀风险）：**\n",
             r"    * **在买入前，必须查阅基金重仓行业。** 如果基金属于近期（如近 3-6 个月）**涨幅巨大、估值过高**的板块（例如：部分AI、半导体），则即使技术超卖，也应视为**高风险回调**，建议**放弃**或**大幅缩减**试水仓位。\n",
             r"    * **同时复核 K 线图：** 确认当前价格是否距离**近半年历史高点**太近。若是，则风险高。\n",
