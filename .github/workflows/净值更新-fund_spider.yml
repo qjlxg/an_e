@@ -81,7 +81,7 @@ jobs:
     - name: 检查并提交更改 (Commit and Push changes)
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
-        commit_message: "🤖 自动更新：抓取最新的基金净值数据"
+        commit_message: "🤖 净值数据更新完成"
         # 最终修复：移除不存在的 'fund_fee_result.csv' 以避免 pathspec 错误。
         file_pattern: 'C类.txt fund_data/*.csv'
         commit_options: '--allow-empty'
