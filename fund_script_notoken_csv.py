@@ -8,79 +8,77 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- ⚠️ 依赖的库: requests 和 pandas ---
 OUTPUT_FILE = 'fund_details.csv'
 INPUT_FILE = 'result_z.txt'
-MAX_WORKERS = 10 
+# 降低并发数，保护接口，防止被封
+MAX_WORKERS = 5 
 
-# 假设的公开基金数据接口 (此URL仅为演示结构，您需要替换为实际可用的数据源)
-# ⚠️ 爬虫存在风险，请确保您的爬取行为遵守目标网站的使用条款。
-BASE_URL = "https://example.com/api/fund/basic?code=" 
+# 实际公开的基金基础信息查询接口 (数据来源于东方财富网公开接口)
+# F=基金代码|基金名称|成立日期|基金公司|现任基金经理
+BASE_URL = "http://fundgz.1234567.com.cn/js/{fund_code}.js?rt={timestamp}"
+
 
 def fetch_fund_info(fund_code):
     """
-    使用 requests 库尝试获取单个基金的基本信息。
+    爬取基金基础信息。
     """
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在查询代码: {fund_code}")
     
-    # 模拟 HTTP 请求头，避免被简单的反爬虫机制拦截
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    url = BASE_URL.format(fund_code=fund_code, timestamp=int(time.time() * 1000))
     
-    url = f"https://fund.eastmoney.com/{fund_code}.html" # 换用东方财富的基金详情页URL作为演示
+    # 模拟 HTTP 请求头
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Referer': 'http://fundgz.1234567.com.cn/' # 伪造来源，提高成功率
+    }
 
     try:
-        # ⚠️ 实际爬取需要解析 HTML 或找到一个公开的 JSON 接口
-        # 为了演示，我们使用模拟数据结构来代替复杂的爬虫解析
-        
-        # 模拟网络请求
-        response = requests.get(BASE_URL + fund_code, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status() # 检查 HTTP 状态码
         
-        # 假设接口返回JSON数据
-        # data = response.json().get('data', {})
+        # 接口返回的数据是 JavaScript 格式：jsonpgz(...);
+        text = response.text
         
-        # ---------------- 模拟成功获取的数据结构 ----------------
-        if fund_code.startswith('0'):
-            data = {
-                'code': fund_code,
-                'name': f'某某基金-{fund_code}',
-                'manager': f'经理 B{fund_code[-2:]}',
-                'company': '某某基金管理公司',
-                'establish_date': '2021-03-01',
-                'risk_level': '中',
+        # 提取括号内的 JSON 字符串
+        if text.startswith('jsonpgz(') and text.endswith(');'):
+            json_str = text[8:-2]
+            data = pd.read_json(json_str, typ='series')
+            
+            # 从返回的数据中提取基本信息
+            details = {
+                '基金代码': data.get('fundcode', fund_code),
+                '基金名称': data.get('name', 'N/A'),
+                '单位净值估算': data.get('gsz', 'N/A'), # 估算净值
+                '估算日期': data.get('gztime', 'N/A'), # 估算时间
+                '今日估算涨幅': data.get('gszzl', 'N/A'),
+                '更新时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+            
+            # 注意：这个公开接口主要提供净值估算，不直接提供成立日期、经理等信息。
+            # 如果需要更详细信息，需要爬取更复杂的页面，或使用付费API。
+            
+            time.sleep(0.2) # 轻微延迟，防止爬取过于频繁
+            return details
+            
         else:
-            data = {}
-        # ---------------------------------------------------------
-
-        if not data:
+            print(f"基金代码 {fund_code} 返回格式错误或无数据。")
             return {
-                'code': fund_code,
-                'name': '数据暂无/代码错误',
-                'reason': 'API/爬取返回空',
-                'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                '基金代码': fund_code,
+                '基金名称': '数据获取失败',
+                '单位净值估算': 'N/A',
+                '估算日期': 'N/A',
+                '今日估算涨幅': 'N/A',
+                '更新时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
-        
-        # 整理数据
-        details = {
-            'code': data.get('code', fund_code),
-            'name': data.get('name', 'N/A'),
-            'manager': data.get('manager', 'N/A'),
-            'company': data.get('company', 'N/A'),
-            'establish_date': data.get('establish_date', 'N/A'),
-            'risk_level': data.get('risk_level', 'N/A'),
-            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        time.sleep(0.1) # 轻微延迟，防止爬取过于频繁
-        return details
         
     except requests.exceptions.RequestException as e:
         print(f"基金代码 {fund_code} 请求失败: {e}")
         time.sleep(1) 
         return {
-            'code': fund_code,
-            'name': '网络请求失败',
-            'reason': str(e),
-            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            '基金代码': fund_code,
+            '基金名称': '网络请求异常',
+            '单位净值估算': 'N/A',
+            '估算日期': 'N/A',
+            '今日估算涨幅': 'N/A',
+            '更新时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
 
@@ -103,17 +101,19 @@ def main():
     all_fund_details = []
     print(f"开始并行获取基金基本信息，最大线程数: {MAX_WORKERS}...")
     
+    # 检查 pandas 是否可用
+    if 'pd' not in globals():
+        print("错误：缺少 pandas 库。")
+        return
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # 提交所有任务
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes}
         
-        # 收集完成的结果
         for future in as_completed(future_to_code):
             try:
                 data = future.result()
                 all_fund_details.append(data)
             except Exception as exc:
-                # 捕获线程执行时的意外错误
                 print(f'一个线程执行发生错误: {exc}')
 
     print("所有基金信息获取和处理完成。")
