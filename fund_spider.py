@@ -93,7 +93,7 @@ def get_all_fund_codes(file_path):
 # 优化 4: 使用 ThreadPoolExecutor 来运行 load_latest_date，加速 I/O 密集型操作
 def load_latest_date(fund_code):
     """
-    【核心修改】从本地 CSV 文件中读取现有最新日期，增加鲁棒性以避免读取错误。
+    
     如果读取失败，返回 None 触发全量抓取。
     """
     output_path = os.path.join(OUTPUT_DIR, f"{fund_code}.csv")
@@ -259,9 +259,7 @@ async def fetch_net_values(fund_code, session, semaphore, executor):
 
 def save_to_csv(fund_code, data):
     """
-    【修改】将历史净值数据以增量更新方式保存为 CSV 文件
-    - 确保新数据转换的鲁棒性。
-    - 优化老数据的读取和合并。
+ 
     """
     output_path = os.path.join(OUTPUT_DIR, f"{fund_code}.csv")
     if not isinstance(data, list) or not data:
