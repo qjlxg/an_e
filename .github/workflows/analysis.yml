@@ -1,0 +1,70 @@
+name: 💰 Fund Analysis & Push
+
+# 触发器配置
+on:
+  # 1. 允许手动运行
+  workflow_dispatch:
+  # 2. 当以下文件变动并推送到 main 分支时自动运行
+  push:
+    branches:
+      - main  # 您的主分支名称
+    paths:
+      - 'analyze_funds.py'
+      - '.github/workflows/analysis.yml'
+      - 'fund_data/*.csv' # 任何CSV文件变动也触发
+
+# 设置环境变量，指定时区为上海
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  analyze_and_push:
+    runs-on: ubuntu-latest
+    
+    # 设置工作流在运行时的时区
+    steps:
+    
+      # 步骤 1: 检出代码
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          # 确保工作流可以推送更改
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      # 步骤 2: 设置 Python 环境
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x' 
+          
+      # 步骤 3: 安装依赖
+      - name: ⚙️ Install Dependencies (Pandas, NumPy)
+        run: |
+          pip install pandas numpy
+          
+      # 步骤 4: 执行分析脚本
+      - name: 📈 Run Fund Analysis Script
+        run: python analyze_funds.py
+        # 使用 if 确保只有脚本成功运行才继续下一步
+        id: analysis
+        
+      # 步骤 5: 提交并推送结果到仓库
+      - name: ⬆️ Commit and Push Results (fund_analysis_summary.csv)
+        run: |
+          # 设置 Git 用户信息
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有文件变动
+          if git diff --exit-code ${{ env.OUTPUT_FILE }}; then
+            echo "No changes in ${OUTPUT_FILE}. Skipping commit."
+          else
+            # 添加并提交文件
+            git add ${{ env.OUTPUT_FILE }}
+            git commit -m "Auto: Update fund analysis summary [skip ci]"
+            # 推送到仓库
+            git push
+            echo "Successfully pushed updated analysis summary."
+          fi
+        env:
+          OUTPUT_FILE: fund_analysis_summary.csv
