@@ -35,18 +35,18 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x' 
+          # 3.14 是最新的预览版，我们改为更稳定的 3.12 或 3.11 版本
+          python-version: '3.12' 
           
-      # 步骤 3: 安装依赖
-      - name: ⚙️ Install Dependencies (Pandas, NumPy)
+      # 步骤 3: 安装依赖 (新增 tabulate 库)
+      - name: ⚙️ Install Dependencies (Pandas, NumPy, Tabulate)
         run: |
-          pip install pandas numpy
+          pip install pandas numpy tabulate
           
       # 步骤 4: 执行分析脚本
       - name: 📈 Run Fund Analysis Script
+        # 输出文件已在 Python 脚本中定义为 fund_analysis_summary.csv
         run: python analyze_funds.py
-        # 使用 if 确保只有脚本成功运行才继续下一步
-        id: analysis
         
       # 步骤 5: 提交并推送结果到仓库
       - name: ⬆️ Commit and Push Results (fund_analysis_summary.csv)
@@ -55,16 +55,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 检查是否有文件变动
-          if git diff --exit-code ${{ env.OUTPUT_FILE }}; then
+          OUTPUT_FILE=fund_analysis_summary.csv
+          
+          # 检查是否有文件变动（使用 --ignore-submodules=dirty 忽略子模块更改）
+          if git diff --stat --exit-code $OUTPUT_FILE; then
             echo "No changes in ${OUTPUT_FILE}. Skipping commit."
           else
             # 添加并提交文件
-            git add ${{ env.OUTPUT_FILE }}
+            git add $OUTPUT_FILE
             git commit -m "Auto: Update fund analysis summary [skip ci]"
             # 推送到仓库
             git push
             echo "Successfully pushed updated analysis summary."
           fi
-        env:
-          OUTPUT_FILE: fund_analysis_summary.csv
