@@ -6,10 +6,10 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- ⚠️ 依赖的库: requests, pandas, beautifulsoup4 ---
+# --- 依赖的库: requests, pandas, beautifulsoup4 ---
 OUTPUT_FILE = 'fund_details.csv'
 INPUT_FILE = 'result_z.txt'
-# 降低并发数，保护接口，防止被封
+# 保持较低的并发数，避免被爬虫目标网站封锁
 MAX_WORKERS = 5 
 
 # 东方财富基金详情页 URL 结构
@@ -18,41 +18,40 @@ BASE_URL = "https://fund.eastmoney.com/{fund_code}.html"
 
 def fetch_fund_info(fund_code):
     """
-    爬取基金详情页面，使用 BeautifulSoup 提取基本信息。
+    爬取基金详情页面，使用 BeautifulSoup 提取完整的基金基本信息。
     """
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在查询代码: {fund_code}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 正在查询代码: {fund_code}")
     
     url = BASE_URL.format(fund_code=fund_code)
     
+    # 模拟 HTTP 请求头
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status() 
+        # 增加超时时间到 20 秒，解决 Read timed out 错误
+        response = requests.get(url, headers=headers, timeout=20) 
+        response.raise_for_status() # 检查 HTTP 状态码
         
-        # 使用 BeautifulSoup 解析 HTML
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 提取基金名称 (位于头部)
+        # 提取基金名称
         title_tag = soup.find('div', class_='fundTitle')
-        fund_name = title_tag.find('h4').text.strip() if title_tag and title_tag.find('h4') else 'N/A'
+        full_name_text = title_tag.find('h4').text.strip() if title_tag and title_tag.find('h4') else 'N/A (Title)'
+        fund_name = full_name_text.split('(')[0].strip()
         
         # 提取基本信息表格 (如成立日期、基金管理人等)
         info_dict = {}
-        info_div = soup.find('div', class_='info')
-        if info_div:
-            # 找到所有 li 标签，提取信息
-            list_items = info_div.find_all('li')
-            for item in list_items:
-                text = item.text.strip().replace('\xa0', ' ')
-                if '成立日期' in text:
-                    info_dict['成立日期'] = text.split('：')[-1].split('(')[0].strip()
-                elif '基金管理人' in text:
-                    info_dict['基金管理人'] = text.split('：')[-1].strip()
-                elif '基金托管人' in text:
-                    info_dict['基金托管人'] = text.split('：')[-1].strip()
+        list_items = soup.select('div.info ul li')
+        for item in list_items:
+            text = item.text.strip().replace('\xa0', ' ')
+            if '成立日期' in text:
+                info_dict['成立日期'] = text.split('：')[-1].split('(')[0].strip()
+            elif '基金管理人' in text:
+                info_dict['基金管理人'] = text.split('：')[-1].strip()
+            elif '基金托管人' in text:
+                info_dict['基金托管人'] = text.split('：')[-1].strip()
 
         # 提取现任基金经理
         manager_name = 'N/A'
@@ -74,7 +73,7 @@ def fetch_fund_info(fund_code):
             '更新时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        time.sleep(0.5) # 增加延迟，降低爬虫频率
+        time.sleep(0.2) # 减少延迟，提高并行效率
         return details
         
     except requests.exceptions.RequestException as e:
@@ -92,6 +91,7 @@ def fetch_fund_info(fund_code):
 
 
 def main():
+    
     # 1. 读取基金代码
     print(f"尝试读取文件: {INPUT_FILE}")
     try:
@@ -109,6 +109,10 @@ def main():
     all_fund_details = []
     print(f"开始并行获取基金基本信息，最大线程数: {MAX_WORKERS}...")
     
+    if 'pd' not in globals():
+        print("致命错误：缺少 pandas 库。请检查依赖安装步骤。")
+        return
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes}
         
