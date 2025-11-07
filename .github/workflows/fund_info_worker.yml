@@ -1,5 +1,4 @@
-name: 💰 基金信息并行获取与推送 (爬虫/CSV)
-
+name: 💰 info
 on:
   # 1. 允许手动运行
   workflow_dispatch:
