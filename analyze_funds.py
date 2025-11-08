@@ -37,7 +37,7 @@ ROLLING_PERIODS = {
     '1年': 250
 }
 
-# --- 网络请求函数（增强健壮性，增加重试）---
+# --- 网络请求函数（增强健壮性，增加重试，并清理资产规模）---
 def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
     if fund_code in FUND_INFO_CACHE:
         return FUND_INFO_CACHE[fund_code]
@@ -97,7 +97,17 @@ def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
                 if size_th:
                     size_td = size_th.find_next_sibling('td')
                     if size_td:
-                        defaults['size'] = size_td.text.strip().replace('\n', ' ').replace('\t', '')
+                        raw_size = size_td.text.strip().replace('\n', ' ').replace('\t', '')
+                        
+                        # >>> 核心修改：使用正则表达式清理资产规模 <<<
+                        # 匹配金额和单位（如 X.XX亿/万元）
+                        match = re.search(r'([\d.]+)\s*([亿万]元)', raw_size)
+                        if match:
+                            defaults['size'] = match.group(0) # 提取匹配到的金额和单位
+                        else:
+                             # 如果正则匹配失败，至少保留原始的金额部分
+                             defaults['size'] = raw_size.split('（')[0].strip() 
+                        # >>> 核心修改结束 <<<
 
                 # 管理费率
                 rate_th = info_table.find('th', string=re.compile(r'管理费率'))
@@ -264,7 +274,7 @@ def main():
 
     summary_df = pd.DataFrame(results)
 
-    # 阶段 3: 爬取基本信息 (增加并发日志和更细致的错误处理)
+    # 阶段 3: 爬取基本信息 
     print(f"\n--- Phase 3/3: Fetching Info for {len(codes_to_fetch)} Funds using {MAX_THREADS} threads ---")
     
     unique_codes = list(set(codes_to_fetch)) 
@@ -299,12 +309,8 @@ def main():
                 lambda x: f"{x:.3f}" if pd.notna(x) and not np.isinf(x) else 'N/A')
 
     # 排序
-    final_df = final_df.sort_values(by='共同期夏普比率_Num', ascending=False)
-    final_df = final_df.drop(columns=['共同期夏普比率_Num']).reset_index(drop=True)
-
-    # *** 核心修改点：删除插入信息行的逻辑 ***
-    # final_output = final_df (直接使用排序后的 df)
-    final_output = final_df 
+    final_output = final_df.sort_values(by='共同期夏普比率_Num', ascending=False)
+    final_output = final_output.drop(columns=['共同期夏普比率_Num']).reset_index(drop=True)
 
     # 列顺序
     target_cols = [
