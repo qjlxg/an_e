@@ -24,8 +24,8 @@ OUTPUT_FILE = 'fund_analysis_summary_optimized.csv'
 MAX_THREADS = 10
 TRADING_DAYS_PER_YEAR = 250  # 每年平均交易日数量
 RISK_FREE_RATE = 0.02  # 无风险利率 2%
+EPSILON = 1e-10 # 用于几何平均计算，防止 log(<=0) 导致的 RuntimeWarning
 
-# 【核心修正：取消 1 周周期】
 ROLLING_PERIODS = {
     '1月': 20,
     '1季度': 60,
@@ -39,7 +39,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0'
 ]
 
-# --- 辅助函数：网络请求 (保持不变) ---
+# --- 辅助函数：网络请求 (解决 DeprecationWarning) ---
 def fetch_fund_info(fund_code):
     """从天天基金网获取基金的基本信息，使用 BeautifulSoup 增强解析鲁棒性，并加入反爬机制。"""
     if fund_code in FUND_INFO_CACHE:
@@ -72,13 +72,15 @@ def fetch_fund_info(fund_code):
             defaults['name'] = re.sub(r'\(.*?\)$', '', full_name).strip()
         
         # 2. 提取资产规模、基金类型等信息
-        size_element = soup.find('th', text=re.compile(r'资产规模'))
+        # 【修正：使用 string 替换 text 避免 DeprecationWarning】
+        size_element = soup.find('th', string=re.compile(r'资产规模'))
         if size_element:
             size_td = size_element.find_next_sibling('td')
             if size_td:
                 defaults['size'] = size_td.text.strip()
         
-        rate_element = soup.find('th', text=re.compile(r'管理费率'))
+        # 【修正：使用 string 替换 text 避免 DeprecationWarning】
+        rate_element = soup.find('th', string=re.compile(r'管理费率'))
         if rate_element:
             rate_td = rate_element.find_next_sibling('td')
             if rate_td:
@@ -104,7 +106,7 @@ def fetch_fund_info(fund_code):
     return defaults
 
 
-# --- 核心计算函数 (仅修改滚动收益率部分) ---
+# --- 核心计算函数 (解决 RuntimeWarning) ---
 
 def calculate_metrics(df, fund_code):
     """计算基金的各种风险收益指标，并进行数据清洗和优化。"""
@@ -123,9 +125,10 @@ def calculate_metrics(df, fund_code):
     df = df.dropna(subset=['cumulative_net_value', 'date'])
     
     try:
-        df['date'] = pd.to_datetime(df['date'])
+        # 使用 .loc 避免 SettingWithCopyWarning
+        df.loc[:, 'date'] = pd.to_datetime(df['date'])
     except:
-        df['date'] = df['date'].apply(lambda x: pd.to_datetime(x, errors='coerce') if pd.notna(x) else np.nan)
+        df.loc[:, 'date'] = df['date'].apply(lambda x: pd.to_datetime(x, errors='coerce') if pd.notna(x) else np.nan)
         df = df.dropna(subset=['date'])
 
     df = df.sort_values(by='date').reset_index(drop=True)
@@ -173,6 +176,10 @@ def calculate_metrics(df, fund_code):
             
             # 2. 将收益率转换为 (1 + R_p)
             compounding_factors = 1 + rolling_non_ann_returns
+            
+            # 【修正：添加 EPSILON，避免 log(<=0) 导致的 RuntimeWarning】
+            # 使用 numpy.maximum 比 apply 效率更高
+            compounding_factors = np.maximum(compounding_factors, EPSILON)
 
             # 3. 计算所有周期收益率的几何平均
             log_returns = np.log(compounding_factors)
@@ -283,22 +290,25 @@ def main():
     final_df = final_df.sort_values(by='夏普比率(总)_Num', ascending=False).drop(columns=['夏普比率(总)_Num']).reset_index(drop=True)
     
     # 输出共同分析期信息
-    common_period = f'所有基金共同分析期：{latest_start.strftime("%Y-%m-%d")} 到 {earliest_end.strftime("%Y-%m-%d")}'
-    print(common_period)
-    
-    # 添加共同分析期信息
-    # 修正：直接创建一行描述，避免复杂的append操作
-    period_info_row = pd.Series(
-        {'基金代码': common_period},
-        index=final_df.columns
-    ).to_frame().T
-    
-    final_output = pd.concat([period_info_row, final_df], ignore_index=True)
+    if latest_start and earliest_end:
+        common_period = f'所有基金共同分析期：{latest_start.strftime("%Y-%m-%d")} 到 {earliest_end.strftime("%Y-%m-%d")}'
+        print(common_period)
+        
+        # 添加共同分析期信息
+        period_info_row = pd.Series(
+            {'基金代码': common_period},
+            index=final_df.columns
+        ).to_frame().T
+        
+        final_output = pd.concat([period_info_row, final_df], ignore_index=True)
+    else:
+        # 如果没有有效的起始/结束日期，则不添加该行
+        final_output = final_df
+        print("未确定有效的共同分析期。")
+
     
     final_output.to_csv(OUTPUT_FILE, index=False, encoding='utf_8_sig')
     print(f"\n✅ 成功：分析结果已保存至 {os.path.abspath(OUTPUT_FILE)}")
     
 if __name__ == '__main__':
-    # 必须在主函数外调用，才能在程序启动时生效
-    # warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning) 
     main()
