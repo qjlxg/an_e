@@ -1,0 +1,65 @@
+name: Xalpha Info Script Workflow (C类代码)
+
+# 当 info.py, C类.txt 或工作流文件本身有 push 时触发
+on:
+  push:
+    branches:
+      - main  # 假设您的主分支是 main
+    paths:
+      - 'info.py'
+      - 'C类.txt'
+      - '.github/workflows/info_workflow.yml'
+  
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  run_info_script:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: ⬇️ 检出代码
+        uses: actions/checkout@v4
+        with:
+          # 使用 GITHUB_TOKEN 权限，以便将结果推送回仓库
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 🐍 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x' 
+          
+      - name: 📦 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          # 安装 info.py 中依赖的核心库
+          pip install pandas sqlalchemy beautifulsoup4 lxml xalpha requests
+          
+      - name: 🏃 运行 info.py 脚本 (设置上海时区)
+        # 设置时区以确保 report.txt 中的时间戳正确
+        env:
+          TZ: Asia/Shanghai 
+        run: |
+          echo "Running info.py script in $TZ timezone."
+          # 直接运行 info.py，它会负责读取 C类.txt 并生成 report.txt
+          python info.py
+          
+      - name: 📝 提交结果到仓库
+        run: |
+          # 配置 git 用户信息
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 添加生成的结果文件
+          git add workflow_outputs/report.txt
+          
+          # 检查是否有文件变动需要提交
+          if git diff --staged --quiet; then
+              echo "No changes to commit. Exiting."
+          else
+              # 提交变动
+              git commit -m "🤖 Workflow: Update C类 report for run ${{ github.run_id }}"
+              
+              # 推送变动到远程仓库
+              git push
+          fi
