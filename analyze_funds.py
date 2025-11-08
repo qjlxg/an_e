@@ -10,8 +10,13 @@ import time
 from bs4 import BeautifulSoup
 import warnings
 
+# --- 核心修正：将 SettingWithCopyWarning 导入路径从 core.common 更改为 errors ---
 # 忽略 pandas 的 SettingWithCopyWarning
-warnings.filterwarnings('ignore', category=pd.core.common.SettingWithCopyWarning)
+try:
+    warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
+except AttributeError:
+    # 兼容非常旧的 Pandas 版本
+    warnings.filterwarnings('ignore', category=pd.core.common.SettingWithCopyWarning)
 
 # --- 配置参数 ---
 FUND_DATA_DIR = 'fund_data'
@@ -112,6 +117,7 @@ def calculate_metrics(df, fund_code):
     mask_high_error = df['cumulative_net_value'] > 50 
     if mask_high_error.any():
         print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点（>50）。")
+        # 使用 .loc 进行赋值以避免 SettingWithCopyWarning
         df.loc[mask_high_error, 'cumulative_net_value'] = df.loc[mask_high_error, 'cumulative_net_value'] / 100 
     
     df = df.dropna(subset=['cumulative_net_value', 'date'])
@@ -281,12 +287,18 @@ def main():
     print(common_period)
     
     # 添加共同分析期信息
-    header = pd.DataFrame([{'基金代码': common_period}]).append(final_df.columns.to_series().T, ignore_index=True)
-    header.columns = final_df.columns
-    final_output = pd.concat([header.iloc[0:1], final_df], ignore_index=True)
+    # 修正：直接创建一行描述，避免复杂的append操作
+    period_info_row = pd.Series(
+        {'基金代码': common_period},
+        index=final_df.columns
+    ).to_frame().T
+    
+    final_output = pd.concat([period_info_row, final_df], ignore_index=True)
     
     final_output.to_csv(OUTPUT_FILE, index=False, encoding='utf_8_sig')
     print(f"\n✅ 成功：分析结果已保存至 {os.path.abspath(OUTPUT_FILE)}")
     
 if __name__ == '__main__':
+    # 必须在主函数外调用，才能在程序启动时生效
+    # warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning) 
     main()
