@@ -65,17 +65,28 @@ def fetch_fund_info_from_internet(fund_code):
             defaults['name'] = match_name.group(1).strip()
             
         # 2. 最新净值和日涨跌幅提取 (从快照区域获取)
+        # 模式：单位净值（日期）：<b class="grn lar bold"> 净值 ( 涨跌幅 )</b>
         match_nav = re.search(r'单位净值.*?([\d\.]+)\s*\(\s*([-\+\d\.]+%)\s*\)', content, re.DOTALL)
         if match_nav:
             defaults['latest_nav'] = match_nav.group(1).strip()
             defaults['daily_return'] = match_nav.group(2).strip()
             
-        # 3. 资产规模提取 (从 bs_gl 区域获取)
-        # 目标文本: 资产规模：<span> 3.85亿元 （截止至：2025-09-30）</span>
-        match_size = re.search(r'资产规模：\s*<span>\s*(.*?)\s*</span>', content)
-        if match_size:
-            defaults['asset_size'] = match_size.group(1).strip().replace('（截止至：', ' (截止至：')
-
+        # 3. 资产规模提取 (重点优化：尝试从两个区域提取)
+        asset_size_value = 'N/A'
+        
+        # 尝试从 bs_gl 区域提取 (例如: 资产规模：<span> 3.85亿元 （截止至：2025-09-30）</span>)
+        match_size_1 = re.search(r'资产规模：\s*<span>\s*(.*?)\s*（截止至', content)
+        if match_size_1:
+            asset_size_value = match_size_1.group(1).strip()
+        else:
+            # 尝试从表格区域提取 (例如: <th>资产规模</th><td>3.85亿元（截止至：2025年09月30日）)
+            match_size_2 = re.search(r'<th>资产规模</th><td>(.*?)（截止至', content)
+            if match_size_2:
+                asset_size_value = match_size_2.group(1).strip()
+        
+        # 最终赋值
+        defaults['asset_size'] = asset_size_value
+        
         # 4. 基金类型提取 (从 bs_gl 区域获取)
         # 目标文本: 类型：<span>指数型-股票</span>
         match_type = re.search(r'类型：\s*<span>\s*(.*?)\s*</span>', content)
@@ -284,7 +295,7 @@ def main():
         
     summary_df = pd.DataFrame(results)
     
-    # 重新排列列的顺序，将新增信息放在前面
+    # 重新排列列的顺序
     cols = summary_df.columns.tolist()
     new_info_cols = ['资产规模', '基金类型', '管理费率', '销售服务费率', '托管费率']
     core_info_cols = ['基金代码', '基金简称', '最新单位净值', '日涨跌幅']
