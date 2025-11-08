@@ -37,15 +37,18 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0'
 ]
 
-# --- 辅助函数：网络请求 ---
+# --- 辅助函数：网络请求 (增强鲁棒性版本) ---
 def fetch_fund_info(fund_code):
-    """从天天基金网获取基金的基本信息。"""
+    """从天天基金网获取基金的基本信息，增强反爬机制和解析精度。"""
+    global FUND_INFO_CACHE, USER_AGENTS 
+    
     if fund_code in FUND_INFO_CACHE:
         return FUND_INFO_CACHE[fund_code]
 
     url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html' 
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     
+    # 增加随机延迟，避免被服务器拒绝
     time.sleep(random.uniform(2, 4)) 
 
     defaults = {
@@ -81,20 +84,25 @@ def fetch_fund_info(fund_code):
             else:
                  defaults['net_value'] = parts[0].strip()
                  
-        # --- 3. 提取基金类型和资产规模 (从 .bs_gl 块) ---
+        # --- 3. 提取基金类型和资产规模 (增强鲁棒性) ---
         bs_gl = soup.select_one('.basic-new .bs_gl')
         if bs_gl:
-            type_label = bs_gl.find('label', string=re.compile(r'类型：'))
+            # 提取类型 - 使用更宽松的正则匹配 '类型'
+            type_label = bs_gl.find('label', string=re.compile(r'类型'))
             if type_label and type_label.find('span'):
                  defaults['type'] = type_label.find('span').text.strip()
 
-            size_label = bs_gl.find('label', string=re.compile(r'资产规模：'))
+            # 提取资产规模 - 使用更宽松的正则匹配 '资产规模'
+            size_label = bs_gl.find('label', string=re.compile(r'资产规模'))
             if size_label and size_label.find('span'):
-                defaults['size'] = size_label.find('span').text.strip()
+                # 移除多余的空白字符和换行符
+                defaults['size'] = size_label.find('span').text.strip().replace('\n', '').replace('\t', '')
+
 
         # --- 4. 提取管理费率 (从 .info w790 表格) ---
         info_table = soup.select_one('table.info.w790')
         if info_table:
+            # 使用更宽松的正则匹配 '管理费率'
             rate_th = info_table.find('th', string=re.compile(r'管理费率'))
             if rate_th:
                 rate_td = rate_th.find_next_sibling('td')
@@ -113,13 +121,22 @@ def fetch_fund_info(fund_code):
 def clean_and_prepare_df(df, fund_code):
     """数据清洗和预处理，返回清理后的DataFrame和其有效起止日期。"""
     df.columns = df.columns.str.lower()
-    df = df.rename(columns={'累计净值': 'cumulative_net_value', 'date': 'date'})
+    # 尝试识别日期和净值列
+    date_col = next((col for col in df.columns if '日期' in col or 'date' in col), None)
+    net_value_col = next((col for col in df.columns if '累计净值' in col), None)
+
+    if not date_col or not net_value_col:
+        print(f"❌ 基金 {fund_code} 找不到必须的 '日期' 或 '累计净值' 列。")
+        return None, None, None
+        
+    df = df.rename(columns={net_value_col: 'cumulative_net_value', date_col: 'date'})
+    
     df['cumulative_net_value'] = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
     
-    # 极端异常值修正 (针对可能的输入错误，例如单位净值错输为累计净值)
+    # 极端异常值修正
     mask_high_error = df['cumulative_net_value'] > 50 
     if mask_high_error.any():
-        print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点（>50）。")
+        # print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点（>50）。")
         df.loc[mask_high_error, 'cumulative_net_value'] = df.loc[mask_high_error, 'cumulative_net_value'] / 100 
     
     df = df.dropna(subset=['cumulative_net_value', 'date'])
@@ -127,15 +144,18 @@ def clean_and_prepare_df(df, fund_code):
     # 零或负净值清理
     mask_zero_or_negative = df['cumulative_net_value'] <= 0
     if mask_zero_or_negative.any():
-        print(f"💣 基金 {fund_code} 发现 {mask_zero_or_negative.sum()} 个零或负净值，已移除。")
+        # print(f"💣 基金 {fund_code} 发现 {mask_zero_or_negative.sum()} 个零或负净值，已移除。")
         df.loc[mask_zero_or_negative, 'cumulative_net_value'] = np.nan
         df = df.dropna(subset=['cumulative_net_value'])
     
     try:
-        df.loc[:, 'date'] = pd.to_datetime(df['date'])
-    except:
+        # 尝试将日期列转换为 datetime 对象
+        df.loc[:, 'date'] = pd.to_datetime(df['date'], errors='coerce')
+    except Exception:
+        # 如果直接转换失败，逐个尝试转换
         df.loc[:, 'date'] = df['date'].apply(lambda x: pd.to_datetime(x, errors='coerce') if pd.notna(x) else np.nan)
-        df = df.dropna(subset=['date'])
+    
+    df = df.dropna(subset=['date'])
 
     df = df.sort_values(by='date').reset_index(drop=True)
     
@@ -152,35 +172,25 @@ def calculate_metrics(df, fund_code, period_prefix=''):
     """计算基金的各种风险收益指标。"""
     global EPSILON
     
+    # 用于共同期计算失败的占位符
     if df is None or len(df) < 2:
-        # 如果数据点不足，返回一个包含NaN值的字典
-        metrics = {
-            '基金代码': fund_code,
-            f'{period_prefix}起始日期': df['date'].iloc[0].strftime('%Y-%m-%d') if len(df) > 0 else 'N/A',
-            f'{period_prefix}结束日期': df['date'].iloc[-1].strftime('%Y-%m-%d') if len(df) > 0 else 'N/A',
-            f'{period_prefix}年化收益率': np.nan,
-            f'{period_prefix}年化标准差': np.nan,
-            f'{period_prefix}最大回撤(MDD)': np.nan,
-            f'{period_prefix}夏普比率': np.nan,
-        }
-        for name in ROLLING_PERIODS:
-             metrics[f'{period_prefix}平均滚动年化收益率({name})'] = np.nan
+        # 构造包含 NaN 的字典
+        metrics = {'基金代码': fund_code}
+        for col in ['起始日期', '结束日期', '年化收益率', '年化标准差', '最大回撤(MDD)', '夏普比率'] + [f'平均滚动年化收益率({p})' for p in ROLLING_PERIODS]:
+            metrics[f'{period_prefix}{col}'] = np.nan
         return metrics
-        
+
     cumulative_net_value = df['cumulative_net_value']
     
     # --- 1. 年化收益率 (基于交易日) ---
-    if cumulative_net_value.iloc[0] <= 0:
-        annual_return = np.nan
-    else:
+    annual_return = np.nan
+    if cumulative_net_value.iloc[0] > 0:
         total_return = (cumulative_net_value.iloc[-1] / cumulative_net_value.iloc[0]) - 1
         num_trading_days = len(cumulative_net_value) - 1
         
         if num_trading_days > 0:
             # 几何平均年化
             annual_return = (1 + total_return) ** (TRADING_DAYS_PER_YEAR / num_trading_days) - 1
-        else:
-            annual_return = np.nan
 
     # --- 2. 年化标准差和日收益率 ---
     returns = cumulative_net_value.pct_change().dropna()
@@ -191,10 +201,9 @@ def calculate_metrics(df, fund_code, period_prefix=''):
     max_drawdown = (cumulative_net_value / cumulative_net_value.expanding().max() - 1).min()
 
     # --- 4. 夏普比率 ---
+    sharpe_ratio = np.nan
     if annual_volatility > EPSILON: # 避免除以零
         sharpe_ratio = (annual_return - RISK_FREE_RATE) / annual_volatility
-    else:
-        sharpe_ratio = np.nan
         
     # --- 5. 滚动年化收益率 ---
     rolling_metrics = {}
@@ -256,8 +265,8 @@ def main():
                 df_raw = pd.read_csv(file_path, encoding='utf-8')
             except UnicodeDecodeError:
                 df_raw = pd.read_csv(file_path, encoding='gbk')
-            except pd.errors.ParserError:
-                 df_raw = pd.read_csv(file_path, encoding='utf-8', sep='\t')
+            except Exception:
+                 df_raw = pd.read_csv(file_path, encoding='utf-8', sep=None, engine='python')
             
             df_clean, start_date, end_date = clean_and_prepare_df(df_raw.copy(), fund_code)
             
@@ -310,6 +319,7 @@ def main():
             # 检查共同期内数据点是否足够
             if len(df_common) < min_days_required:
                  print(f"⚠️ 基金 {fund_code} 在共同期内数据点 ({len(df_common)}个) 不足，跳过共同期计算。")
+                 # 构造包含 NaN 的指标字典
                  metrics = {'基金代码': fund_code}
                  for col in ['起始日期', '结束日期', '年化收益率', '年化标准差', '最大回撤(MDD)', '夏普比率'] + [f'平均滚动年化收益率({p})' for p in ROLLING_PERIODS]:
                     metrics[f'共同期{col}'] = np.nan
@@ -328,6 +338,7 @@ def main():
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes_to_fetch}
+        # 等待所有爬取任务完成
         _ = [future.result() for future in concurrent.futures.as_completed(future_to_code)]
 
     # 阶段 4: 整合和输出
@@ -349,7 +360,6 @@ def main():
     sharpe_col = sharpe_col_candidates[0] if sharpe_col_candidates else None
     
     if sharpe_col:
-        
         # 创建一个用于排序的临时数字列，基于共同期/全历史的夏普比率
         final_df[f'{sharpe_col}_Num'] = final_df[sharpe_col].replace({'N/A': np.nan}).astype(float)
         
