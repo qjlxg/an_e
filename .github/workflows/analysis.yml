@@ -14,7 +14,7 @@ on:
 env:
   TZ: Asia/Shanghai
   # 【核心修正：确保此文件名与 Python 脚本中的 'OUTPUT_FILE' 变量完全一致】
-  OUTPUT_FILE: fund_analysis_summary_optimized.csv 
+  OUTPUT_FILE: fund_analysis_summary.csv
 
 jobs:
   analyze_and_push:
