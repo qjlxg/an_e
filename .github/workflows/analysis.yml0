@@ -13,8 +13,7 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  # 【更新 1：更改输出文件名以匹配 Python 脚本】
-  OUTPUT_FILE: fund_analysis_summary_with_info.csv 
+  OUTPUT_FILE: fund_analysis_summary.csv # 定义输出文件名，便于Git步骤使用
 
 jobs:
   analyze_and_push:
@@ -32,18 +31,17 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  
+          python-version: '3.12' 
           
       # 步骤 3: 安装依赖
-      # 【更新 2：新增 requests 库】
-      - name: ⚙️ Install Dependencies (Pandas, NumPy, Requests)
-        run: pip install pandas numpy requests
-        
+      - name: ⚙️ Install Dependencies (Pandas, NumPy)
+        run: pip install pandas numpy
+          
       # 步骤 4: 执行分析脚本
       - name: 📈 Run Fund Analysis Script
         run: python analyze_funds.py
         
-      # 步骤 5: 提交并推送结果到仓库
+      # 步骤 5: 提交并推送结果到仓库 (修复强制推送逻辑)
       - name: ⬆️ Commit and Push Results (${{ env.OUTPUT_FILE }})
         run: |
           # 设置 Git 用户信息
