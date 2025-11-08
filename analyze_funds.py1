@@ -29,18 +29,13 @@ USER_AGENTS = [
 MAX_RETRIES = 3 # 增加重试次数配置
 REQUEST_TIMEOUT = 20
 
-# --- 移除 ROLLING_PERIODS 配置 ---
-# ROLLING_PERIODS = {
-#     '1周': 5,
-#     '1月': 20,
-#     '1季度': 60,
-#     '半年': 125,
-#     '1年': 250
-# }
-
-# --- 移除 calculate_rolling_returns 函数 ---
-# def calculate_rolling_returns(nav, period_days):
-#     ...
+ROLLING_PERIODS = {
+    '1周': 5,
+    '1月': 20,
+    '1季度': 60,
+    '半年': 125,
+    '1年': 250
+}
 
 # --- 网络请求函数（增强健壮性，增加重试，并清理资产规模）---
 def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
@@ -104,13 +99,15 @@ def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
                     if size_td:
                         raw_size = size_td.text.strip().replace('\n', ' ').replace('\t', '')
                         
-                        # 核心修改：使用正则表达式清理资产规模
+                        # >>> 核心修改：使用正则表达式清理资产规模 <<<
+                        # 匹配金额和单位（如 X.XX亿/万元）
                         match = re.search(r'([\d.]+)\s*([亿万]元)', raw_size)
                         if match:
                             defaults['size'] = match.group(0) # 提取匹配到的金额和单位
                         else:
                              # 如果正则匹配失败，至少保留原始的金额部分
                              defaults['size'] = raw_size.split('（')[0].strip() 
+                        # >>> 核心修改结束 <<<
 
                 # 管理费率
                 rate_th = info_table.find('th', string=re.compile(r'管理费率'))
@@ -138,7 +135,19 @@ def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
     return defaults
 
 
-# --- 指标计算（移除滚动收益计算）---
+# --- 滚动年化收益率（正确版）---
+def calculate_rolling_returns(nav, period_days):
+    if len(nav) < period_days + 1:
+        return np.nan
+    rolling_total = nav.pct_change(periods=period_days).dropna()
+    if len(rolling_total) == 0:
+        return np.nan
+    # 计算年化： (1 + R)^(250/days) - 1
+    annualized = (1 + rolling_total) ** (TRADING_DAYS_PER_YEAR / period_days) - 1
+    return annualized.mean()
+
+
+# --- 指标计算（修复版）---
 def calculate_metrics(df, start_date, end_date):
     df = df[(df['date'] >= start_date) & (df['date'] <= end_date)].copy()
     if len(df) < 2:
@@ -178,13 +187,17 @@ def calculate_metrics(df, start_date, end_date):
     # 避免除以 0
     sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol is not np.nan and annual_vol > 1e-8 else np.nan
 
-    # 5. 滚动收益 (已移除)
+    # 5. 滚动收益
+    rolling = {}
+    for name, days in ROLLING_PERIODS.items():
+        rolling[f'平均滚动年化收益率({name})'] = calculate_rolling_returns(nav, days)
 
     return {
         '共同期年化收益率': annual_return,
         '共同期年化标准差': annual_vol,
         '共同期最大回撤(MDD)': mdd,
         '共同期夏普比率': sharpe,
+        **rolling
     }
 
 
@@ -299,11 +312,13 @@ def main():
     final_output = final_df.sort_values(by='共同期夏普比率_Num', ascending=False)
     final_output = final_output.drop(columns=['共同期夏普比率_Num']).reset_index(drop=True)
 
-    # 列顺序 (已移除滚动收益列)
+    # 列顺序
     target_cols = [
         '基金代码', '基金简称', '资产规模', '基金类型', '最新日涨跌幅', '最新净值', '管理费率',
         '起始日期', '结束日期', '共同期年化收益率', '共同期年化标准差',
-        '共同期最大回撤(MDD)', '共同期夏普比率'
+        '共同期最大回撤(MDD)', '共同期夏普比率',
+        '平均滚动年化收益率(1周)', '平均滚动年化收益率(1月)', '平均滚动年化收益率(1季度)',
+        '平均滚动年化收益率(半年)', '平均滚动年化收益率(1年)'
     ]
     # 确保只保留存在的列
     final_output = final_output[[c for c in target_cols if c in final_output.columns]]
