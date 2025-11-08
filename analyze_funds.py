@@ -30,8 +30,7 @@ FUND_INFO_CACHE = {}
 
 def fetch_fund_info_from_internet(fund_code):
     """
-    根据基金代码从网络查找基金简称、最新净值和日涨跌幅。
-    **已根据提供的 HTML 结构，精简并修复正则表达式，使其更健壮。**
+    根据基金代码从网络查找基金简称、最新净值、日涨跌幅、资产规模、基金类型和各项费率。
     """
     if fund_code in FUND_INFO_CACHE:
         return fund_code, FUND_INFO_CACHE[fund_code]
@@ -42,9 +41,17 @@ def fetch_fund_info_from_internet(fund_code):
         'Referer': 'http://fund.eastmoney.com/'
     }
     
-    fund_name = f"名称查找失败({fund_code})"
-    latest_nav = 'N/A'
-    daily_return = 'N/A'
+    # 初始化所有结果为默认值
+    defaults = {
+        'name': f"名称查找失败({fund_code})",
+        'latest_nav': 'N/A',
+        'daily_return': 'N/A',
+        'asset_size': 'N/A',
+        'fund_type': 'N/A',
+        'management_fee': 'N/A',
+        'custody_fee': 'N/A',
+        'sales_service_fee': 'N/A'
+    }
 
     try:
         response = requests.get(search_url, headers=headers, timeout=10)
@@ -52,38 +59,54 @@ def fetch_fund_info_from_internet(fund_code):
         response.encoding = 'utf-8'
         content = response.text
         
-        # --- 修复后的正则表达式 ---
-        
-        # 2. 基金简称提取: 精确匹配 table 中的 '<th>基金简称</th><td>' 和 '</td>' 之间的内容
-        # 根据您提供的 HTML: <th>基金简称</th><td>汇添富中证芯片产业指数增强发起式C</td>
+        # 1. 基金简称提取 (从表格中获取)
         match_name = re.search(r'<th>基金简称</th><td>([\u4e00-\u9fa5A-Za-z0-9()]+)</td>', content)
         if match_name:
-            fund_name = match_name.group(1).strip()
+            defaults['name'] = match_name.group(1).strip()
             
-        # 3. 最新净值和日涨跌幅提取: 
-        # 根据您提供的 HTML: 单位净值（11-07）：<b class="grn lar bold"> 1.2397 ( -0.87% )</b>
-        # 使用 re.DOTALL 让 '.' 匹配包括换行符在内的所有字符，并使用 .*? 跳过中间的 <b> 标签
+        # 2. 最新净值和日涨跌幅提取 (从快照区域获取)
         match_nav = re.search(r'单位净值.*?([\d\.]+)\s*\(\s*([-\+\d\.]+%)\s*\)', content, re.DOTALL)
-        
         if match_nav:
-            latest_nav = match_nav.group(1).strip() # 例如: '1.2397'
-            daily_return = match_nav.group(2).strip() # 例如: '-0.87%'
-        
-        # --- 修复结束 ---
+            defaults['latest_nav'] = match_nav.group(1).strip()
+            defaults['daily_return'] = match_nav.group(2).strip()
+            
+        # 3. 资产规模提取 (从 bs_gl 区域获取)
+        # 目标文本: 资产规模：<span> 3.85亿元 （截止至：2025-09-30）</span>
+        match_size = re.search(r'资产规模：\s*<span>\s*(.*?)\s*</span>', content)
+        if match_size:
+            defaults['asset_size'] = match_size.group(1).strip().replace('（截止至：', ' (截止至：')
+
+        # 4. 基金类型提取 (从 bs_gl 区域获取)
+        # 目标文本: 类型：<span>指数型-股票</span>
+        match_type = re.search(r'类型：\s*<span>\s*(.*?)\s*</span>', content)
+        if match_type:
+            defaults['fund_type'] = match_type.group(1).strip()
+            
+        # 5. 管理费率提取 (从表格中获取)
+        # 目标文本: <th>管理费率</th><td>1.20%（每年）</td>
+        match_mgmt_fee = re.search(r'<th>管理费率</th><td>(.*?)</td>', content)
+        if match_mgmt_fee:
+            defaults['management_fee'] = match_mgmt_fee.group(1).strip()
+            
+        # 6. 托管费率提取 (从表格中获取)
+        # 目标文本: <th>托管费率</th><td>0.20%（每年）</td>
+        match_custody_fee = re.search(r'<th>托管费率</th><td>(.*?)</td>', content)
+        if match_custody_fee:
+            defaults['custody_fee'] = match_custody_fee.group(1).strip()
+
+        # 7. 销售服务费率提取 (从表格中获取)
+        # 目标文本: <th>销售服务费率</th><td>0.30%（每年）</td>
+        match_sales_fee = re.search(r'<th>销售服务费率</th><td>(.*?)</td>', content)
+        if match_sales_fee:
+            defaults['sales_service_fee'] = match_sales_fee.group(1).strip()
             
     except requests.exceptions.RequestException:
         pass
     except Exception:
         pass
         
-    result = {
-        'name': fund_name,
-        'latest_nav': latest_nav,
-        'daily_return': daily_return
-    }
-    
-    FUND_INFO_CACHE[fund_code] = result
-    return fund_code, result
+    FUND_INFO_CACHE[fund_code] = defaults
+    return fund_code, defaults
 
 
 # 【以下函数保持不变】
@@ -212,11 +235,26 @@ def main():
     for filename, df in temp_dfs.items():
         fund_code = filename.replace('.csv', '')
         
-        fund_info = fund_info_map.get(fund_code, {'name': f"名称({fund_code})", 'latest_nav': 'N/A', 'daily_return': 'N/A'})
+        fund_info = fund_info_map.get(fund_code, {
+            'name': f"名称({fund_code})", 
+            'latest_nav': 'N/A', 
+            'daily_return': 'N/A',
+            'asset_size': 'N/A',
+            'fund_type': 'N/A',
+            'management_fee': 'N/A',
+            'custody_fee': 'N/A',
+            'sales_service_fee': 'N/A'
+        })
         
+        # 提取信息
         fund_name = fund_info['name']
         latest_nav = fund_info['latest_nav']
         daily_return = fund_info['daily_return']
+        asset_size = fund_info['asset_size']
+        fund_type = fund_info['fund_type']
+        management_fee = fund_info['management_fee']
+        custody_fee = fund_info['custody_fee']
+        sales_service_fee = fund_info['sales_service_fee']
         
         try:
             metrics = calculate_metrics(df, earliest_start_date, latest_end_date)
@@ -226,7 +264,12 @@ def main():
                     '基金代码': fund_code,
                     '基金简称': fund_name, 
                     '最新单位净值': latest_nav, 
-                    '日涨跌幅': daily_return, 
+                    '日涨跌幅': daily_return,
+                    '资产规模': asset_size, 
+                    '基金类型': fund_type,
+                    '管理费率': management_fee,
+                    '销售服务费率': sales_service_fee,
+                    '托管费率': custody_fee,
                     '起始日期': earliest_start_date.strftime('%Y-%m-%d'),
                     '结束日期': latest_end_date.strftime('%Y-%m-%d'),
                     **metrics
@@ -241,15 +284,20 @@ def main():
         
     summary_df = pd.DataFrame(results)
     
+    # 重新排列列的顺序，将新增信息放在前面
     cols = summary_df.columns.tolist()
-    new_cols_order = ['基金代码', '基金简称', '最新单位净值', '日涨跌幅', '起始日期', '结束日期', 
-                      '年化收益率(总)', '年化标准差(总)', '最大回撤(MDD)', '夏普比率(总)']
-    
-    remaining_cols = [col for col in cols if col not in new_cols_order and col != '夏普比率(总)_Num']
-    final_cols_order = new_cols_order + sorted(remaining_cols)
+    new_info_cols = ['资产规模', '基金类型', '管理费率', '销售服务费率', '托管费率']
+    core_info_cols = ['基金代码', '基金简称', '最新单位净值', '日涨跌幅']
+    date_cols = ['起始日期', '结束日期']
+    metric_cols = ['年化收益率(总)', '年化标准差(总)', '最大回撤(MDD)', '夏普比率(总)']
+    rolling_cols = sorted([col for col in cols if col.startswith('平均滚动年化收益率')])
 
-    summary_df = summary_df.reindex(columns=final_cols_order)
+    final_cols_order = core_info_cols + new_info_cols + date_cols + metric_cols + rolling_cols
+
+    # 确保所有列都在数据框中，并按最终顺序排列
+    summary_df = summary_df.reindex(columns=final_cols_order, fill_value='N/A')
     
+    # 处理夏普比率的排序和格式化
     summary_df['夏普比率(总)_Num'] = pd.to_numeric(summary_df['夏普比率(总)'], errors='coerce') 
     
     for col in summary_df.columns:
@@ -263,7 +311,7 @@ def main():
     
     summary_df.to_csv(OUTPUT_FILE, index=False, encoding='utf-8')
     print(f"\n--- 分析完成 ---\n结果已保存到 {OUTPUT_FILE}")
-    print("\n按夏普比率排名的分析摘要（包含最新净值信息）：")
+    print("\n按夏普比率排名的分析摘要（包含最新信息）：")
     
     print(summary_df.to_string(index=False))
 
