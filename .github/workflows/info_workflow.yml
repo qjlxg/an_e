@@ -27,7 +27,7 @@ jobs:
       - name: 🐍 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x' 
+          python-version: '3.12' 
           
       - name: 📦 安装依赖
         run: |
