@@ -34,15 +34,13 @@ ROLLING_PERIODS = {
     '1年': 250
 }
 
-# --- 网络请求函数 ---
+# --- 网络请求函数（2025-11 版，已修复资产规模/类型 N/A）---
 def fetch_fund_info(fund_code):
     if fund_code in FUND_INFO_CACHE:
         return FUND_INFO_CACHE[fund_code]
 
     url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html'
     headers = {'User-Agent': random.choice(USER_AGENTS)}
-    
-    # CI 安全延迟
     time.sleep(random.uniform(1.5, 3.0))
 
     defaults = {
@@ -76,24 +74,30 @@ def fetch_fund_info(fund_code):
             else:
                 defaults['net_value'] = parts[0].strip()
 
-        # 3. 类型 & 规模
-        bs_gl = soup.select_one('.basic-new .bs_gl')
-        if bs_gl:
-            type_label = bs_gl.find('label', string=re.compile(r'类型'))
-            if type_label and type_label.find('span'):
-                defaults['type'] = type_label.find('span').text.strip()
-            size_label = bs_gl.find('label', string=re.compile(r'资产规模'))
-            if size_label and size_label.find('span'):
-                defaults['size'] = size_label.find('span').text.strip().replace('\n', '').replace('\t', '')
-
-        # 4. 管理费率
+        # --- 关键修复：从 <table class="info w790"> 提取类型、规模、费率 ---
         info_table = soup.select_one('table.info.w790')
         if info_table:
+            # 基金类型
+            type_th = info_table.find('th', string=re.compile(r'基金类型'))
+            if type_th:
+                type_td = type_th.find_next_sibling('td')
+                if type_td:
+                    defaults['type'] = type_td.text.strip()
+
+            # 资产规模（带日期）
+            size_th = info_table.find('th', string=re.compile(r'资产规模'))
+            if size_th:
+                size_td = size_th.find_next_sibling('td')
+                if size_td:
+                    defaults['size'] = size_td.text.strip().replace('\n', ' ').replace('\t', '')
+
+            # 管理费率
             rate_th = info_table.find('th', string=re.compile(r'管理费率'))
             if rate_th:
                 rate_td = rate_th.find_next_sibling('td')
                 if rate_td:
                     defaults['rate'] = rate_td.text.strip()
+        # -------------------------------------------------------------------------
 
     except Exception as e:
         print(f"Failed to fetch {fund_code}: {e}")
