@@ -11,6 +11,7 @@ DATA_DIR = 'fund_data'
 OUTPUT_FILE = 'fund_analysis_summary_with_info.csv'
 RISK_FREE_RATE = 0.02 
 TRADING_DAYS_PER_YEAR = 250
+# 设定最大线程数，用于控制同时进行的网络请求数量
 MAX_THREADS = 10 
 # --- 配置结束 ---
 
@@ -30,7 +31,7 @@ FUND_INFO_CACHE = {}
 def fetch_fund_info_from_internet(fund_code):
     """
     根据基金代码从网络查找基金简称、最新净值和日涨跌幅。
-    **已优化正则表达式，使其更健壮地匹配网页内容。**
+    **已根据提供的 HTML 结构，精简并修复正则表达式，使其更健壮。**
     """
     if fund_code in FUND_INFO_CACHE:
         return fund_code, FUND_INFO_CACHE[fund_code]
@@ -53,27 +54,26 @@ def fetch_fund_info_from_internet(fund_code):
         
         # --- 修复后的正则表达式 ---
         
-        # 2. 基金简称提取: 使用 [\s\S]*? 来匹配包括换行符在内的任意字符，非贪婪匹配
-        # 目标: 匹配 '基金简称' 和 '基金代码' 之间的中文名称
-        match_name = re.search(r'基金简称[\s\S]*?([\u4e00-\u9fa5A-Za-z0-9()]+)[\s\S]*?基金代码', content)
+        # 2. 基金简称提取: 精确匹配 table 中的 '<th>基金简称</th><td>' 和 '</td>' 之间的内容
+        # 根据您提供的 HTML: <th>基金简称</th><td>汇添富中证芯片产业指数增强发起式C</td>
+        match_name = re.search(r'<th>基金简称</th><td>([\u4e00-\u9fa5A-Za-z0-9()]+)</td>', content)
         if match_name:
             fund_name = match_name.group(1).strip()
             
-        # 3. 最新净值和日涨跌幅提取
-        # 目标: 匹配 '单位净值' 附近的 净值数值 (涨跌幅百分比)
-        # 匹配结构: 单位净值...日期... 净值 (涨跌幅%)
-        match_nav = re.search(r'单位净值.*?\([\d\-]+\)[\s：]*?([\d\.]+)\s*\((\s*[-+\d\.]+%)\)', content, re.DOTALL)
+        # 3. 最新净值和日涨跌幅提取: 
+        # 根据您提供的 HTML: 单位净值（11-07）：<b class="grn lar bold"> 1.2397 ( -0.87% )</b>
+        # 使用 re.DOTALL 让 '.' 匹配包括换行符在内的所有字符，并使用 .*? 跳过中间的 <b> 标签
+        match_nav = re.search(r'单位净值.*?([\d\.]+)\s*\(\s*([-\+\d\.]+%)\s*\)', content, re.DOTALL)
         
         if match_nav:
-            latest_nav = match_nav.group(1).strip()  # 净值
-            daily_return = match_nav.group(2).strip() # 涨跌幅
+            latest_nav = match_nav.group(1).strip() # 例如: '1.2397'
+            daily_return = match_nav.group(2).strip() # 例如: '-0.87%'
         
         # --- 修复结束 ---
             
-    except requests.exceptions.RequestException as e:
-        # 确保在失败时也返回默认的 N/A 结构，避免主程序崩溃
+    except requests.exceptions.RequestException:
         pass
-    except Exception as e:
+    except Exception:
         pass
         
     result = {
@@ -86,8 +86,7 @@ def fetch_fund_info_from_internet(fund_code):
     return fund_code, result
 
 
-# 以下辅助函数和 main 函数保持不变，因为它们是计算逻辑，与并行和数据提取无关。
-
+# 【以下函数保持不变】
 def calculate_rolling_returns(cumulative_net_value, period_days):
     """计算指定周期（交易日）的平均滚动年化收益率"""
     
