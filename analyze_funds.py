@@ -1,12 +1,12 @@
 import pandas as pd
 import numpy as np
 import os
-import re # 新增：用于正则表达式处理
-import random # 新增：用于随机User-Agent和延迟
-import time # 新增：用于爬取延迟
-import requests # 新增：用于网络请求
-import concurrent.futures # 新增：用于多线程加速
-from bs4 import BeautifulSoup # 新增：用于HTML解析
+import re # 用于正则表达式处理
+import random # 用于随机User-Agent和延迟
+import time # 用于爬取延迟
+import requests # 用于网络请求
+import concurrent.futures # 用于多线程加速
+from bs4 import BeautifulSoup # 用于HTML解析
 from datetime import datetime, timedelta
 import warnings
 
@@ -40,11 +40,11 @@ ROLLING_PERIODS = {
     '1年': 250
 }
 
-# --- 新增函数：获取基金基本信息 (解决N/A问题) ---
+# --- 优化函数：获取基金基本信息 (解决N/A问题) ---
 def fetch_fund_info(fund_code):
     """
     从天天基金网获取基金的基本信息（基金简称、规模、类型、费率等）。
-    已增加爬取延迟 (4-6秒)，以解决数据爬取失败的问题。
+    优化了数据解析逻辑，以提高对资产规模和基金类型的爬取成功率。
     """
     global FUND_INFO_CACHE, USER_AGENTS 
     
@@ -93,40 +93,58 @@ def fetch_fund_info(fund_code):
             else:
                  defaults['net_value'] = parts[0].strip()
                  
-        # 3. 提取基金类型和资产规模
-        bs_gl = soup.select_one('.basic-new .bs_gl')
-        if bs_gl:
-            type_label = bs_gl.find('label', string=re.compile(r'类型'))
-            if type_label and type_label.find('span'):
-                 defaults['type'] = type_label.find('span').text.strip()
-
-            size_label = bs_gl.find('label', string=re.compile(r'资产规模'))
-            if size_label and size_label.find('span'):
-                defaults['size'] = size_label.find('span').text.strip().replace('\n', '').replace('\t', '')
-
-        # 4. 提取管理费率 (从 .info w790 表格)
+        # 3. 提取基金类型、资产规模、管理费率 (重点优化区域)
+        
+        # 3.1 优先从 table.info.w790 表格中查找 (更健壮的方式)
         info_table = soup.select_one('table.info.w790')
         if info_table:
-            rate_th = info_table.find('th', string=re.compile(r'管理费率'))
-            if rate_th:
-                rate_td = rate_th.find_next_sibling('td')
-                if rate_td:
-                    defaults['rate'] = rate_td.text.strip()
-        
+            for th_tag in info_table.find_all('th'):
+                th_text = th_tag.text.strip()
+                td_tag = th_tag.find_next_sibling('td')
+                
+                if td_tag:
+                    td_text = td_tag.text.strip().replace('\n', '').replace('\t', '')
+                    
+                    if '基金类型' in th_text:
+                        defaults['type'] = td_text
+                    
+                    elif '资产规模' in th_text:
+                        defaults['size'] = td_text
+                        
+                    elif '管理费率' in th_text:
+                        defaults['rate'] = td_text
+
+        # 3.2 补充：从 .bs_gl 区域的 label/span 结构中查找 (兼容旧版或不同页面结构)
+        bs_gl = soup.select_one('.basic-new .bs_gl')
+        if bs_gl:
+            # 查找 基金类型 (如果 table.info.w790 没找到或数据更细致，会覆盖 N/A)
+            type_label = bs_gl.find('label', string=re.compile(r'类型'))
+            if type_label and type_label.find('span') and defaults['type'] == 'N/A':
+                 defaults['type'] = type_label.find('span').text.strip()
+
+            # 查找 资产规模
+            size_label = bs_gl.find('label', string=re.compile(r'资产规模'))
+            if size_label and size_label.find('span') and defaults['size'] == 'N/A':
+                 defaults['size'] = size_label.find('span').text.strip().replace('\n', '').replace('\t', '')
+
     except requests.exceptions.RequestException as e:
         print(f"❌ 基金 {fund_code} 网络请求失败: {e}")
     except Exception as e:
         print(f"❌ 基金 {fund_code} 数据解析失败: {e}")
     
+    # 打印获取到的关键信息，方便调试
+    print(f"✅ 基金 {fund_code} 信息: 简称={defaults['name']}, 规模={defaults['size']}, 类型={defaults['type']}")
+    
     FUND_INFO_CACHE[fund_code] = defaults
     return defaults
-# --- 新增函数结束 ---
+# --- 优化函数结束 ---
 
 
 def calculate_rolling_returns(cumulative_net_value, period_days):
     """计算指定周期（交易日）的平均滚动年化收益率"""
     
     # 计算周期回报率 (Rolling Return)
+    # (Value_t / Value_{t-n} - 1 + 1) ^ (T / n) - 1
     rolling_returns = (cumulative_net_value.pct_change(periods=period_days) + 1).pow(TRADING_DAYS_PER_YEAR / period_days) - 1
     
     # 返回所有滚动回报率的平均值（平均滚动年化收益率）
@@ -188,7 +206,7 @@ def calculate_metrics(df, start_date, end_date):
     return metrics
 
 def main():
-    # --- 共同期确定（保留您的原逻辑） ---
+    # --- 共同期确定 ---
     earliest_start_date = pd.to_datetime('1900-01-01')
     latest_end_date = pd.to_datetime('2200-01-01')
     
@@ -219,6 +237,7 @@ def main():
                 
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
                 df = df.dropna(subset=['date'])
+                # 只有非空的累计净值对应的日期才算有效
                 valid_dates = df.dropna(subset=['cumulative_net_value'])['date']
                 
                 if not valid_dates.empty:
@@ -235,7 +254,7 @@ def main():
 
     print(f"✅ 确定共同分析期：{earliest_start_date.strftime('%Y-%m-%d')} 至 {latest_end_date.strftime('%Y-%m-%d')}")
     
-    # --- 指标计算和数据爬取 ---
+    # --- 指标计算和数据爬取准备 ---
     results = []
     fund_codes_to_fetch = []
 
@@ -278,9 +297,10 @@ def main():
 
     summary_df = pd.DataFrame(results)
 
-    # --- 阶段 3/3: 多线程获取基金基本信息并整合 (解决基金简称、规模等缺失) ---
+    # --- 阶段 3/3: 多线程获取基金基本信息并整合 ---
     print(f"\n--- 阶段 3/3: 多线程获取 {len(fund_codes_to_fetch)} 支基金的基本信息 ---")
     
+    # 使用多线程加速爬取
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
         # 提交爬取任务
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes_to_fetch}
