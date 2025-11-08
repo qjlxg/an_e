@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- 配置 ---
 DATA_DIR = 'fund_data'
 OUTPUT_FILE = 'fund_analysis_summary.csv'
-RISK_FREE_RATE = 0.02  # 假设无风险利率为 2.0%
+RISK_FREE_RATE = 0.02 # 假设无风险利率为 2.0%
 TRADING_DAYS_PER_YEAR = 250
 # --- 配置结束 ---
 
