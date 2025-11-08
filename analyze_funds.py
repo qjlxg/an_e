@@ -119,11 +119,20 @@ def fetch_fund_info(fund_code):
 
 
 def clean_and_prepare_df(df, fund_code):
-    """数据清洗和预处理，返回清理后的DataFrame和其有效起止日期。"""
-    df.columns = df.columns.str.lower()
-    # 尝试识别日期和净值列
+    """数据清洗和预处理，返回清理后的DataFrame和其有效起止日期。
+    
+    修复了列名匹配问题，使其能兼容中文和英文小写。
+    """
+    df.columns = df.columns.astype(str).str.strip().str.lower()
+    
+    # --- 修复后的列名识别逻辑 ---
+    
+    # 识别日期列 (兼容 '日期' / 'date')
     date_col = next((col for col in df.columns if '日期' in col or 'date' in col), None)
-    net_value_col = next((col for col in df.columns if '累计净值' in col), None)
+    
+    # 识别累计净值列 (兼容 '累计净值' / 'cumulative_net_value')
+    # 优先查找包含 '累计净值' 中文或 'cumulative_net_value' 英文小写的列
+    net_value_col = next((col for col in df.columns if '累计净值' in col or 'cumulative_net_value' in col), None)
 
     if not date_col or not net_value_col:
         print(f"❌ 基金 {fund_code} 找不到必须的 '日期' 或 '累计净值' 列。")
@@ -131,12 +140,13 @@ def clean_and_prepare_df(df, fund_code):
         
     df = df.rename(columns={net_value_col: 'cumulative_net_value', date_col: 'date'})
     
+    # --- 后续清洗逻辑保持不变 ---
+    
     df['cumulative_net_value'] = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
     
     # 极端异常值修正
     mask_high_error = df['cumulative_net_value'] > 50 
     if mask_high_error.any():
-        # print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点（>50）。")
         df.loc[mask_high_error, 'cumulative_net_value'] = df.loc[mask_high_error, 'cumulative_net_value'] / 100 
     
     df = df.dropna(subset=['cumulative_net_value', 'date'])
@@ -144,7 +154,6 @@ def clean_and_prepare_df(df, fund_code):
     # 零或负净值清理
     mask_zero_or_negative = df['cumulative_net_value'] <= 0
     if mask_zero_or_negative.any():
-        # print(f"💣 基金 {fund_code} 发现 {mask_zero_or_negative.sum()} 个零或负净值，已移除。")
         df.loc[mask_zero_or_negative, 'cumulative_net_value'] = np.nan
         df = df.dropna(subset=['cumulative_net_value'])
     
@@ -262,11 +271,15 @@ def main():
         try:
             # 尝试不同的编码读取
             try:
+                # 尝试 utf-8 
                 df_raw = pd.read_csv(file_path, encoding='utf-8')
             except UnicodeDecodeError:
-                df_raw = pd.read_csv(file_path, encoding='gbk')
-            except Exception:
-                 df_raw = pd.read_csv(file_path, encoding='utf-8', sep=None, engine='python')
+                try:
+                    # 尝试 gbk
+                    df_raw = pd.read_csv(file_path, encoding='gbk')
+                except Exception:
+                    # 尝试用 python 引擎自动推断分隔符
+                    df_raw = pd.read_csv(file_path, encoding='utf-8', sep=None, engine='python')
             
             df_clean, start_date, end_date = clean_and_prepare_df(df_raw.copy(), fund_code)
             
@@ -275,13 +288,14 @@ def main():
                 valid_start_dates.append(start_date)
                 valid_end_dates.append(end_date)
             else:
-                print(f"⚠️ 基金 {fund_code} 数据不足或无效，已跳过。")
+                # clean_and_prepare_df 内部已经打印了错误信息
+                pass
         
         except Exception as e:
             print(f"❌ 基金 {fund_code} 数据文件读取失败: {e}")
 
     if not all_funds_data:
-        print("所有基金数据处理均失败。")
+        print("所有基金数据处理均失败，无法进行分析。")
         return
 
     # 确定共同分析期
@@ -360,6 +374,7 @@ def main():
     sharpe_col = sharpe_col_candidates[0] if sharpe_col_candidates else None
     
     if sharpe_col:
+        
         # 创建一个用于排序的临时数字列，基于共同期/全历史的夏普比率
         final_df[f'{sharpe_col}_Num'] = final_df[sharpe_col].replace({'N/A': np.nan}).astype(float)
         
