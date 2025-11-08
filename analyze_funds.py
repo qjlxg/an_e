@@ -18,13 +18,16 @@ DATA_DIR = os.getenv('FUND_DATA_DIR', 'fund_data')
 OUTPUT_FILE = os.getenv('OUTPUT_FILE', 'fund_analysis_summary.csv')
 RISK_FREE_RATE = 0.02
 TRADING_DAYS_PER_YEAR = 250
-MAX_THREADS = int(os.getenv('MAX_THREADS', '5'))  # CI 环境建议 5
+# 建议 MAX_THREADS 略微降低以缓解反爬压力，保留用户原始配置
+MAX_THREADS = int(os.getenv('MAX_THREADS', '5')) 
 FUND_INFO_CACHE = {}
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0'
 ]
+MAX_RETRIES = 3 # 增加重试次数配置
+REQUEST_TIMEOUT = 20
 
 ROLLING_PERIODS = {
     '1周': 5,
@@ -34,14 +37,10 @@ ROLLING_PERIODS = {
     '1年': 250
 }
 
-# --- 网络请求函数（2025-11 版，已修复资产规模/类型 N/A）---
-def fetch_fund_info(fund_code):
+# --- 网络请求函数（增强健壮性，增加重试）---
+def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
     if fund_code in FUND_INFO_CACHE:
         return FUND_INFO_CACHE[fund_code]
-
-    url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html'
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    time.sleep(random.uniform(1.5, 3.0))
 
     defaults = {
         'code': fund_code,
@@ -53,54 +52,74 @@ def fetch_fund_info(fund_code):
         'rate': 'N/A'
     }
 
-    try:
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+    url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html'
+    
+    for attempt in range(max_retries):
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        # 增加休眠时间，以缓解反爬压力
+        sleep_time = random.uniform(2.0, 4.0) 
+        time.sleep(sleep_time)
+        
+        try:
+            print(f"[{fund_code}] Fetching... (Attempt {attempt + 1}/{max_retries}, Sleep {sleep_time:.2f}s)")
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status() # 对 4xx/5xx 状态码抛出 HTTPError
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 1. 基金简称
-        title_tag = soup.select_one('.basic-new .bs_jz h4.title a')
-        if title_tag and 'title' in title_tag.attrs:
-            defaults['name'] = re.sub(r'\(.*?\)$', '', title_tag['title']).strip()
+            # 1. 基金简称
+            title_tag = soup.select_one('.basic-new .bs_jz h4.title a')
+            if title_tag and 'title' in title_tag.attrs:
+                defaults['name'] = re.sub(r'\(.*?\)$', '', title_tag['title']).strip()
 
-        # 2. 最新净值 + 日涨跌幅
-        net_tag = soup.select_one('.basic-new .bs_jz .col-right .row1 b')
-        if net_tag:
-            text = net_tag.text.strip()
-            parts = re.split(r'\s*\((.*?)\)\s*', text, 1)
-            if len(parts) >= 3:
-                defaults['net_value'] = parts[0].strip()
-                defaults['daily_growth'] = f'({parts[1]})'
-            else:
-                defaults['net_value'] = parts[0].strip()
+            # 2. 最新净值 + 日涨跌幅
+            net_tag = soup.select_one('.basic-new .bs_jz .col-right .row1 b')
+            if net_tag:
+                text = net_tag.text.strip()
+                parts = re.split(r'\s*\((.*?)\)\s*', text, 1)
+                if len(parts) >= 3:
+                    defaults['net_value'] = parts[0].strip()
+                    defaults['daily_growth'] = f'({parts[1]})'
+                else:
+                    defaults['net_value'] = parts[0].strip()
 
-        # --- 关键修复：从 <table class="info w790"> 提取类型、规模、费率 ---
-        info_table = soup.select_one('table.info.w790')
-        if info_table:
-            # 基金类型
-            type_th = info_table.find('th', string=re.compile(r'基金类型'))
-            if type_th:
-                type_td = type_th.find_next_sibling('td')
-                if type_td:
-                    defaults['type'] = type_td.text.strip()
+            # --- 关键信息提取 ---
+            info_table = soup.select_one('table.info.w790')
+            if info_table:
+                # 基金类型
+                type_th = info_table.find('th', string=re.compile(r'基金类型'))
+                if type_th:
+                    type_td = type_th.find_next_sibling('td')
+                    if type_td:
+                        defaults['type'] = type_td.text.strip()
 
-            # 资产规模（带日期）
-            size_th = info_table.find('th', string=re.compile(r'资产规模'))
-            if size_th:
-                size_td = size_th.find_next_sibling('td')
-                if size_td:
-                    defaults['size'] = size_td.text.strip().replace('\n', ' ').replace('\t', '')
+                # 资产规模（带日期）
+                size_th = info_table.find('th', string=re.compile(r'资产规模'))
+                if size_th:
+                    size_td = size_th.find_next_sibling('td')
+                    if size_td:
+                        defaults['size'] = size_td.text.strip().replace('\n', ' ').replace('\t', '')
 
-            # 管理费率
-            rate_th = info_table.find('th', string=re.compile(r'管理费率'))
-            if rate_th:
-                rate_td = rate_th.find_next_sibling('td')
-                if rate_td:
-                    defaults['rate'] = rate_td.text.strip()
-        # -------------------------------------------------------------------------
+                # 管理费率
+                rate_th = info_table.find('th', string=re.compile(r'管理费率'))
+                if rate_th:
+                    rate_td = rate_th.find_next_sibling('td')
+                    if rate_td:
+                        defaults['rate'] = rate_td.text.strip()
+            
+            # 成功获取并返回
+            FUND_INFO_CACHE[fund_code] = defaults
+            return defaults
 
-    except Exception as e:
-        print(f"Failed to fetch {fund_code}: {e}")
+        except requests.exceptions.RequestException as e:
+            # 捕获所有 requests 错误（连接，超时，HTTP错误）
+            print(f"[{fund_code}] Request failed: {e}. Retrying...")
+            if attempt == max_retries - 1:
+                 print(f"[{fund_code}] Max retries reached. Using default N/A values.")
+        except Exception as e:
+            # 捕获其他如 BeautifulSoup 相关的错误
+            print(f"[{fund_code}] Parsing failed: {e}. Retrying...")
+            if attempt == max_retries - 1:
+                 print(f"[{fund_code}] Max retries reached. Using default N/A values.")
 
     FUND_INFO_CACHE[fund_code] = defaults
     return defaults
@@ -113,6 +132,7 @@ def calculate_rolling_returns(nav, period_days):
     rolling_total = nav.pct_change(periods=period_days).dropna()
     if len(rolling_total) == 0:
         return np.nan
+    # 计算年化： (1 + R)^(250/days) - 1
     annualized = (1 + rolling_total) ** (TRADING_DAYS_PER_YEAR / period_days) - 1
     return annualized.mean()
 
@@ -126,7 +146,8 @@ def calculate_metrics(df, start_date, end_date):
     df = df.sort_values(by='date').reset_index(drop=True)
     nav = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
 
-    # 修复异常小净值（如 0.001 → 1.001）
+    # 修复异常小净值（原逻辑不变）
+    # 注意：此逻辑可能误伤低净值债券基金，但保留用户原始功能
     if nav.min() < 0.1 and nav.max() < 10:
         nav *= 1000
 
@@ -140,11 +161,13 @@ def calculate_metrics(df, start_date, end_date):
     # 1. 年化收益率（交易日）
     trading_days = len(nav)
     total_return = nav.iloc[-1] / nav.iloc[0] - 1
-    annual_return = (1 + total_return) ** (TRADING_DAYS_PER_YEAR / (trading_days - 1)) - 1 if trading_days > 1 else np.nan
+    # 确保分母 trading_days - 1 > 0
+    day_diff = trading_days - 1
+    annual_return = (1 + total_return) ** (TRADING_DAYS_PER_YEAR / day_diff) - 1 if day_diff > 0 else np.nan
 
     # 2. 年化波动率
     daily_returns = nav.pct_change().dropna()
-    annual_vol = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
+    annual_vol = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR) if len(daily_returns) > 0 else np.nan
 
     # 3. 最大回撤
     peak = nav.expanding().max()
@@ -152,7 +175,8 @@ def calculate_metrics(df, start_date, end_date):
     mdd = drawdown.min()
 
     # 4. 夏普比率
-    sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol > 1e-8 else np.nan
+    # 避免除以 0
+    sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol is not np.nan and annual_vol > 1e-8 else np.nan
 
     # 5. 滚动收益
     rolling = {}
@@ -184,8 +208,12 @@ def main():
     earliest_start = pd.to_datetime('1900-01-01')
     latest_end = pd.to_datetime('2200-01-01')
 
+    # 改进：先收集所有日期，再统一计算，避免重复读取
+    all_data_frames = {} 
+    
     for f in files:
         path = os.path.join(DATA_DIR, f)
+        code = f.replace('.csv', '')
         try:
             df = pd.read_csv(path, encoding='utf-8')
         except UnicodeDecodeError:
@@ -199,9 +227,14 @@ def main():
             df = df.rename(columns={nav_col: 'cumulative_net_value', date_col: 'date'})
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
             df = df.dropna(subset=['date', 'cumulative_net_value'])
+            
             if not df.empty:
                 earliest_start = max(earliest_start, df['date'].min())
                 latest_end = min(latest_end, df['date'].max())
+                all_data_frames[code] = df # 缓存数据框
+        else:
+            print(f"Warning: Missing date or NAV column in {f}. Skipping.")
+
 
     if latest_end <= earliest_start:
         print("Error: No valid common period.")
@@ -214,30 +247,18 @@ def main():
     results = []
     codes_to_fetch = []
 
-    for f in files:
-        code = f.replace('.csv', '')
-        path = os.path.join(DATA_DIR, f)
-        try:
-            df = pd.read_csv(path, encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, encoding='gbk')
-
-        df.columns = df.columns.str.strip().str.lower()
-        date_col = next((c for c in df.columns if '日期' in c or 'date' in c), None)
-        nav_col = next((c for c in df.columns if '累计净值' in c or 'cumulative_net_value' in c), None)
-
-        if date_col and nav_col:
-            df = df.rename(columns={nav_col: 'cumulative_net_value', date_col: 'date'})
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-            metrics = calculate_metrics(df, earliest_start, latest_end)
-            if metrics:
-                results.append({
-                    '基金代码': code,
-                    '起始日期': earliest_start.strftime('%Y-%m-%d'),
-                    '结束日期': latest_end.strftime('%Y-%m-%d'),
-                    **metrics
-                })
-                codes_to_fetch.append(code)
+    for code, df in all_data_frames.items():
+        metrics = calculate_metrics(df, earliest_start, latest_end)
+        if metrics:
+            results.append({
+                '基金代码': code,
+                '起始日期': earliest_start.strftime('%Y-%m-%d'),
+                '结束日期': latest_end.strftime('%Y-%m-%d'),
+                **metrics
+            })
+            codes_to_fetch.append(code)
+        else:
+            print(f"Warning: Could not calculate valid metrics for {code} in common period. Skipping.")
 
     if not results:
         print("Error: No valid metrics calculated.")
@@ -245,15 +266,17 @@ def main():
 
     summary_df = pd.DataFrame(results)
 
-    # 阶段 3: 爬取基本信息
-    print(f"\n--- Phase 3/3: Fetching Info for {len(codes_to_fetch)} Funds ---")
+    # 阶段 3: 爬取基本信息 (增加并发日志和更细致的错误处理)
+    print(f"\n--- Phase 3/3: Fetching Info for {len(codes_to_fetch)} Funds using {MAX_THREADS} threads ---")
+    
+    # 使用 set 来保证唯一性，虽然 codes_to_fetch 已经是唯一的
+    unique_codes = list(set(codes_to_fetch)) 
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        futures = {executor.submit(fetch_fund_info, code): code for code in codes_to_fetch}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Fetch failed: {e}")
+        # 使用 map 比 submit 更简洁，且能按提交顺序返回结果（但爬虫结果顺序不重要）
+        # 结果将被直接存储到 FUND_INFO_CACHE 中
+        list(executor.map(fetch_fund_info, unique_codes))
+
 
     # 整合信息
     info_list = [FUND_INFO_CACHE.get(code, {}) for code in summary_df['基金代码']]
@@ -262,6 +285,8 @@ def main():
         'type': '基金类型', 'daily_growth': '最新日涨跌幅',
         'net_value': '最新净值', 'rate': '管理费率'
     })
+    
+    # 确保合并时基于正确的代码列
     info_df['基金代码'] = info_df['基金代码_info'].fillna(summary_df['基金代码'])
     info_df = info_df.drop(columns=['基金代码_info'])
 
@@ -283,8 +308,16 @@ def main():
 
     # 插入分析期信息行
     period_info = f"所有基金共同分析期：{earliest_start.strftime('%Y-%m-%d')} 到 {latest_end.strftime('%Y-%m-%d')}"
-    info_row = pd.Series({'基金简称': period_info, '基金代码': '分析期信息'}, index=final_df.columns).to_frame().T
+    info_row_data = {'基金简称': period_info, '基金代码': '分析期信息'}
+    # 填充其他列为 NaN，然后转为字符串 'N/A'
+    info_row = pd.Series(info_row_data).reindex(final_df.columns).fillna('').to_frame().T
+    info_row['基金简称'] = period_info
+    info_row['基金代码'] = '分析期信息'
+
+    # 使用 .applymap(lambda x: x if x != '' else 'N/A') 可以在最终输出中避免空字符串
     final_output = pd.concat([info_row, final_df], ignore_index=True)
+    final_output = final_output.replace('', 'N/A')
+
 
     # 列顺序
     target_cols = [
@@ -294,13 +327,15 @@ def main():
         '平均滚动年化收益率(1周)', '平均滚动年化收益率(1月)', '平均滚动年化收益率(1季度)',
         '平均滚动年化收益率(半年)', '平均滚动年化收益率(1年)'
     ]
+    # 确保只保留存在的列
     final_output = final_output[[c for c in target_cols if c in final_output.columns]]
 
     # 输出
     final_output.to_csv(OUTPUT_FILE, index=False, encoding='utf_8_sig')
     print(f"\n--- Success ---\nResults saved to: {os.path.abspath(OUTPUT_FILE)}")
     print("\nTop Funds by Sharpe Ratio:")
-    print(final_output.head(10).to_string(index=False))
+    # 打印前 11 行（包含信息行）
+    print(final_output.head(11).to_string(index=False))
 
 
 if __name__ == '__main__':
