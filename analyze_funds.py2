@@ -29,53 +29,20 @@ USER_AGENTS = [
 MAX_RETRIES = 3 # 增加重试次数配置
 REQUEST_TIMEOUT = 20
 
-# --- 指标计算（不包含滚动收益）---
-def calculate_metrics(df, start_date, end_date):
-    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)].copy()
-    if len(df) < 2:
-        return None
+# --- 移除 ROLLING_PERIODS 配置 ---
+# ROLLING_PERIODS = {
+#     '1周': 5,
+#     '1月': 20,
+#     '1季度': 60,
+#     '半年': 125,
+#     '1年': 250
+# }
 
-    df = df.sort_values(by='date').reset_index(drop=True)
-    nav = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
+# --- 移除 calculate_rolling_returns 函数 ---
+# def calculate_rolling_returns(nav, period_days):
+#     ...
 
-    # 修复异常小净值（原逻辑不变）
-    if nav.min() < 0.1 and nav.max() < 10:
-        nav *= 1000
-
-    nav = nav.replace(0, np.nan).dropna()
-    if len(nav) < 2:
-        return None
-
-    df = df.loc[nav.index].copy()
-    nav = nav.reset_index(drop=True)
-
-    # 1. 年化收益率（交易日）
-    trading_days = len(nav)
-    total_return = nav.iloc[-1] / nav.iloc[0] - 1
-    day_diff = trading_days - 1
-    annual_return = (1 + total_return) ** (TRADING_DAYS_PER_YEAR / day_diff) - 1 if day_diff > 0 else np.nan
-
-    # 2. 年化波动率
-    daily_returns = nav.pct_change().dropna()
-    annual_vol = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR) if len(daily_returns) > 0 else np.nan
-
-    # 3. 最大回撤
-    peak = nav.expanding().max()
-    drawdown = nav / peak - 1
-    mdd = drawdown.min()
-
-    # 4. 夏普比率
-    sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol is not np.nan and annual_vol > 1e-8 else np.nan
-
-    return {
-        '共同期年化收益率': annual_return,
-        '共同期年化标准差': annual_vol,
-        '共同期最大回撤(MDD)': mdd,
-        '共同期夏普比率': sharpe,
-    }
-
-
-# --- 网络请求函数（增强健壮性，增加重试，并清理资产规模和费率）---
+# --- 网络请求函数（增强健壮性，增加重试，并清理资产规模）---
 def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
     if fund_code in FUND_INFO_CACHE:
         return FUND_INFO_CACHE[fund_code]
@@ -87,22 +54,21 @@ def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
         'type': 'N/A',
         'daily_growth': 'N/A',
         'net_value': 'N/A',
-        'rate': 'N/A', # 管理费率
-        'sales_rate': 'N/A', # 销售服务费率
-        'custody_rate': 'N/A' # 托管费率
+        'rate': 'N/A'
     }
 
     url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html'
     
     for attempt in range(max_retries):
         headers = {'User-Agent': random.choice(USER_AGENTS)}
+        # 增加休眠时间，以缓解反爬压力
         sleep_time = random.uniform(2.0, 4.0) 
         time.sleep(sleep_time)
         
         try:
             print(f"[{fund_code}] Fetching... (Attempt {attempt + 1}/{max_retries}, Sleep {sleep_time:.2f}s)")
             response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
+            response.raise_for_status() # 对 4xx/5xx 状态码抛出 HTTPError
             soup = BeautifulSoup(response.text, 'html.parser')
 
             # 1. 基金简称
@@ -131,56 +97,95 @@ def fetch_fund_info(fund_code, max_retries=MAX_RETRIES):
                     if type_td:
                         defaults['type'] = type_td.text.strip()
 
-                # 资产规模（清理）
+                # 资产规模（带日期）
                 size_th = info_table.find('th', string=re.compile(r'资产规模'))
                 if size_th:
                     size_td = size_th.find_next_sibling('td')
                     if size_td:
                         raw_size = size_td.text.strip().replace('\n', ' ').replace('\t', '')
+                        
+                        # 核心修改：使用正则表达式清理资产规模
                         match = re.search(r'([\d.]+)\s*([亿万]元)', raw_size)
                         if match:
-                            defaults['size'] = match.group(0)
+                            defaults['size'] = match.group(0) # 提取匹配到的金额和单位
                         else:
+                             # 如果正则匹配失败，至少保留原始的金额部分
                              defaults['size'] = raw_size.split('（')[0].strip() 
 
-                # 基金费率（管理费率、托管费率、销售服务费率）
-                
-                # 管理费率 (rate)
+                # 管理费率
                 rate_th = info_table.find('th', string=re.compile(r'管理费率'))
                 if rate_th:
                     rate_td = rate_th.find_next_sibling('td')
                     if rate_td:
                         defaults['rate'] = rate_td.text.strip()
-                
-                # 托管费率 (custody_rate)
-                custody_th = info_table.find('th', string=re.compile(r'托管费率'))
-                if custody_th:
-                    custody_td = custody_th.find_next_sibling('td')
-                    if custody_td:
-                        defaults['custody_rate'] = custody_td.text.strip()
-                        
-                # 销售服务费率 (sales_rate)
-                sales_th = info_table.find('th', string=re.compile(r'销售服务费率'))
-                if sales_th:
-                    sales_td = sales_th.find_next_sibling('td')
-                    if sales_td:
-                        defaults['sales_rate'] = sales_td.text.strip()
-
+            
             # 成功获取并返回
             FUND_INFO_CACHE[fund_code] = defaults
             return defaults
 
         except requests.exceptions.RequestException as e:
+            # 捕获所有 requests 错误（连接，超时，HTTP错误）
             print(f"[{fund_code}] Request failed: {e}. Retrying...")
             if attempt == max_retries - 1:
                  print(f"[{fund_code}] Max retries reached. Using default N/A values.")
         except Exception as e:
+            # 捕获其他如 BeautifulSoup 相关的错误
             print(f"[{fund_code}] Parsing failed: {e}. Retrying...")
             if attempt == max_retries - 1:
                  print(f"[{fund_code}] Max retries reached. Using default N/A values.")
 
     FUND_INFO_CACHE[fund_code] = defaults
     return defaults
+
+
+# --- 指标计算（移除滚动收益计算）---
+def calculate_metrics(df, start_date, end_date):
+    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)].copy()
+    if len(df) < 2:
+        return None
+
+    df = df.sort_values(by='date').reset_index(drop=True)
+    nav = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
+
+    # 修复异常小净值（原逻辑不变）
+    if nav.min() < 0.1 and nav.max() < 10:
+        nav *= 1000
+
+    nav = nav.replace(0, np.nan).dropna()
+    if len(nav) < 2:
+        return None
+
+    df = df.loc[nav.index].copy()
+    nav = nav.reset_index(drop=True)
+
+    # 1. 年化收益率（交易日）
+    trading_days = len(nav)
+    total_return = nav.iloc[-1] / nav.iloc[0] - 1
+    # 确保分母 trading_days - 1 > 0
+    day_diff = trading_days - 1
+    annual_return = (1 + total_return) ** (TRADING_DAYS_PER_YEAR / day_diff) - 1 if day_diff > 0 else np.nan
+
+    # 2. 年化波动率
+    daily_returns = nav.pct_change().dropna()
+    annual_vol = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR) if len(daily_returns) > 0 else np.nan
+
+    # 3. 最大回撤
+    peak = nav.expanding().max()
+    drawdown = nav / peak - 1
+    mdd = drawdown.min()
+
+    # 4. 夏普比率
+    # 避免除以 0
+    sharpe = (annual_return - RISK_FREE_RATE) / annual_vol if annual_vol is not np.nan and annual_vol > 1e-8 else np.nan
+
+    # 5. 滚动收益 (已移除)
+
+    return {
+        '共同期年化收益率': annual_return,
+        '共同期年化标准差': annual_vol,
+        '共同期最大回撤(MDD)': mdd,
+        '共同期夏普比率': sharpe,
+    }
 
 
 # --- 主函数 ---
@@ -221,7 +226,7 @@ def main():
             if not df.empty:
                 earliest_start = max(earliest_start, df['date'].min())
                 latest_end = min(latest_end, df['date'].max())
-                all_data_frames[code] = df
+                all_data_frames[code] = df # 缓存数据框
         else:
             print(f"Warning: Missing date or NAV column in {f}. Skipping.")
 
@@ -268,15 +273,9 @@ def main():
     # 整合信息
     info_list = [FUND_INFO_CACHE.get(code, {}) for code in summary_df['基金代码']]
     info_df = pd.DataFrame(info_list).rename(columns={
-        'code': '基金代码_info', 
-        'name': '基金简称', 
-        'size': '资产规模',
-        'type': '基金类型', 
-        'daily_growth': '最新日涨跌幅',
-        'net_value': '最新净值', 
-        'rate': '管理费率', # 保持原有管理费率
-        'sales_rate': '销售服务费率', # 新增
-        'custody_rate': '托管费率' # 新增
+        'code': '基金代码_info', 'name': '基金简称', 'size': '资产规模',
+        'type': '基金类型', 'daily_growth': '最新日涨跌幅',
+        'net_value': '最新净值', 'rate': '管理费率'
     })
     
     info_df['基金代码'] = info_df['基金代码_info'].fillna(summary_df['基金代码'])
@@ -300,10 +299,9 @@ def main():
     final_output = final_df.sort_values(by='共同期夏普比率_Num', ascending=False)
     final_output = final_output.drop(columns=['共同期夏普比率_Num']).reset_index(drop=True)
 
-    # 列顺序 (在 '管理费率' 后插入 '销售服务费率' 和 '托管费率')
+    # 列顺序 (已移除滚动收益列)
     target_cols = [
-        '基金代码', '基金简称', '资产规模', '基金类型', '最新日涨跌幅', '最新净值', 
-        '管理费率', '销售服务费率', '托管费率', # 新增费率字段
+        '基金代码', '基金简称', '资产规模', '基金类型', '最新日涨跌幅', '最新净值', '管理费率',
         '起始日期', '结束日期', '共同期年化收益率', '共同期年化标准差',
         '共同期最大回撤(MDD)', '共同期夏普比率'
     ]
