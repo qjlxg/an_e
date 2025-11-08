@@ -2,16 +2,18 @@ import pandas as pd
 import numpy as np
 import os
 import re
+# 导入 concurrent.futures 用于并行处理
+import concurrent.futures 
 from datetime import datetime, timedelta
-# 导入 requests 库进行网络请求
-# 请确保您的运行环境中已安装: pip install requests
 import requests 
 
 # --- 配置 ---
 DATA_DIR = 'fund_data'
 OUTPUT_FILE = 'fund_analysis_summary_with_info.csv'
-RISK_FREE_RATE = 0.02 # 假设无风险利率为 2.0% 
+RISK_FREE_RATE = 0.02 
 TRADING_DAYS_PER_YEAR = 250
+# 设定最大线程数，用于控制同时进行的网络请求数量，例如 10 个线程并行查询
+MAX_THREADS = 10 
 # --- 配置结束 ---
 
 # 定义滚动分析周期（以交易日近似）
@@ -30,15 +32,15 @@ FUND_INFO_CACHE = {}
 def fetch_fund_info_from_internet(fund_code):
     """
     根据基金代码从网络查找基金简称、最新净值和日涨跌幅。
-    此函数将向天天基金网发起实际的网络请求。
+    此函数现在由线程池并行调用。
     """
     if fund_code in FUND_INFO_CACHE:
-        return FUND_INFO_CACHE[fund_code]
+        # 如果缓存命中，则直接返回，避免不必要的网络请求
+        return fund_code, FUND_INFO_CACHE[fund_code]
 
-    # 1. 构造目标 URL (使用您提供的基金档案页面结构)
+    # 1. 构造目标 URL
     search_url = f"http://fundf10.eastmoney.com/jbgk_{fund_code}.html"
     headers = {
-        # 模拟浏览器访问，防止网站拒绝爬取
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Referer': 'http://fund.eastmoney.com/'
     }
@@ -49,31 +51,29 @@ def fetch_fund_info_from_internet(fund_code):
     daily_return = 'N/A'
 
     try:
-        # ** 执行实际的网络请求 **
         response = requests.get(search_url, headers=headers, timeout=10)
-        # 检查 HTTP 状态码，如果不是 200 则抛出异常
         response.raise_for_status() 
         response.encoding = 'utf-8'
         content = response.text
         
-        # 2. 基金简称提取 (精确匹配 "基金简称" 和 "基金代码" 之间的内容)
-        # 匹配 [\u4e00-\u9fa5A-Za-z0-9()] 等中英文字符和括号
+        # 2. 基金简称提取
         match_name = re.search(r'基金简称\s*([\u4e00-\u9fa5A-Za-z0-9()]+)基金代码', content)
         if match_name:
             fund_name = match_name.group(1).strip()
             
-        # 3. 最新净值和日涨跌幅提取 (匹配 "单位净值（日期）： 净值 ( 涨跌幅 )" 的格式)
-        # 匹配小数点、数字、加减号和百分号
+        # 3. 最新净值和日涨跌幅提取
         match_nav = re.search(r'单位净值.*?\s*([\d\.]+)\s*\(\s*([-\+\d\.]+%)\s*\)', content)
         
         if match_nav:
-            latest_nav = match_nav.group(1) # 例如: '1.2397'
-            daily_return = match_nav.group(2) # 例如: '-0.87%'
+            latest_nav = match_nav.group(1)
+            daily_return = match_nav.group(2)
             
     except requests.exceptions.RequestException as e:
-        print(f"网络请求错误，无法获取 {fund_code} 信息: {e}")
+        # print(f"网络请求错误，无法获取 {fund_code} 信息: {e}") # 在多线程环境中，打印会影响性能，可以省略或写入日志
+        pass
     except Exception as e:
-        print(f"数据解析错误，无法获取 {fund_code} 信息: {e}")
+        # print(f"数据解析错误，无法获取 {fund_code} 信息: {e}") 
+        pass
         
     # 4. 整合结果
     result = {
@@ -82,39 +82,34 @@ def fetch_fund_info_from_internet(fund_code):
         'daily_return': daily_return
     }
     
-    # 将结果存入缓存并返回
+    # 存储到缓存，并返回代码和信息（以便在主线程中对应结果）
     FUND_INFO_CACHE[fund_code] = result
-    return result
+    return fund_code, result
+
 
 # 以下辅助函数保持不变：
 def calculate_rolling_returns(cumulative_net_value, period_days):
     """计算指定周期（交易日）的平均滚动年化收益率"""
     
-    # 计算周期回报率 (Rolling Return)
     rolling_returns = (cumulative_net_value.pct_change(periods=period_days) + 1).pow(TRADING_DAYS_PER_YEAR / period_days) - 1
     
-    # 返回所有滚动回报率的平均值（平均滚动年化收益率）
     return rolling_returns.mean()
 
 def calculate_metrics(df, start_date, end_date):
     """计算基金的关键指标：年化收益、年化标准差、最大回撤、夏普比率和滚动收益"""
     
-    # 1. 筛选共同分析期数据
     df = df[(df['date'] >= start_date) & (df['date'] <= end_date)].sort_values(by='date')
     
     if df.empty or len(df) < 2:
         return None
 
-    # 确保累计净值是数值类型，并去除0值和缺失值
     cumulative_net_value = pd.to_numeric(df['cumulative_net_value'], errors='coerce').replace(0, np.nan).dropna()
     
     if len(cumulative_net_value) < 2:
           return None
 
-    # 2. 计算日收益率
     returns = cumulative_net_value.pct_change().dropna()
     
-    # 3. 长期指标
     total_days = (df['date'].iloc[-1] - df['date'].iloc[0]).days
     if total_days <= 0:
          return None
@@ -130,7 +125,6 @@ def calculate_metrics(df, start_date, end_date):
     drawdown = (cumulative_net_value / peak) - 1
     max_drawdown = drawdown.min()
 
-    # 4. 短期滚动收益指标
     rolling_results = {}
     for name, days in ROLLING_PERIODS.items():
         if len(cumulative_net_value) >= days:
@@ -139,7 +133,6 @@ def calculate_metrics(df, start_date, end_date):
         else:
              rolling_results[f'平均滚动年化收益率({name})'] = np.nan
     
-    # 5. 整合结果
     metrics = {
         '年化收益率(总)': annual_return,
         '年化标准差(总)': annual_volatility,
@@ -168,6 +161,8 @@ def main():
         return
         
     temp_dfs = {} 
+    fund_codes_to_fetch = [] # 存储所有需要查询的基金代码
+    
     for filename in file_list:
         filepath = os.path.join(DATA_DIR, filename)
         try:
@@ -184,6 +179,7 @@ def main():
                     earliest_start_date = max(earliest_start_date, valid_dates.min())
                     latest_end_date = min(latest_end_date, valid_dates.max())
                     temp_dfs[filename] = df
+                    fund_codes_to_fetch.append(filename.replace('.csv', '')) # 收集代码
             else:
                  print(f"警告：文件 {filename} 缺少必要的 'date' 或 'cumulative_net_value' 列，已跳过。")
         except Exception as e:
@@ -195,19 +191,42 @@ def main():
 
     print(f"确定共同分析期：{earliest_start_date.strftime('%Y-%m-%d')} 至 {latest_end_date.strftime('%Y-%m-%d')}")
     
-    # 第二步：计算所有基金的指标并获取最新信息
+    
+    # --- 关键修改：第二步：并行查找基金信息 ---
+    fund_info_map = {}
+    print(f"正在并行查询 {len(fund_codes_to_fetch)} 个基金的最新信息，最大线程数: {MAX_THREADS}...")
+    
+    # 创建线程池
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        # 提交所有查询任务
+        future_to_code = {executor.submit(fetch_fund_info_from_internet, code): code for code in fund_codes_to_fetch}
+        
+        # 收集结果
+        for future in concurrent.futures.as_completed(future_to_code):
+            try:
+                # future.result() 返回 fetch_fund_info_from_internet 的返回值 (fund_code, result)
+                fund_code, info = future.result()
+                fund_info_map[fund_code] = info
+            except Exception as exc:
+                code = future_to_code[future]
+                print(f"基金 {code} 的信息查询发生异常: {exc}")
+
+    # --- 并行查找结束 ---
+
+    
+    # 第三步：计算指标并整合结果
     results = []
     
+    # 遍历已加载的 DataFrame 进行计算和结果整合
     for filename, df in temp_dfs.items():
         fund_code = filename.replace('.csv', '')
         
-        # --- 自动查找基金信息（现在是真正的网络请求） ---
-        print(f"正在查询基金代码 {fund_code} 的最新信息...")
-        fund_info = fetch_fund_info_from_internet(fund_code)
+        # 从并行查询的结果中获取信息
+        fund_info = fund_info_map.get(fund_code, {'name': f"名称({fund_code})", 'latest_nav': 'N/A', 'daily_return': 'N/A'})
+        
         fund_name = fund_info['name']
         latest_nav = fund_info['latest_nav']
         daily_return = fund_info['daily_return']
-        # --- 查找结束 ---
         
         try:
             metrics = calculate_metrics(df, earliest_start_date, latest_end_date)
@@ -225,14 +244,14 @@ def main():
         except Exception as e:
             print(f"计算文件 {filename} 的指标时发生错误: {e}")
             
-    # 第三步：生成统计表和分析总结
+    # 第四步：生成统计表和分析总结
     if not results:
         print("没有成功计算出任何基金的指标。")
         return
         
     summary_df = pd.DataFrame(results)
     
-    # 调整列的顺序
+    # 调整列的顺序和格式化 (逻辑不变)
     cols = summary_df.columns.tolist()
     new_cols_order = ['基金代码', '基金简称', '最新单位净值', '日涨跌幅', '起始日期', '结束日期', 
                       '年化收益率(总)', '年化标准差(总)', '最大回撤(MDD)', '夏普比率(总)']
@@ -242,7 +261,6 @@ def main():
 
     summary_df = summary_df.reindex(columns=final_cols_order)
     
-    # 格式化和排序
     summary_df['夏普比率(总)_Num'] = pd.to_numeric(summary_df['夏普比率(总)'], errors='coerce') 
     
     for col in summary_df.columns:
@@ -254,7 +272,6 @@ def main():
     summary_df = summary_df.sort_values(by='夏普比率(总)_Num', ascending=False)
     summary_df = summary_df.drop(columns=['夏普比率(总)_Num'])
     
-    # 将结果保存到 CSV
     summary_df.to_csv(OUTPUT_FILE, index=False, encoding='utf-8')
     print(f"\n--- 分析完成 ---\n结果已保存到 {OUTPUT_FILE}")
     print("\n按夏普比率排名的分析摘要（包含最新净值信息）：")
