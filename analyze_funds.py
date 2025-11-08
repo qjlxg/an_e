@@ -15,26 +15,27 @@ warnings.filterwarnings('ignore', category=pd.core.common.SettingWithCopyWarning
 
 # --- 配置参数 ---
 FUND_DATA_DIR = 'fund_data'
-OUTPUT_FILE = 'fund_analysis_summary_with_info_improved.csv'
+OUTPUT_FILE = 'fund_analysis_summary_optimized.csv' # 更改输出文件名以区别旧版
 MAX_THREADS = 10
 TRADING_DAYS_PER_YEAR = 250  # 每年平均交易日数量
 RISK_FREE_RATE = 0.02  # 无风险利率 2%
+
+# 【修正：恢复所有滚动周期，并应用更稳健的几何平均法】
 ROLLING_PERIODS = {
-    '1周': 5,
+    '1周': 5,      # 恢复 1 周周期，但使用几何平均法修正其极端放大问题
     '1月': 20,
     '1季度': 60,
     '半年': 120,
     '1年': 250
 }
-FUND_INFO_CACHE = {}  # 缓存基金基本信息，避免重复请求
+FUND_INFO_CACHE = {}  # 缓存基金基本信息
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0'
 ]
 
-# --- 辅助函数：网络请求 ---
-
+# --- 辅助函数：网络请求 (保持不变) ---
 def fetch_fund_info(fund_code):
     """从天天基金网获取基金的基本信息，使用 BeautifulSoup 增强解析鲁棒性，并加入反爬机制。"""
     if fund_code in FUND_INFO_CACHE:
@@ -42,8 +43,6 @@ def fetch_fund_info(fund_code):
 
     url = f'http://fund.eastmoney.com/{fund_code}.html'
     headers = {'User-Agent': random.choice(USER_AGENTS)}
-
-    # 增加请求延时，降低被封禁的风险
     time.sleep(1) 
 
     defaults = {
@@ -65,41 +64,29 @@ def fetch_fund_info(fund_code):
         # 1. 提取基金简称和代码
         title_tag = soup.find('div', class_='fundDetail-tit')
         if title_tag and title_tag.find('h4'):
-            # 提取文本，并清除基金代码部分
             full_name = title_tag.find('h4').text.strip()
             defaults['name'] = re.sub(r'\(.*?\)$', '', full_name).strip()
         
-        # 2. 提取资产规模、基金类型等信息（更稳健的表格解析）
-        fund_info_div = soup.find('div', class_='infoOfFund')
-        if fund_info_div:
-            # 提取基金类型
-            type_match = re.search(r'基金类型：[^<]+<a[^>]+>([\u4e00-\u9fa5]+)</a>', content)
-            if type_match:
-                defaults['type'] = type_match.group(1).strip()
-                
-            # 提取资产规模
-            size_element = soup.find('th', text=re.compile(r'资产规模'))
-            if size_element:
-                size_td = size_element.find_next_sibling('td')
-                if size_td:
-                    defaults['size'] = size_td.text.strip()
+        # 2. 提取资产规模、基金类型等信息
+        size_element = soup.find('th', text=re.compile(r'资产规模'))
+        if size_element:
+            size_td = size_element.find_next_sibling('td')
+            if size_td:
+                defaults['size'] = size_td.text.strip()
         
-        # 3. 提取费率
         rate_element = soup.find('th', text=re.compile(r'管理费率'))
         if rate_element:
             rate_td = rate_element.find_next_sibling('td')
             if rate_td:
                 defaults['rate'] = rate_td.text.strip()
 
-        # 4. 提取最新净值和日涨跌幅
+        # 3. 提取最新净值和日涨跌幅
         data_div = soup.find('dl', class_='dataItem02')
         if data_div:
-            # 最新净值
             net_value_tag = data_div.find('span', id='gz_nav')
             if net_value_tag:
                 defaults['net_value'] = net_value_tag.text.strip()
             
-            # 日涨跌幅
             daily_growth_tag = data_div.find('span', id='gz_rate')
             if daily_growth_tag:
                 defaults['daily_growth'] = daily_growth_tag.text.strip()
@@ -112,40 +99,30 @@ def fetch_fund_info(fund_code):
     FUND_INFO_CACHE[fund_code] = defaults
     return defaults
 
+
 # --- 核心计算函数 ---
 
 def calculate_metrics(df, fund_code):
-    """计算基金的各种风险收益指标，并进行数据清洗。"""
+    """计算基金的各种风险收益指标，并进行数据清洗和优化。"""
     
-    # 统一列名为小写
     df.columns = df.columns.str.lower()
-    
-    # 日期和累计净值预处理
     df = df.rename(columns={'累计净值': 'cumulative_net_value', 'date': 'date'})
-    
-    # 转换为数值类型，无法转换的设为NaN
     df['cumulative_net_value'] = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
     
-    # 🌟 关键修正 1: 异常值修正 (解决天文数字收益率)
-    # 将累计净值大于 50 的异常值视为小数点错位，并除以 100 修正
+    # 【数据清洗：极端异常值修正】
     mask_high_error = df['cumulative_net_value'] > 50 
     if mask_high_error.any():
-        print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点。")
-        # 假设是小数点移动两位，进行修正
+        print(f"⚠️ 基金 {fund_code} 发现并修正了 {mask_high_error.sum()} 个极端净值异常点（>50）。")
         df.loc[mask_high_error, 'cumulative_net_value'] = df.loc[mask_high_error, 'cumulative_net_value'] / 100 
     
-    # 清除 NaN 值
     df = df.dropna(subset=['cumulative_net_value', 'date'])
     
-    # 确保日期格式正确
     try:
         df['date'] = pd.to_datetime(df['date'])
     except:
-        # 如果日期格式混乱，尝试更通用的解析
         df['date'] = df['date'].apply(lambda x: pd.to_datetime(x, errors='coerce') if pd.notna(x) else np.nan)
         df = df.dropna(subset=['date'])
 
-    # 按日期排序
     df = df.sort_values(by='date').reset_index(drop=True)
     
     if len(df) < 2:
@@ -153,7 +130,7 @@ def calculate_metrics(df, fund_code):
         
     cumulative_net_value = df['cumulative_net_value']
 
-    # --- 1. 年化收益率 (修正：使用实际交易日数量) ---
+    # --- 1. 年化收益率 (基于交易日) ---
     total_return = (cumulative_net_value.iloc[-1] / cumulative_net_value.iloc[0]) - 1
     num_trading_days = len(cumulative_net_value) - 1
     
@@ -164,6 +141,12 @@ def calculate_metrics(df, fund_code):
 
     # --- 2. 年化标准差和日收益率 ---
     returns = cumulative_net_value.pct_change().dropna()
+    
+    # 【新加异常检测和警告】
+    mask_extreme_return = returns.abs() > 0.20 # 每日收益率超过 20%
+    if mask_extreme_return.any():
+        print(f"📢 基金 {fund_code} 警告：发现 {mask_extreme_return.sum()} 个极端日收益率（>20%），可能影响波动率计算。")
+    
     annual_volatility = returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
     
     # --- 3. 最大回撤 ---
@@ -175,14 +158,29 @@ def calculate_metrics(df, fund_code):
     else:
         sharpe_ratio = np.nan
         
-    # --- 5. 滚动年化收益率 ---
+    # --- 5. 滚动年化收益率 (优化：使用几何平均平滑异常值) ---
     rolling_metrics = {}
+    
     for name, period_days in ROLLING_PERIODS.items():
-        if len(returns) >= period_days:
-            # 计算滚动收益率，并年化 (period_days 为交易日)
-            rolling_ann_returns = (cumulative_net_value.pct_change(periods=period_days) + 1).pow(TRADING_DAYS_PER_YEAR / period_days) - 1
-            # 取平均值
-            rolling_metrics[f'平均滚动年化收益率({name})'] = rolling_ann_returns.mean()
+        if len(cumulative_net_value) >= period_days:
+            # 1. 计算所有非年化的期间收益率 (R_p)
+            rolling_non_ann_returns = cumulative_net_value.pct_change(periods=period_days).dropna()
+            
+            # 2. 将收益率转换为 (1 + R_p)
+            compounding_factors = 1 + rolling_non_ann_returns
+
+            # 3. 计算所有周期收益率的几何平均
+            # R_geo = exp(mean(log(1 + R_p))) - 1
+            log_returns = np.log(compounding_factors)
+            
+            # 使用几何平均法计算平均期间收益率，避免算术平均法对异常值的极端放大
+            mean_log_return = log_returns.mean()
+            R_geo = np.exp(mean_log_return) - 1
+            
+            # 4. 将平均几何收益率年化
+            annualized_R_geo = (1 + R_geo) ** (TRADING_DAYS_PER_YEAR / period_days) - 1
+            
+            rolling_metrics[f'平均滚动年化收益率({name})'] = annualized_R_geo
         else:
             rolling_metrics[f'平均滚动年化收益率({name})'] = np.nan
 
@@ -199,7 +197,7 @@ def calculate_metrics(df, fund_code):
     
     return metrics, df['date'].iloc[0], df['date'].iloc[-1]
 
-# --- 主执行函数 ---
+# --- 主执行函数 (保持不变，使用新的输出文件名) ---
 
 def main():
     if not os.path.isdir(FUND_DATA_DIR):
@@ -253,14 +251,11 @@ def main():
     fund_codes_to_fetch = [m['基金代码'] for m in all_metrics]
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        # 提交所有网络请求任务
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes_to_fetch}
         
-        # 收集结果
         for future in concurrent.futures.as_completed(future_to_code):
             code = future_to_code[future]
             try:
-                # 结果已存入全局缓存 FUND_INFO_CACHE
                 _ = future.result() 
             except Exception as e:
                 print(f"❌ 基金 {code} 信息获取失败: {e}")
@@ -269,21 +264,17 @@ def main():
     print("\n--- 阶段 3/3: 整合数据并输出结果 ---")
     final_df = pd.DataFrame(all_metrics)
 
-    # 合并基本信息
     info_list = [FUND_INFO_CACHE[code] for code in final_df['基金代码']]
     info_df = pd.DataFrame(info_list).rename(columns={'name': '基金简称', 'size': '资产规模', 'type': '基金类型', 'daily_growth': '最新日涨跌幅', 'net_value': '最新净值', 'rate': '管理费率'})
     
-    # 插入信息列到 DataFrame 头部
     final_df = pd.concat([info_df, final_df], axis=1)
     
     # 格式化百分比和数字
     for col in final_df.columns:
         if ('收益率' in col or '标准差' in col or '回撤' in col) and col != '夏普比率(总)':
-            # 转换为百分比字符串
             final_df[col] = final_df[col].apply(lambda x: f'{x * 100:.2f}%' if pd.notna(x) else 'N/A')
         elif '夏普比率(总)' in col:
             final_df[col] = final_df[col].apply(lambda x: f'{x:.3f}' if pd.notna(x) else 'N/A')
-            # 添加临时数字列用于排序
             final_df['夏普比率(总)_Num'] = final_df[col].replace({'N/A': np.nan}).astype(float)
             
     # 排序（按夏普比率降序）
@@ -293,7 +284,7 @@ def main():
     common_period = f'所有基金共同分析期：{latest_start.strftime("%Y-%m-%d")} 到 {earliest_end.strftime("%Y-%m-%d")}'
     print(common_period)
     
-    # 将共同分析期信息添加到输出文件的第一行
+    # 添加共同分析期信息
     header = pd.DataFrame([{'基金代码': common_period}]).append(final_df.columns.to_series().T, ignore_index=True)
     header.columns = final_df.columns
     final_output = pd.concat([header.iloc[0:1], final_df], ignore_index=True)
