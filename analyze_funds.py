@@ -18,7 +18,7 @@ except AttributeError:
 
 # --- 配置参数 ---
 FUND_DATA_DIR = 'fund_data'
-OUTPUT_FILE = 'fund_analysis_summary_common_period.csv' 
+OUTPUT_FILE = 'fund_analysis_summary_final.csv' # 更改输出文件名以避免与旧文件混淆
 MAX_THREADS = 10
 TRADING_DAYS_PER_YEAR = 250  # 每年平均交易日数量
 RISK_FREE_RATE = 0.02  # 无风险利率 2%
@@ -39,7 +39,10 @@ USER_AGENTS = [
 
 # --- 辅助函数：网络请求 (增强鲁棒性版本) ---
 def fetch_fund_info(fund_code):
-    """从天天基金网获取基金的基本信息，增强反爬机制和解析精度。"""
+    """
+    从天天基金网获取基金的基本信息。
+    本次修改：大幅增加随机延迟的下限到 4-6 秒，确保爬取成功率。
+    """
     global FUND_INFO_CACHE, USER_AGENTS 
     
     if fund_code in FUND_INFO_CACHE:
@@ -48,10 +51,11 @@ def fetch_fund_info(fund_code):
     url = f'http://fundf10.eastmoney.com/jbgk_{fund_code}.html' 
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     
-    # 增加随机延迟，避免被服务器拒绝
-    time.sleep(random.uniform(2, 4)) 
+    # 增加随机延迟 (4-6秒)，确保爬取成功率
+    time.sleep(random.uniform(4, 6)) 
 
     defaults = {
+        'code': fund_code, # 明确存储基金代码
         'name': f'名称查找失败({fund_code})', 
         'size': 'N/A', 
         'type': 'N/A', 
@@ -119,23 +123,19 @@ def fetch_fund_info(fund_code):
 
 
 def clean_and_prepare_df(df, fund_code):
-    """数据清洗和预处理，返回清理后的DataFrame和其有效起止日期。
+    """数据清洗和预处理，修复了列名匹配问题。"""
     
-    修复了列名匹配问题，使其能兼容中文和英文小写。
-    """
+    # 将列名统一处理为小写并去除空格
     df.columns = df.columns.astype(str).str.strip().str.lower()
-    
-    # --- 修复后的列名识别逻辑 ---
     
     # 识别日期列 (兼容 '日期' / 'date')
     date_col = next((col for col in df.columns if '日期' in col or 'date' in col), None)
     
-    # 识别累计净值列 (兼容 '累计净值' / 'cumulative_net_value')
-    # 优先查找包含 '累计净值' 中文或 'cumulative_net_value' 英文小写的列
+    # 识别累计净值列 (兼容 '累计净值' 中文 或 'cumulative_net_value' 英文小写)
     net_value_col = next((col for col in df.columns if '累计净值' in col or 'cumulative_net_value' in col), None)
 
     if not date_col or not net_value_col:
-        print(f"❌ 基金 {fund_code} 找不到必须的 '日期' 或 '累计净值' 列。")
+        print(f"❌ 基金 {fund_code} 找不到必须的 '日期' 或 '累计净值' 列。请检查CSV文件中的列名。")
         return None, None, None
         
     df = df.rename(columns={net_value_col: 'cumulative_net_value', date_col: 'date'})
@@ -181,9 +181,7 @@ def calculate_metrics(df, fund_code, period_prefix=''):
     """计算基金的各种风险收益指标。"""
     global EPSILON
     
-    # 用于共同期计算失败的占位符
     if df is None or len(df) < 2:
-        # 构造包含 NaN 的字典
         metrics = {'基金代码': fund_code}
         for col in ['起始日期', '结束日期', '年化收益率', '年化标准差', '最大回撤(MDD)', '夏普比率'] + [f'平均滚动年化收益率({p})' for p in ROLLING_PERIODS]:
             metrics[f'{period_prefix}{col}'] = np.nan
@@ -351,46 +349,63 @@ def main():
     print(f"\n--- 阶段 3/3: 多线程获取 {len(fund_codes_to_fetch)} 支基金的基本信息 ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        # 提交爬取任务
         future_to_code = {executor.submit(fetch_fund_info, code): code for code in fund_codes_to_fetch}
-        # 等待所有爬取任务完成
-        _ = [future.result() for future in concurrent.futures.as_completed(future_to_code)]
+        # 等待所有爬取任务完成，并保证即使失败也不中断
+        for future in concurrent.futures.as_completed(future_to_code):
+            try:
+                future.result()
+            except Exception as exc:
+                code = future_to_code[future]
+                print(f"爬取基金 {code} 时发生异常: {exc}")
 
     # 阶段 4: 整合和输出
     print("\n--- 阶段 4/4: 整合数据并输出结果 ---")
 
     # 从缓存中获取基金信息并整合
-    info_list = [FUND_INFO_CACHE[code] for code in final_metrics_df['基金代码']]
+    info_list = [FUND_INFO_CACHE.get(code, {}) for code in final_metrics_df['基金代码']]
     info_df = pd.DataFrame(info_list).rename(columns={
-        'name': '基金简称', 'size': '资产规模', 'type': '基金类型', 
-        'daily_growth': '最新日涨跌幅', 'net_value': '最新净值', 'rate': '管理费率'
+        'code': '基金代码_info', # 临时重命名，避免冲突
+        'name': '基金简称', 
+        'size': '资产规模', 
+        'type': '基金类型', 
+        'daily_growth': '最新日涨跌幅', 
+        'net_value': '最新净值', 
+        'rate': '管理费率'
     })
     
+    # 合并基金代码列（以分析结果中的为准，但确保info中的代码列存在）
+    info_df['基金代码'] = info_df['基金代码_info'].fillna(final_metrics_df['基金代码'])
+    info_df = info_df.drop(columns=['基金代码_info'])
+    
     # 重置索引并拼接
-    info_df.index = final_metrics_df.index
-    final_df = pd.concat([info_df, final_metrics_df], axis=1)
+    final_metrics_df.index = info_df.index
+    # 排除 final_metrics_df 中已有的 '基金代码'，使用 info_df 中的
+    final_df = pd.concat([info_df, final_metrics_df.drop(columns=['基金代码'])], axis=1)
     
     # 格式化百分比和数字
-    sharpe_col_candidates = [col for col in final_df.columns if '夏普比率' in col]
-    sharpe_col = sharpe_col_candidates[0] if sharpe_col_candidates else None
+    prefix = '共同期' if any('共同期年化收益率' in col for col in final_df.columns) else '全历史'
+    sharpe_col = f'{prefix}夏普比率'
     
-    if sharpe_col:
+    if sharpe_col in final_df.columns:
         
-        # 创建一个用于排序的临时数字列，基于共同期/全历史的夏普比率
-        final_df[f'{sharpe_col}_Num'] = final_df[sharpe_col].replace({'N/A': np.nan}).astype(float)
+        # 创建一个用于排序的临时数字列
+        final_df[f'{sharpe_col}_Num'] = pd.to_numeric(final_df[sharpe_col], errors='coerce')
         
         for col in final_df.columns:
             if ('收益率' in col or '标准差' in col or '回撤' in col) and col != sharpe_col:
                 def format_pct(x):
                     if pd.isna(x) or np.isinf(x):
                         return 'N/A'
-                    return f'{x * 100:.2f}%'
-                final_df[col] = final_df[col].apply(format_pct)
-            elif sharpe_col in col:
+                    return f'{float(x) * 100:.2f}%'
+                # 先转为 float 再格式化
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce').apply(format_pct)
+            elif sharpe_col in col and col != f'{sharpe_col}_Num':
                 def format_sharpe(x):
                     if pd.isna(x) or np.isinf(x):
                         return 'N/A'
-                    return f'{x:.3f}'
-                final_df[col] = final_df[col].apply(format_sharpe)
+                    return f'{float(x):.3f}'
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce').apply(format_sharpe)
             
         # 排序（按共同期/全历史夏普比率降序）
         final_df = final_df.sort_values(by=f'{sharpe_col}_Num', ascending=False).drop(columns=[f'{sharpe_col}_Num']).reset_index(drop=True)
@@ -403,8 +418,8 @@ def main():
     
     final_output = pd.concat([period_info_row, final_df], ignore_index=True)
     
-    # 确保列顺序正确 (将 '基金代码' 和 '基金简称' 提前)
-    prefix = '共同期' if '共同期年化收益率' in final_output.columns else '全历史'
+    # --- 最终列顺序调整 (确保 基金代码 在第一列) ---
+    
     target_columns = [
         '基金代码', '基金简称', '资产规模', '基金类型', '最新日涨跌幅', '最新净值', 
         '管理费率', f'{prefix}起始日期', f'{prefix}结束日期', 
