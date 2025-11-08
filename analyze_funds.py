@@ -15,14 +15,13 @@ warnings.filterwarnings('ignore', category=pd.core.common.SettingWithCopyWarning
 
 # --- 配置参数 ---
 FUND_DATA_DIR = 'fund_data'
-OUTPUT_FILE = 'fund_analysis_summary_optimized.csv' # 更改输出文件名以区别旧版
+OUTPUT_FILE = 'fund_analysis_summary_optimized.csv' 
 MAX_THREADS = 10
 TRADING_DAYS_PER_YEAR = 250  # 每年平均交易日数量
 RISK_FREE_RATE = 0.02  # 无风险利率 2%
 
-# 【修正：恢复所有滚动周期，并应用更稳健的几何平均法】
+# 【核心修正：取消 1 周周期】
 ROLLING_PERIODS = {
-    '1周': 5,      # 恢复 1 周周期，但使用几何平均法修正其极端放大问题
     '1月': 20,
     '1季度': 60,
     '半年': 120,
@@ -100,7 +99,7 @@ def fetch_fund_info(fund_code):
     return defaults
 
 
-# --- 核心计算函数 ---
+# --- 核心计算函数 (仅修改滚动收益率部分) ---
 
 def calculate_metrics(df, fund_code):
     """计算基金的各种风险收益指标，并进行数据清洗和优化。"""
@@ -158,7 +157,7 @@ def calculate_metrics(df, fund_code):
     else:
         sharpe_ratio = np.nan
         
-    # --- 5. 滚动年化收益率 (优化：使用几何平均平滑异常值) ---
+    # --- 5. 滚动年化收益率 (使用几何平均平滑异常值) ---
     rolling_metrics = {}
     
     for name, period_days in ROLLING_PERIODS.items():
@@ -170,10 +169,7 @@ def calculate_metrics(df, fund_code):
             compounding_factors = 1 + rolling_non_ann_returns
 
             # 3. 计算所有周期收益率的几何平均
-            # R_geo = exp(mean(log(1 + R_p))) - 1
             log_returns = np.log(compounding_factors)
-            
-            # 使用几何平均法计算平均期间收益率，避免算术平均法对异常值的极端放大
             mean_log_return = log_returns.mean()
             R_geo = np.exp(mean_log_return) - 1
             
@@ -197,7 +193,7 @@ def calculate_metrics(df, fund_code):
     
     return metrics, df['date'].iloc[0], df['date'].iloc[-1]
 
-# --- 主执行函数 (保持不变，使用新的输出文件名) ---
+# --- 主执行函数 (保持不变) ---
 
 def main():
     if not os.path.isdir(FUND_DATA_DIR):
