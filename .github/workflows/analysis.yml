@@ -13,8 +13,8 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  # 【已更新，与Python脚本中的新文件名保持一致】
-  OUTPUT_FILE: fund_analysis_summary_with_info_improved.csv 
+  # 【核心修正：确保此文件名与 Python 脚本中的 'OUTPUT_FILE' 变量完全一致】
+  OUTPUT_FILE: fund_analysis_summary_optimized.csv 
 
 jobs:
   analyze_and_push:
@@ -32,12 +32,11 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  # 保持 Python 版本不变
+          python-version: '3.12' 
           
       # 步骤 3: 安装依赖
-      # 【已更新，新增 beautifulsoup4】
+      # 完整的依赖列表：pandas, numpy, requests, beautifulsoup4
       - name: ⚙️ Install Dependencies (Pandas, NumPy, Requests, BeautifulSoup)
-        # 完整的依赖列表：pandas, numpy, requests, beautifulsoup4
         run: pip install pandas numpy requests beautifulsoup4
         
       # 步骤 4: 执行分析脚本
