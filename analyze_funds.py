@@ -147,7 +147,6 @@ def calculate_metrics(df, start_date, end_date):
     nav = pd.to_numeric(df['cumulative_net_value'], errors='coerce')
 
     # 修复异常小净值（原逻辑不变）
-    # 注意：此逻辑可能误伤低净值债券基金，但保留用户原始功能
     if nav.min() < 0.1 and nav.max() < 10:
         nav *= 1000
 
@@ -208,7 +207,6 @@ def main():
     earliest_start = pd.to_datetime('1900-01-01')
     latest_end = pd.to_datetime('2200-01-01')
 
-    # 改进：先收集所有日期，再统一计算，避免重复读取
     all_data_frames = {} 
     
     for f in files:
@@ -269,12 +267,9 @@ def main():
     # 阶段 3: 爬取基本信息 (增加并发日志和更细致的错误处理)
     print(f"\n--- Phase 3/3: Fetching Info for {len(codes_to_fetch)} Funds using {MAX_THREADS} threads ---")
     
-    # 使用 set 来保证唯一性，虽然 codes_to_fetch 已经是唯一的
     unique_codes = list(set(codes_to_fetch)) 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        # 使用 map 比 submit 更简洁，且能按提交顺序返回结果（但爬虫结果顺序不重要）
-        # 结果将被直接存储到 FUND_INFO_CACHE 中
         list(executor.map(fetch_fund_info, unique_codes))
 
 
@@ -286,11 +281,11 @@ def main():
         'net_value': '最新净值', 'rate': '管理费率'
     })
     
-    # 确保合并时基于正确的代码列
     info_df['基金代码'] = info_df['基金代码_info'].fillna(summary_df['基金代码'])
     info_df = info_df.drop(columns=['基金代码_info'])
 
     summary_df.index = info_df.index
+    # 最终结果 DataFrame
     final_df = pd.concat([info_df, summary_df.drop(columns=['基金代码'])], axis=1)
 
     # 格式化
@@ -303,21 +298,13 @@ def main():
             final_df[col] = pd.to_numeric(final_df[col], errors='coerce').apply(
                 lambda x: f"{x:.3f}" if pd.notna(x) and not np.isinf(x) else 'N/A')
 
+    # 排序
     final_df = final_df.sort_values(by='共同期夏普比率_Num', ascending=False)
     final_df = final_df.drop(columns=['共同期夏普比率_Num']).reset_index(drop=True)
 
-    # 插入分析期信息行
-    period_info = f"所有基金共同分析期：{earliest_start.strftime('%Y-%m-%d')} 到 {latest_end.strftime('%Y-%m-%d')}"
-    info_row_data = {'基金简称': period_info, '基金代码': '分析期信息'}
-    # 填充其他列为 NaN，然后转为字符串 'N/A'
-    info_row = pd.Series(info_row_data).reindex(final_df.columns).fillna('').to_frame().T
-    info_row['基金简称'] = period_info
-    info_row['基金代码'] = '分析期信息'
-
-    # 使用 .applymap(lambda x: x if x != '' else 'N/A') 可以在最终输出中避免空字符串
-    final_output = pd.concat([info_row, final_df], ignore_index=True)
-    final_output = final_output.replace('', 'N/A')
-
+    # *** 核心修改点：删除插入信息行的逻辑 ***
+    # final_output = final_df (直接使用排序后的 df)
+    final_output = final_df 
 
     # 列顺序
     target_cols = [
@@ -334,8 +321,8 @@ def main():
     final_output.to_csv(OUTPUT_FILE, index=False, encoding='utf_8_sig')
     print(f"\n--- Success ---\nResults saved to: {os.path.abspath(OUTPUT_FILE)}")
     print("\nTop Funds by Sharpe Ratio:")
-    # 打印前 11 行（包含信息行）
-    print(final_output.head(11).to_string(index=False))
+    # 打印前 10 行基金数据
+    print(final_output.head(10).to_string(index=False))
 
 
 if __name__ == '__main__':
