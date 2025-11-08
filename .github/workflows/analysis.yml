@@ -13,15 +13,15 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  # 【更新 1：更改输出文件名以匹配 Python 脚本】
-  OUTPUT_FILE: fund_analysis_summary_with_info.csv 
+  # 【已更新，与Python脚本中的新文件名保持一致】
+  OUTPUT_FILE: fund_analysis_summary_with_info_improved.csv 
 
 jobs:
   analyze_and_push:
     runs-on: ubuntu-latest
     
     steps:
-    
+      
       # 步骤 1: 检出代码
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
@@ -32,15 +32,17 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  
+          python-version: '3.12'  # 保持 Python 版本不变
           
       # 步骤 3: 安装依赖
-      # 【更新 2：新增 requests 库】
-      - name: ⚙️ Install Dependencies (Pandas, NumPy, Requests)
-        run: pip install pandas numpy requests
+      # 【已更新，新增 beautifulsoup4】
+      - name: ⚙️ Install Dependencies (Pandas, NumPy, Requests, BeautifulSoup)
+        # 完整的依赖列表：pandas, numpy, requests, beautifulsoup4
+        run: pip install pandas numpy requests beautifulsoup4
         
       # 步骤 4: 执行分析脚本
       - name: 📈 Run Fund Analysis Script
+        # 确保您的 Python 脚本文件名是 analyze_funds.py
         run: python analyze_funds.py
         
       # 步骤 5: 提交并推送结果到仓库
@@ -57,7 +59,7 @@ jobs:
             
             # 检查是否有待提交的更改
             if git status --porcelain | grep -q ${{ env.OUTPUT_FILE }}; then
-              git commit -m "Auto: Update fund analysis summary with new metrics (Shanghai Time) [skip ci]"
+              git commit -m "Auto: Update fund analysis summary (Data Cleansing & Fixes Applied) [skip ci]"
               # 推送到仓库
               git push
               echo "Successfully pushed updated analysis summary."
