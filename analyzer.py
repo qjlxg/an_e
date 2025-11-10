@@ -11,12 +11,12 @@ import math
 FUND_DATA_DIR = 'fund_data'
 MIN_CONSECUTIVE_DROP_DAYS = 3
 MIN_MONTH_DRAWDOWN = 0.06
-HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10 # 高弹性策略的基础回撤要求 (10%)
-MIN_DAILY_DROP_PERCENT = 0.03 # 当日大跌的定义 (3%)
+HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
+MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report'
 
 # --- 核心阈值调整 (完整保留) --
-EXTREME_RSI_THRESHOLD_P1 = 29.0
+EXTREME_RSI_THRESHOLD_P1 = 29.0 
 STRONG_RSI_THRESHOLD_P2 = 35.0
 
 # --- 设置日志 (函数配置 1/13) ---
@@ -73,8 +73,8 @@ def calculate_bollinger_bands(series, window=20):
         # 归一化位置
         range_band = latest_upper - latest_lower
         if range_band == 0:
-            return "轨道中间" 
-            
+             return "轨道中间" 
+             
         position = (latest_value - latest_lower) / range_band
         if position < 0.2:
             return "下轨附近"
@@ -99,7 +99,7 @@ def calculate_technical_indicators(df):
                 '净值/MA250': np.nan, 'MA50/MA250': np.nan, 
                 'MA50/MA250趋势': '数据不足',
                 '布林带位置': '数据不足', '最新净值': df_asc['value'].iloc[-1] if not df_asc.empty else np.nan,
-                '当日跌幅': np.nan # 确保返回结构完整，即使数据不足
+                '当日跌幅': np.nan
             }
 
         # 1. RSI (14)
@@ -148,7 +148,6 @@ def calculate_technical_indicators(df):
             trend_direction = '数据不足'
             recent_ratio = (df_asc['MA50'] / df_asc['MA250']).tail(20).dropna()
             if len(recent_ratio) >= 5:
-                # 使用 np.polyfit 计算斜率
                 slope = np.polyfit(np.arange(len(recent_ratio)), recent_ratio.values, 1)[0]
                 if slope > 0.001: trend_direction = '向上'
                 elif slope < -0.001: trend_direction = '向下'
@@ -174,7 +173,7 @@ def calculate_technical_indicators(df):
             'MA50/MA250趋势': trend_direction,
             '布林带位置': bollinger_position, 
             '最新净值': round(value_latest, 4) if not math.isnan(value_latest) else np.nan,
-            '当日跌幅': round(daily_drop, 4) # 确保返回结构完整且为数值
+            '当日跌幅': round(daily_drop, 4) 
         }
 
     except Exception as e:
@@ -185,7 +184,7 @@ def calculate_technical_indicators(df):
             'MA50/MA250趋势': '计算错误',
             '布林带位置': '计算错误',
             '最新净值': np.nan,
-            '当日跌幅': np.nan # 错误时也确保返回结构完整且为数值
+            '当日跌幅': np.nan
         }
 
 # --- 连续下跌计算 (函数配置 5/13) ---
@@ -201,6 +200,7 @@ def calculate_consecutive_drops(series):
         series_asc = series
         
         # 2. 标记每一天相对于前一天是否下跌（当前值 < 前值）
+        # diff() 计算 t - t-1。如果结果 < 0，则代表下跌。
         # drops 是布尔数组，True 代表下跌。
         drops = (series_asc.diff() < 0).values
         
@@ -260,7 +260,7 @@ def get_action_prompt(rsi_val, daily_drop_val, mdd_recent_month, max_drop_days_w
     
     # 次要筛选：基础回撤 6% <= 回撤 < 10%
     if mdd_recent_month >= MIN_MONTH_DRAWDOWN:
-          return f'关注 (回撤 {mdd_recent_month:.2%})'
+         return f'关注 (回撤 {mdd_recent_month:.2%})'
     
     return '不适用 (未达基础回撤)'
 
@@ -283,8 +283,8 @@ def analyze_single_fund(filepath):
             logging.error(f"分析基金 {filepath} 时发生编码或加载错误: {e}")
             return None
     except Exception as e:
-          logging.error(f"分析基金 {filepath} 时发生加载错误: {e}")
-          return None
+         logging.error(f"分析基金 {filepath} 时发生加载错误: {e}")
+         return None
 
     try:
         # 检查关键列是否存在，非净值文件将直接跳过
@@ -300,8 +300,8 @@ def analyze_single_fund(filepath):
         
         is_valid, msg = validate_fund_data(df, fund_code)
         if not is_valid: 
-              logging.warning(f"基金 {fund_code} 数据无效: {msg}")
-              return None
+             logging.warning(f"基金 {fund_code} 数据无效: {msg}")
+             return None
         
         # 截取近一个月/一周的数据，因为是升序，所以用 tail()
         df_recent_month = df['value'].tail(30)
@@ -322,8 +322,7 @@ def analyze_single_fund(filepath):
         
         # 注意：这里的条件现在只检查 MIN_MONTH_DRAWDOWN >= 6%
         if mdd_recent_month >= MIN_MONTH_DRAWDOWN:
-            # 确保返回的字典结构完整，包含所有报告需要的键
-            result = {
+            return {
                 '基金代码': fund_code,
                 '最大回撤': mdd_recent_month,
                 '最大连续下跌': calculate_consecutive_drops(df['value'].tail(30)), # 再次使用近一个月数据
@@ -331,10 +330,6 @@ def analyze_single_fund(filepath):
                 **tech_indicators,
                 '行动提示': action_prompt
             }
-            # 再次检查关键字段，以防 tech_indicators 内部结构错误
-            if '当日跌幅' not in result:
-                 result['当日跌幅'] = np.nan
-            return result
         return None
     except Exception as e:
         # 捕获后续处理中的其他错误 (如计算错误)
@@ -360,7 +355,7 @@ def analyze_all_funds(target_codes=None):
                 csv_files = glob.glob('*.csv')
         
         if not csv_files:
-              return []
+             return []
             
         logging.info(f"找到 {len(csv_files)} 个基金数据文件，开始分析...")
         qualifying_funds = []
@@ -405,14 +400,13 @@ def format_table_row(index, row, table_part=1):
     # 计算试水价：当前净值 * (1 - 3%的跌幅)
     trial_price = latest_value * (1 - 0.03) 
     trend_display = row['MA50/MA250趋势']
-    ma_ratio_value = row.get('MA50/MA250', np.nan)
-    ma_ratio_display = format_technical_value(ma_ratio_value, 'decimal2')
+    ma_ratio_display = format_technical_value(row['MA50/MA250'], 'decimal2')
     
     # 趋势风险警告
-    if trend_display == '向下' and ma_ratio_value < 0.95:
-          trend_display = f"⚠️ **{trend_display}**"
-          ma_ratio_display = f"⚠️ **{ma_ratio_display}**"
-    elif pd.isna(ma_ratio_value) or trend_display == '数据不足':
+    if trend_display == '向下' and row['MA50/MA250'] < 0.95:
+         trend_display = f"⚠️ **{trend_display}**"
+         ma_ratio_display = f"⚠️ **{ma_ratio_display}**"
+    elif pd.isna(row['MA50/MA250']) or row['MA50/MA250趋势'] == '数据不足':
         # 数据不足 250 条时，这些字段会是 NaN 或 '数据不足'
         trend_display = "---"
         ma_ratio_display = "---"
@@ -432,11 +426,10 @@ def format_table_row(index, row, table_part=1):
         )
     else:
         # 表格 2 (8列): 基金代码, MACD信号, 布林带位置, 净值/MA50, MA50/MA250, 趋势, 净值/MA250, 试水买价 (跌3%)
-        net_to_ma250_display = format_technical_value(row.get('净值/MA250', np.nan), 'decimal2')
         return (
             f"| `{row['基金代码']}` | {row['MACD信号']} | {row['布林带位置']} | "
             f"{format_technical_value(row['净值/MA50'], 'decimal2')} | {ma_ratio_display} | {trend_display} | "
-            f"{net_to_ma250_display if not pd.isna(row.get('净值/MA250', np.nan)) else '---'} | `{trial_price:.4f}` |\n"
+            f"{format_technical_value(row['净值/MA250'], 'decimal2') if not pd.isna(row['净值/MA250']) else '---'} | `{trial_price:.4f}` |\n"
         )
 
 # --- 报告生成 (函数配置 12/13) ---
@@ -447,16 +440,9 @@ def generate_report(results, timestamp_str):
     try:
         if not results:
             return (f"# 基金预警报告 ({timestamp_str} UTC+8)\n\n"
-                      f"**恭喜，没有发现满足基础预警条件的基金。**")
+                    f"**恭喜，没有发现满足基础预警条件的基金。**")
 
         df_results = pd.DataFrame(results).sort_values(by='最大回撤', ascending=False).reset_index(drop=True)
-        
-        # <<< 核心健壮性修正：确保用于筛选的列是数值类型 >>>
-        if '当日跌幅' in df_results.columns:
-            # 强制转换为数值，错误值设为 NaN，防止在后续的 df_p1a 筛选中因比较非数字类型而报错
-            df_results['当日跌幅'] = pd.to_numeric(df_results['当日跌幅'], errors='coerce')
-        # ----------------------------------------------------
-        
         actual_total_count = len(results)
 
         report_parts = []
@@ -483,7 +469,7 @@ def generate_report(results, timestamp_str):
         # 修正后 daily_drop < 0 代表下跌。所以判断大跌是 daily_drop <= -CRITICAL_DROP_INT
         df_p1a = df_p1[df_p1['当日跌幅'] <= -CRITICAL_DROP_INT].copy() 
         # P1B：技术共振建仓 (当日跌幅 > -3%)
-        df_p1b = df_p1[df_p1['当日跌幅'] > -CRITICAL_DROP_INT].copy() 
+        df_p1b = df_p1[df_p1['当日跌幅'] > -CRITICAL_DROP_INT].copy()  
         
         # 定义两个表格的头部和对齐分隔符
         # 表格 1 (6列): 排名, 基金代码, 最大回撤 (1M), 当日涨跌幅, RSI(14), 行动提示
@@ -629,16 +615,16 @@ def generate_report(results, timestamp_str):
             "\n---\n",
             f"## **⚠️ 强化执行纪律：风控与行业审查**\n\n",
             f"**1. 🛑 趋势健康度（MA50/MA250 决定能否买）：**\n",
-            f"    * **MA50/MA250 $\\ge 0.95$ 且 趋势方向为 '向上' 或 '平稳'** 的基金，视为 **趋势健康**，允许试水。\n",
-            f"    * **若基金趋势显示 ⚠️ 向下，或 MA50/MA250 $< 0.95$，** 则表明长期处于熊市通道，**必须放弃**，无论短期超跌有多严重。\n",
-            f"    * **【新基金提示】**：对于数据不足 250 条的基金，MA50/MA250 相关指标将显示 **'---'**，需结合其他指标和人工审查来判断。\n",
+            f"    * **MA50/MA250 $\\ge 0.95$ 且 趋势方向为 '向上' 或 '平稳'** 的基金，视为 **趋势健康**，允许试水。\n",
+            f"    * **若基金趋势显示 ⚠️ 向下，或 MA50/MA250 $< 0.95$，** 则表明长期处于熊市通道，**必须放弃**，无论短期超跌有多严重。\n",
+            f"    * **【新基金提示】**：对于数据不足 250 条的基金，MA50/MA250 相关指标将显示 **'---'**，需结合其他指标和人工审查来判断。\n",
             f"**2. 🔍 人工行业与K线审查（排除接飞刀风险）：**\n",
-            r"    * **在买入前，必须查阅基金重仓行业。** 如果基金属于近期（如近 3-6 个月）**涨幅巨大、估值过高**的板块（例如：部分AI、半导体），则即使技术超卖，也应视为**高风险回调**，建议**放弃**或**大幅缩减**试水仓位。\n",
-            r"    * **同时复核 K 线图：** 确认当前价格是否距离**近半年历史高点**太近。若是，则风险高。\n",
+            r"    * **在买入前，必须查阅基金重仓行业。** 如果基金属于近期（如近 3-6 个月）**涨幅巨大、估值过高**的板块（例如：部分AI、半导体），则即使技术超卖，也应视为**高风险回调**，建议**放弃**或**大幅缩减**试水仓位。\n",
+            r"    * **同时复核 K 线图：** 确认当前价格是否距离**近半年历史高点**太近。若是，则风险高。\n",
             f"**3. I 级试水建仓（RSI极值策略）：**\n",
-            f"    * 仅当基金满足：**趋势健康** + **净值/MA50 $\\le 1.0$** + **RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$** 时，才进行 $\\mathbf{{I}}$ 级试水。\n",
+            f"    * 仅当基金满足：**趋势健康** + **净值/MA50 $\\le 1.0$** + **RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$** 时，才进行 $\\mathbf{{I}}$ 级试水。\n",
             f"**4. 风险控制：**\n",
-            f"    * 严格止损线：平均成本价**跌幅达到 8%-10%**，立即清仓止损。\n"
+            f"    * 严格止损线：平均成本价**跌幅达到 8%-10%**，立即清仓止损。\n"
         ])
 
         return "".join(report_parts)
@@ -673,17 +659,10 @@ def main():
         
         report_content = generate_report(results, timestamp_for_report)
         
-        # 将报告内容写入文件
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report_content)
         
         logging.info(f"分析完成，报告已保存到 {report_file}")
-        
-        # 为了在Canvas环境中立即显示报告内容，我们将其返回
-        print("\n\n--- 生成的 Markdown 报告内容 ---\n")
-        print(report_content)
-        print("\n-------------------------------\n")
-        
         return True
         
     except Exception as e:
@@ -691,50 +670,6 @@ def main():
         return False
 
 if __name__ == '__main__':
-    
-    # --- 环境初始化：创建虚拟基金数据 (基于你上传的文件结构) ---
-    logging.getLogger().setLevel(logging.INFO) # 临时设置，确保初始化信息能打印
-    
-    # 虚拟数据，确保至少有 300 条数据，以便 MA250 和 RSI 等指标能完全计算
-    # 003305：模拟一个长期下跌，近期回撤达到 15% 的高弹性基金，RSI 略高于 35
-    data_003305 = {
-        'date': pd.date_range(start='2020-01-01', periods=300, freq='B'),
-        # 模拟净值：先上涨后长期下跌
-        'net_value': 
-            (np.linspace(1.0, 1.5, 200) + np.random.normal(0, 0.01, 200)).tolist() + 
-            (np.linspace(1.5, 1.25, 100) + np.random.normal(0, 0.005, 100)).tolist(),
-        'cumulative_net_value': 0, 'daily_growth_rate': 0, 
-        'purchase_status': '开放申购', 'redemption_status': '开放赎回', 'dividend': 0
-    }
-    # 制造最近一个月 10% 以上的回撤，RSI 略低
-    data_003305['net_value'][-30:] = np.linspace(1.25, 1.05, 30).tolist()
-    
-    df_003305 = pd.DataFrame(data_003305)
-    
-    # 008327：模拟一个数据量刚好够 60 条的新基金，仅满足基础回撤条件
-    data_008327 = {
-        'date': pd.date_range(start='2025-08-01', periods=60, freq='B'),
-        # 模拟净值：满足 6% 的回撤
-        'net_value': 
-            (np.linspace(1.0, 1.08, 30) + np.random.normal(0, 0.003, 30)).tolist() + 
-            (np.linspace(1.08, 1.01, 30) + np.random.normal(0, 0.002, 30)).tolist(),
-        'cumulative_net_value': 0, 'daily_growth_rate': 0, 
-        'purchase_status': '开放申购', 'redemption_status': '开放赎回', 'dividend': 0
-    }
-    df_008327 = pd.DataFrame(data_008327)
-    
-    # 确保目录存在
-    os.makedirs(FUND_DATA_DIR, exist_ok=True)
-    
-    # 写入文件
-    path_003305 = os.path.join(FUND_DATA_DIR, '003305.csv')
-    path_008327 = os.path.join(FUND_DATA_DIR, '008327.csv')
-    
-    df_003305.to_csv(path_003305, index=False)
-    df_008327.to_csv(path_008327, index=False)
-    
-    logging.info(f"已创建虚拟基金数据文件在 '{FUND_DATA_DIR}' 目录下。")
-    # ----------------------------------------------------
-    
+    # 请确保 'fund_data' 目录存在，且其中包含以基金代码命名的 CSV 文件 (date, net_value)
     success = main()
-    print("脚本执行完毕。所有配置和函数均已完整保留并增强了健壮性。")
+    print("脚本执行完毕。所有配置和函数均已完整保留。")
