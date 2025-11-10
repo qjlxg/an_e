@@ -277,6 +277,7 @@ def calculate_max_drawdown(series):
 def get_action_prompt(rsi_val, mdd_recent_month, bollinger_val, k_val, daily_drop_val):
     """
     根据技术指标生成行动提示，整合 KDJ 和布林带作为二次风控。
+    FIX: 使用双反斜杠修正 SyntaxWarning
     """
     
     # 辅助函数：判断布林带是否在下轨区域
@@ -297,19 +298,19 @@ def get_action_prompt(rsi_val, mdd_recent_month, bollinger_val, k_val, daily_dro
             if is_near_lower_band(bollinger_val):
                 # 必须 BB 共振，否则降级为 P1-观察
                 if is_kdj_oversold(k_val):
-                     return f'🌟 P1-**三指标共振** (RSI $\le {EXTREME_RSI_THRESHOLD_P1:.0f}$, KDJ $\le 20$)'
+                     return f'🌟 P1-**三指标共振** (RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$, KDJ $\\le 20$)'
                 else:
-                     return f'🔥 P1-**RSI&BB共振** (RSI $\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)'
+                     return f'🔥 P1-**RSI&BB共振** (RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)'
             else:
-                 return f'P1-高回撤观察 (RSI $\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)'
+                 return f'P1-高回撤观察 (RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$)'
         
         # P2 强力超卖
         elif rsi_val <= STRONG_RSI_THRESHOLD_P2:
             if is_near_lower_band(bollinger_val):
                  # 必须 BB 共振
-                 return f'🔍 P2-**BB&RSI共振** (RSI $\le {STRONG_RSI_THRESHOLD_P2:.0f}$)'
+                 return f'🔍 P2-**BB&RSI共振** (RSI $\\le {STRONG_RSI_THRESHOLD_P2:.0f}$)'
             else:
-                 return f'P2-关注 (RSI $\le {STRONG_RSI_THRESHOLD_P2:.0f}$)'
+                 return f'P2-关注 (RSI $\\le {STRONG_RSI_THRESHOLD_P2:.0f}$)'
         
         # P3
         else:
@@ -450,7 +451,9 @@ def format_table_row(index, row, table_part=1):
         trend_display = f"**{trend_display}**"
         ma_ratio_display = f"**{ma_ratio_display}**"
         
-    daily_drop_display = format_technical_value(row['当日跌幅'], 'report_daily_drop')
+    # FIX: 确保在访问 '当日跌幅' 之前，该键存在，虽然在 generate_report 中已修复，此处为防御性编程
+    daily_drop_val = row.get('当日跌幅', np.nan)
+    daily_drop_display = format_technical_value(daily_drop_val, 'report_daily_drop')
 
 
     if table_part == 1:
@@ -482,12 +485,18 @@ def generate_report(results, timestamp_str):
                 f"**恭喜，没有发现满足基础预警条件的基金。**")
 
     df_results = pd.DataFrame(results).sort_values(by='最大回撤', ascending=False).reset_index(drop=True)
+    
+    # FIX: 解决 KeyError: '当日跌幅' 问题。如果列缺失，则添加并填充 np.nan。
+    if '当日跌幅' not in df_results.columns:
+        df_results['当日跌幅'] = np.nan
+        
     actual_total_count = len(results)
 
     report_parts = []
     report_parts.extend([
         f"# 基金预警报告 ({timestamp_str} UTC+8)\n\n",
         f"## 分析总结\n\n",
+        # FIX: 修正 \\ge 符号
         f"本次分析共发现 **{actual_total_count}** 只基金满足基础预警条件（近 1 个月回撤 $\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）。\n",
         f"**策略更新：已引入 KDJ 和布林带作为二次风控。P1/P2 强制要求布林带靠近下轨。**\n",
         f"\n---\n"
@@ -534,6 +543,7 @@ def generate_report(results, timestamp_str):
         
         report_parts.extend([
             f"\n## **🥇 第一优先级 A：【即时恐慌买入】** ({len(df_p1a)}只)\n\n",
+            # FIX: 修正 \\le 符号
             f"**条件：** 长期超跌 + **RSI极度超卖 ($\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$) + 布林带共振** + **当日跌幅 $\\le -{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
             r"**纪律：** 市场恐慌时出手，本金充足时应优先配置。**（最高优先级）**" + "\n\n",
             "### 核心指标 (1/2)\n",
@@ -560,6 +570,7 @@ def generate_report(results, timestamp_str):
         
         report_parts.extend([
             f"\n## **🥇 第一优先级 B：【技术共振建仓】** ({len(df_p1b)}只)\n\n",
+            # FIX: 修正 \\le 符号
             f"**条件：** 长期超跌 + **RSI极度超卖 ($\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$) + 布林带共振** + **当日跌幅 $ > -{MIN_DAILY_DROP_PERCENT*100:.0f}%**\n",
             r"**纪律：** 极值超卖，适合在非大跌日进行建仓。**（第二高优先级）**" + "\n\n",
             "### 核心指标 (1/2)\n",
@@ -596,6 +607,7 @@ def generate_report(results, timestamp_str):
         
         report_parts.extend([
             f"\n## **🥈 第二优先级：【强力超卖观察池】** ({len(df_p2_filtered)}只)\n\n",
+            # FIX: 修正 \\le 符号
             f"**条件：** 长期超跌 + **强力超卖 ($>{EXTREME_RSI_THRESHOLD_P1:.0f}$ 且 $\\le {STRONG_RSI_THRESHOLD_P2:.0f}$) + 布林带共振**。\n",
             r"**纪律：** 接近极值，是良好的观察目标，需等待 RSI 进一步下行或 KDJ 配合。**（第三优先级）**" + "\n\n",
             "### 核心指标 (1/2)\n",
@@ -644,6 +656,7 @@ def generate_report(results, timestamp_str):
 
         report_parts.extend([
             f"\n## **🥉 第三优先级：【扩展观察池】** ({len(df_p3)}只)\n\n",
+            # FIX: 修正 \\ge 符号
             f"**条件：** 长期超跌（$\\ge 6\\% - 10\\%$）或 **技术指标未完全共振**。\n",
             r"**纪律：** 风险较高，仅作为观察和备选，等待 RSI/BB/KDJ 进一步进入共振区。**（最低优先级）**" + "\n\n",
             "### 核心指标 (1/2)\n",
@@ -668,6 +681,7 @@ def generate_report(results, timestamp_str):
     report_parts.extend([
         "\n---\n",
         f"## **⚠️ 强化执行纪律：风控与行业审查**\n\n",
+        # FIX: 修正 \\ge, \\le 符号
         f"**1. 🛑 趋势健康度（MA50/MA250 决定能否买）：**\n",
         f"    * **MA50/MA250 $\\ge 0.95$ 且 趋势方向为 '向上' 或 '平稳'** 的基金，视为 **趋势健康**，允许试水。\n",
         f"    * **若基金趋势显示 ⚠️ 向下，或 MA50/MA250 $< 0.95$，** 则表明长期处于熊市通道，**必须放弃**，无论短期超跌有多严重。\n",
@@ -676,6 +690,7 @@ def generate_report(results, timestamp_str):
         r"    * **在买入前，必须查阅基金重仓行业。** 如果基金属于近期（如近 3-6 个月）**涨幅巨大、估值过高**的板块（例如：部分AI、半导体），则即使技术超卖，也应视为**高风险回调**，建议**放弃**或**大幅缩减**试水仓位。\n",
         r"    * **同时复核 K 线图：** 确认当前价格是否距离**近半年历史高点**太近。若是，则风险高。\n",
         f"**3. I 级试水建仓（RSI极值策略）：**\n",
+        # FIX: 修正 \\le 符号
         f"    * 仅当基金满足：**趋势健康** + **净值/MA50 $\\le 1.0$** + **RSI $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$** + **布林带共振** 时，才进行 $\\mathbf{{I}}$ 级试水。\n",
         f"**4. 风险控制：**\n",
         f"    * 严格止损线：平均成本价**跌幅达到 8%-10%**，立即清仓止损。\n"
