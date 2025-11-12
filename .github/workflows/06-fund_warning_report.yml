@@ -1,4 +1,4 @@
-name: 06-fund_warning_report
+name: 06-fund_warning_report.yml
 on:
   # 1. 自动触发条件：当以下文件被修改并推送到仓库时，工作流自动运行
   push:
@@ -55,8 +55,10 @@ jobs:
           git config user.email "actions@github.com"
           
           # 查找并添加所有生成的报告文件
-          # 【更新点】同时添加 .md 和 .csv 文件
-          git add '**/fund_warning_report_*.md' '**/fund_warning_report_*.csv'
+          # 【更新点 1】添加所有带时间戳的 MD 文件
+          git add '**/fund_warning_report_*.md'
+          # 【更新点 2】添加固定名称的 CSV 文件
+          git add '**/fund_warning_report_combined.csv'
           
           # 检查是否有文件更改，如果没有则退出
           if [ -z "$(git status --porcelain)" ]; then

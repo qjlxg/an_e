@@ -15,6 +15,9 @@ HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%
 MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report'
 
+# 【新增/修改】CSV 文件名改为固定名称
+CSV_FINAL_NAME = 'fund_warning_report_combined.csv'
+
 # --- 核心阈值调整 (完整保留) --
 EXTREME_RSI_THRESHOLD_P1 = 29.0 
 STRONG_RSI_THRESHOLD_P2 = 35.0
@@ -391,6 +394,7 @@ def format_technical_value(value, format_type='percent'):
     else: return str(value)
 
 # --- 表格行格式化 (函数配置 11/13) ---
+# 此函数用于 Markdown 报告，与 CSV 存储无关，保持不变
 def format_table_row(index, row, table_part=1):
     """
     格式化 Markdown 表格行，包含颜色/符号标记，确保清晰度。
@@ -432,12 +436,12 @@ def format_table_row(index, row, table_part=1):
             f"{format_technical_value(row['净值/MA250'], 'decimal2') if not pd.isna(row['净值/MA250']) else '---'} | `{trial_price:.4f}` |\n"
         )
 
-# --- 报告生成 (函数配置 12/13) ---
+# --- Markdown 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
     """
     生成完整的Markdown格式报告。
-    (此函数内容与您原始脚本中的 generate_report 保持一致，为 Markdown 报告)
     """
+    # ... (此函数内容保持不变) ... 
     try:
         if not results:
             return (f"# 基金预警报告 ({timestamp_str} UTC+8)\n\n"
@@ -634,30 +638,34 @@ def generate_report(results, timestamp_str):
         logging.error(f"生成报告时发生错误: {e}")
         return f"# 报告生成错误\n\n错误信息: {str(e)}"
 
-# --- 新增 CSV 报告生成函数 ---
-def generate_report_csv(results):
+# --- 新增 CSV 报告生成函数 (修改) ---
+def generate_report_csv(results, current_date_str):
     """
     将分析结果转换为 DataFrame，并添加优先级和辅助列，方便导出为 CSV。
+    【修改】添加日期列。
     """
     if not results:
         logging.info("没有符合条件的基金数据，返回空 DataFrame。")
         # 返回一个包含核心列名的空 DataFrame
         return pd.DataFrame(columns=[
-            '优先级', '基金代码', '行动提示', '最大回撤(%)', '当日跌幅(%)', 'RSI', 
+            '日期', '优先级', '基金代码', '行动提示', '最大回撤(%)', '当日跌幅(%)', 'RSI', 
             'MACD信号', '布林带位置', 'MA50/MA250(d2)', 'MA50/MA250趋势', '趋势健康度',
-            '净值/MA50', '净值/MA250', '最新净值', '试水买价(跌3%)'
+            '净值/MA50', '净值/MA250', '最新净值', '试水买价(跌3%)', '近一周连跌'
         ])
 
     df_results = pd.DataFrame(results)
     
-    # 1. 计算试水价
+    # 1. 增加【日期】列
+    df_results.insert(0, '日期', current_date_str)
+    
+    # 2. 计算试水价
     # 确保 '最新净值' 列存在且非空
     if '最新净值' in df_results.columns and not df_results['最新净值'].empty:
         df_results['试水买价(跌3%)'] = df_results['最新净值'] * (1 - 0.03)
     else:
         df_results['试水买价(跌3%)'] = np.nan
 
-    # 2. 趋势健康度判断 (用于 CSV 报告的筛选列)
+    # 3. 趋势健康度判断 (用于 CSV 报告的筛选列)
     df_results['趋势健康度'] = '---' # 默认值
     if 'MA50/MA250' in df_results.columns and 'MA50/MA250趋势' in df_results.columns:
         # 若 MA50/MA250 < 0.95 或趋势向下，则视为“趋势不健康”
@@ -672,7 +680,7 @@ def generate_report_csv(results):
         df_results.loc[data_na_condition, '趋势健康度'] = '数据不足'
 
 
-    # 3. 按照策略优先级排序 (与 generate_report 逻辑保持一致)
+    # 4. 按照策略优先级排序 (与 generate_report 逻辑保持一致)
     df_results['优先级'] = 'P3'
     # 检查 'RSI' 列是否存在，防止 KeyError
     if 'RSI' in df_results.columns and '当日跌幅' in df_results.columns:
@@ -688,7 +696,7 @@ def generate_report_csv(results):
     df_results['优先级_Order'] = df_results['优先级'].apply(lambda x: priority_order.index(x) if x in priority_order else 99)
     df_results = df_results.sort_values(by=['优先级_Order', '最大回撤'], ascending=[True, False]).drop(columns=['优先级_Order']).reset_index(drop=True)
 
-    # 4. 格式化输出 (方便查看)
+    # 5. 格式化输出 (方便查看)
     # 确保相关列存在
     if '最大回撤' in df_results.columns:
         df_results['最大回撤(%)'] = df_results['最大回撤'].apply(lambda x: f"{x:.2%}")
@@ -706,9 +714,9 @@ def generate_report_csv(results):
         df_results['MA50/MA250(d2)'] = 'NaN'
 
 
-    # 5. 选择最终输出列 (移除原始的浮点数回撤和跌幅，只保留格式化后的，简化 CSV)
+    # 6. 选择最终输出列 (移除原始的浮点数回撤和跌幅，只保留格式化后的，简化 CSV)
     final_columns = [
-        '优先级', '基金代码', '行动提示', '最大回撤(%)', '当日跌幅(%)', 'RSI', 
+        '日期', '优先级', '基金代码', '行动提示', '最大回撤(%)', '当日跌幅(%)', 'RSI', 
         'MACD信号', '布林带位置', 'MA50/MA250(d2)', 'MA50/MA250趋势', '趋势健康度',
         '净值/MA50', '净值/MA250', '最新净值', '试水买价(跌3%)', '近一周连跌'
     ]
@@ -719,12 +727,10 @@ def generate_report_csv(results):
     return df_results[available_columns]
 
 
-# --- 主函数 (函数配置 13/13) ---
+# --- 主函数 (函数配置 13/13) (大幅修改 CSV 处理逻辑) ---
 def main():
     """主函数"""
     try:
-        # ** 默认同时生成 Markdown 和 CSV 报告 **
-        
         setup_logging()
         try:
             # 使用带时区的当前时间
@@ -734,28 +740,64 @@ def main():
             now = datetime.now()
             logging.warning("使用时区失败，使用本地时间")
         
+        # 报告时间字符串
         timestamp_for_report = now.strftime('%Y-%m-%d %H:%M:%S')
-        timestamp_for_filename = now.strftime('%Y%m%d_%H%M%S')
+        current_date_str = now.strftime('%Y-%m-%d')
+        
+        # 使用当前月份作为目录名
         dir_name = now.strftime('%Y%m')
-
         os.makedirs(dir_name, exist_ok=True)
-        report_file_md = os.path.join(dir_name, f"{REPORT_BASE_NAME}_{timestamp_for_filename}.md")
-        report_file_csv = os.path.join(dir_name, f"{REPORT_BASE_NAME}_{timestamp_for_filename}.csv")
+        
+        # 【修改】Markdown 报告仍然带时间戳
+        report_file_md = os.path.join(dir_name, f"{REPORT_BASE_NAME}_{now.strftime('%Y%m%d_%H%M%S')}.md")
+        # 【修改】CSV 报告使用固定名称，用于追加
+        report_file_csv = os.path.join(dir_name, CSV_FINAL_NAME) 
 
         logging.info("开始分析基金数据...")
         
         results = analyze_all_funds()
         
-        # --- 报告生成逻辑修改：同时生成 CSV 和 Markdown ---
+        # --- 报告生成逻辑 ---
         
-        # 1. 生成 CSV 格式报告
-        df_report_csv = generate_report_csv(results)
+        # 1. 生成 CSV 格式报告 DataFrame (包含日期列)
+        df_new_day = generate_report_csv(results, current_date_str)
         
-        if not df_report_csv.empty:
-            df_report_csv.to_csv(report_file_csv, index=False, encoding='utf-8')
-            logging.info(f"✅ CSV 报告已保存到 {report_file_csv}")
+        if not df_new_day.empty:
+            
+            # --- 【核心逻辑】读取历史数据并覆盖当日记录 ---
+            df_historical = pd.DataFrame()
+            if os.path.exists(report_file_csv):
+                try:
+                    df_historical = pd.read_csv(report_file_csv, encoding='utf-8')
+                    # 确保 '日期' 列存在
+                    if '日期' not in df_historical.columns:
+                         logging.warning("历史CSV文件缺少'日期'列，将重新生成。")
+                         df_historical = pd.DataFrame() # 视为无效，重新开始
+                    
+                except Exception as e:
+                    logging.error(f"读取历史 CSV 文件时发生错误: {e}")
+                    df_historical = pd.DataFrame()
+            
+            # 如果成功读取了历史数据
+            if not df_historical.empty:
+                # 排除历史数据中所有与今天日期相同的行（实现覆盖/更新）
+                df_filtered = df_historical[df_historical['日期'] != current_date_str].copy()
+                
+                # 追加今天的最新数据
+                df_final = pd.concat([df_filtered, df_new_day], ignore_index=True)
+                
+                logging.info(f"历史数据已更新：移除 {len(df_historical) - len(df_filtered)} 条旧记录，追加 {len(df_new_day)} 条新记录。")
+            else:
+                # 第一次运行或读取失败，直接使用今天的数据
+                df_final = df_new_day
+                logging.info(f"第一次生成 CSV 报告，共 {len(df_new_day)} 条记录。")
+
+            # 将最终结果保存到固定名称的 CSV 文件
+            df_final.to_csv(report_file_csv, index=False, encoding='utf-8')
+            logging.info(f"✅ 统一 CSV 报告已保存/更新到 {report_file_csv}")
+        
         else:
-            logging.info(f"没有符合条件的基金，未生成 CSV 报告。")
+            logging.info(f"没有符合条件的基金，CSV 文件 {report_file_csv} 未作更新。")
 
         # 2. 生成 Markdown 格式报告 (保持原功能)
         report_content_md = generate_report(results, timestamp_for_report)
@@ -774,4 +816,4 @@ def main():
 if __name__ == '__main__':
     # 请确保 'fund_data' 目录存在，且其中包含以基金代码命名的 CSV 文件 (date, net_value)
     success = main()
-    print("脚本执行完毕。所有功能不变，报告已同时生成 CSV 和 Markdown 格式。")
+    print("脚本执行完毕。CSV 报告已实现日期追加和当日覆盖逻辑。")
