@@ -1,0 +1,56 @@
+name: stock_analysis_local_data_V1_FINAL
+
+on:
+  # 手动触发工作流
+  workflow_dispatch:
+  # 定时触发工作流
+  schedule:
+    # 每天 UTC 时间 10:00 运行 (北京时间 18:00，通常是 A 股收盘后)
+    - cron: '0 10 * * *'
+
+jobs:
+  run_analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        # 使用 actions/checkout@v4 检出代码
+        uses: actions/checkout@v4
+        with:
+          # 使用 GITHUB_TOKEN 允许后续步骤提交更改
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Python 环境
+        # 使用 actions/setup-python@v5 设置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖库
+        run: |
+          # 确保 pip 是最新的
+          python -m pip install --upgrade pip
+          # 安装脚本中使用的所有库
+          pip install pandas pandas-ta akshare pytz tqdm
+
+      - name: 确保数据和输出目录存在
+        run: |
+          # 确保 stock_data 存在（假设原始数据已提交到此目录）
+          mkdir -p stock_data
+          # 确保 analyzed_data 输出目录存在
+          mkdir -p analyzed_data
+
+      - name: 执行本地数据分析脚本
+        # 运行您修改后的 Python 脚本
+        # 请确保脚本名称与您保存的实际名称一致
+        run: |
+          python stock_analysis_local_data_V1_FINAL.py
+
+      - name: 检查并提交分析结果
+        # 使用 git-auto-commit-action 自动提交更改
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          # 只提交分析结果目录和日志文件
+          file_pattern: 'analyzed_data/* stock_analysis_local.log'
+          commit_message: 'Auto: Update analyzed stock data and log'
+          branch: ${{ github.ref_name }} # 提交到当前分支
