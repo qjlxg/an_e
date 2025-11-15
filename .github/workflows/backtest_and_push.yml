@@ -2,7 +2,7 @@ name: 基金回测与报告推送 (Fund Backtest and Report Push)
 
 # --- 触发条件配置 ---
 on:
-  # 1. 手动触发：允许在 GitHub Actions 界面手动运行
+  # 1. 手动触发
   workflow_dispatch:
     inputs:
       reason:
@@ -13,87 +13,95 @@ on:
   # 2. 自动触发：当特定文件变动时自动运行
   push:
     branches:
-      - main  # 假设您的主分支是 main
+      - main  
     paths:
-      - 'backtester.py' # 脚本变动时运行
-      - '.github/workflows/backtest_and_push.yml' # 工作流变动时运行
+      # 触发路径改为匹配所有 backtester 脚本
+      - 'backtester*.py' 
+      - '.github/workflows/backtest_and_push.yml'
 
-# 定义环境变量，用于设定时区和报告文件名
+# 定义环境变量
 env:
   TZ: 'Asia/Shanghai'
-  REPORT_FILE_NAME: 'fund_backtest_report.md'
-  REPORT_DIR: 'backtest_reports' # 报告保存的目录
+  # ***** 关键修复 1: 报告文件名改为 V4 脚本的输出 *****
+  REPORT_FILE_NAME: 'fund_backtest_v4_report.md'
+  REPORT_DIR: 'backtest_reports'
 
 jobs:
   run_backtest_and_push:
-    # 运行环境
     runs-on: ubuntu-latest
 
-    # 步骤
     steps:
       - name: ⏱️ 设置时区 (上海)
-        # GitHub Actions 默认是 UTC，设置环境变量 TZ 影响 Python 运行环境
         run: echo "TZ=${{ env.TZ }}" >> $GITHUB_ENV
         
       - name: ⬇️ 检出代码 (Checkout repository)
-        # 必须检出代码才能访问 backtester.py 和 fund_data
         uses: actions/checkout@v4
 
       - name: 🐍 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # 根据您的脚本兼容性选择 Python 版本
+          python-version: '3.10'
 
       - name: 📥 安装依赖 (Install dependencies)
-        # 根据您的脚本，它依赖 pandas 和 numpy
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy pytz
 
       - name: 📂 检查数据目录 (Check fund_data directory)
-        # 确保 fund_data 目录存在，否则脚本会报错
         run: |
           if [ ! -d "fund_data" ]; then
             echo "::error:: fund_data 目录不存在！请在仓库根目录创建该目录并放入CSV文件。"
-            exit 1
+            # 这里的 exit 1 会在找不到 fund_data 时立刻终止工作流
+            exit 1 
           fi
           
-      - name: 🚀 运行回测脚本 (Run backtester.py)
-        # 运行 backtester.py，它将在当前目录生成 fund_backtest_report.md
-        run: python backtester.py
+      # ***** 关键修复 2: 运行 V4 脚本 *****
+      - name: 🚀 运行 V4 回测脚本 (Run backtester_v4.py)
+        # 运行最新的 V4 脚本，它会生成 fund_backtest_v4_report.md
+        run: python backtester_v4.py
         
+      # ***** 新增步骤: 检查文件是否生成，防止 mv 报错 *****
+      - name: 🔍 检查报告文件是否生成 (防mv报错)
+        id: check_report
+        run: |
+          if [ -f "${{ env.REPORT_FILE_NAME }}" ]; then
+            echo "report_found=true" >> $GITHUB_OUTPUT
+            echo "✅ 报告文件 ${{ env.REPORT_FILE_NAME }} 成功找到。"
+          else
+            echo "report_found=false" >> $GITHUB_OUTPUT
+            echo "❌ 报告文件 ${{ env.REPORT_FILE_NAME }} 未生成，跳过推送。"
+          fi
+
+      # 只有当报告文件找到时，才执行后续的 Git 操作 (使用 if 条件)
       - name: ⚙️ 配置 Git 用户信息
-        # 推送前必须配置 Git 身份
+        if: steps.check_report.outputs.report_found == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
       - name: 📁 移动和暂存报告文件
-        # 将生成的报告移动到指定目录并准备提交
+        if: steps.check_report.outputs.report_found == 'true'
         run: |
-          # 确保报告目录存在
           mkdir -p ${{ env.REPORT_DIR }}
           
-          # 生成带时间戳的文件名，方便历史版本追踪
           TIMESTAMP=$(TZ='${{ env.TZ }}' date +%Y%m%d_%H%M%S)
-          TARGET_FILE="${{ env.REPORT_DIR }}/backtest_report_${TIMESTAMP}.md"
+          TARGET_FILE="${{ env.REPORT_DIR }}/backtest_report_${TIMESTAMP}}.md"
           
-          # 移动报告文件
+          # 移动报告文件 (现在文件名应该匹配了)
           mv ${{ env.REPORT_FILE_NAME }} ${TARGET_FILE}
           
-          # 暂存新报告和最新的报告文件（用于覆盖）
           git add ${TARGET_FILE}
           
-          # 此外，创建一个名为 "latest.md" 的文件，用于快速查看最新结果
           cp ${TARGET_FILE} ${{ env.REPORT_DIR }}/latest.md
           git add ${{ env.REPORT_DIR }}/latest.md
 
       - name: ⬆️ 推送报告到仓库 (Push report to repository)
-        # 如果有变动（即生成了新报告），则提交并推送到仓库
+        if: steps.check_report.outputs.report_found == 'true'
         run: |
           if git diff --cached --exit-code; then
             echo "没有新的报告文件生成，无需提交。"
           else
-            git commit -m "🤖 Auto-generated backtest report: $(TZ='${{ env.TZ }}' date +%Y-%m-%d %H:%M:%S)"
+            # 提交信息也改为 V4
+            git commit -m "🤖 Auto-generated V4 backtest report: $(TZ='${{ env.TZ }}' date +%Y-%m-%d %H:%M:%S)"
             git push
           fi
