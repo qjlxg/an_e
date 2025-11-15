@@ -1,298 +1,267 @@
+# backtester.py
+
 import pandas as pd
 import glob
 import os
 import numpy as np
-from datetime import datetime, timedelta
 import logging
+import math
+from datetime import datetime
 
-# --- 核心策略参数 (与 analyzer.py 保持一致) ---
+# --- 配置参数 (基于原脚本进行回测优化) ---
 FUND_DATA_DIR = 'fund_data'
-HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
-EXTREME_RSI_THRESHOLD_P1 = 29.0      # 第一优先级买入RSI阈值 (P1)
-STRONG_RSI_THRESHOLD_P2 = 35.0       # 第二优先级买入RSI阈值 (P2)
-MA_HEALTH_THRESHOLD = 0.95           # 趋势健康度阈值 (MA50/MA250 >= 0.95)
-STOP_LOSS_PERCENT = 0.10             # 止损阈值 (10%)
-HOLDING_PERIOD = 60                  # 固定持有周期 (60个交易日)
+EXTREME_RSI_THRESHOLD_P1 = 29.0  # 买入信号 RSI 阈值
+STOP_LOSS_PERCENT = 0.08         # 止损阈值 (8%)
+STOP_PROFIT_PERCENT = 0.15       # 止盈阈值 (15%)
+BACKTEST_START_DATE = '2020-01-01' # 回测起始日期
+BACKTEST_END_DATE = '2024-12-31'   # 回测结束日期
+INITIAL_CAPITAL = 100000.0       # 初始资金 (元)
+BUY_AMOUNT_PER_TRADE = 10000.0   # 每次买入金额 (元)
+REPORT_FILE_NAME = 'fund_backtest_report.md'
 
-# --- 文件排除列表：跳过非净值数据文件 ---
-EXCLUDE_FILES = [
-    'fund_fee_result.csv', # 排除用户指定的文件
-]
+# --- 复用原脚本的技术指标计算函数 (简化版，仅保留必要逻辑) ---
+# 警告: 实际回测中，这些函数应从 analyzer.py 中导入。这里为独立脚本演示，直接复制关键函数。
 
-# --- 设置日志 (与 analyzer.py 保持一致) ---
-def setup_logging():
-    """设置日志配置"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('backtest.log', encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
-    logging.getLogger('backtest').setLevel(logging.INFO)
-    return logging.getLogger('backtest')
+def calculate_technical_indicators(df):
+    """ 计算RSI(14)和当日涨跌幅，用于回测信号。 """
+    df_asc = df.copy()
 
-# --- 最大回撤计算 ---
+    if 'value' not in df_asc.columns or len(df_asc) < 60:
+        df_asc['RSI_14'] = np.nan
+        df_asc['Daily_Drop'] = np.nan
+        return df_asc
+
+    delta = df_asc['value'].diff()
+
+    # 1. RSI (14)
+    gain_14 = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+    loss_14 = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+    rs_14 = gain_14 / loss_14.replace(0, np.nan) 
+    df_asc['RSI_14'] = 100 - (100 / (1 + rs_14))
+    
+    # 2. 当日涨跌幅
+    df_asc['Daily_Drop'] = df_asc['value'].pct_change()
+        
+    return df_asc
+
 def calculate_max_drawdown(series):
-    """计算最大回撤"""
+    """ 计算最大回撤 """
     if series.empty: return 0.0
     rolling_max = series.cummax()
     drawdown = (rolling_max - series) / rolling_max
     return drawdown.max()
 
-# --- 连续下跌计算 (保留函数，但信号中不再使用其硬性限制) ---
-def calculate_consecutive_drops(series):
-    """计算净值序列中最大的连续下跌天数"""
-    if series.empty or len(series) < 2: return 0
-    drops = (series.iloc[1:].values < series.iloc[:-1].values)
-    max_drop_days = 0
-    current_drop_days = 0
-    for is_dropped in drops:
-        if is_dropped:
-            current_drop_days += 1
-            max_drop_days = max(max_drop_days, current_drop_days)
-        else:
-            current_drop_days = 0
-    return max_drop_days
+# --- 核心回测逻辑 ---
 
-# --- 核心指标计算 ---
-def calculate_indicators_at_date(df, current_index):
-    """计算特定日期 (current_index) 的所有指标"""
-    if current_index < 250: 
-        return None 
+def run_backtest(df_fund, fund_code):
+    """
+    对单只基金运行回测策略。
+    策略：RSI(14) <= EXTREME_RSI_THRESHOLD_P1 时，买入固定金额。
+          达到止盈或止损时，卖出所有持仓。
+    """
+    df = df_fund.copy()
     
-    df_window = df.iloc[:current_index + 1].copy()
+    # 1. 筛选回测周期
+    df = df[(df['date'] >= BACKTEST_START_DATE) & (df['date'] <= BACKTEST_END_DATE)].copy()
+    if df.empty:
+        logging.warning(f"基金 {fund_code} 在回测周期内没有数据。")
+        return None
 
-    # 1. RSI (14)
-    delta = df_window['value'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
-    rs = gain / loss.replace(0, np.nan) 
-    df_window['RSI'] = 100 - (100 / (1 + rs))
-    rsi_val = df_window['RSI'].iloc[-1]
+    # 2. 计算所需指标
+    df = calculate_technical_indicators(df)
+    df = df.dropna(subset=['RSI_14']).reset_index(drop=True)
+    if df.empty: return None
 
-    # 2. MA50/MA250
-    df_window['MA50'] = df_window['value'].rolling(window=50, min_periods=1).mean()
-    df_window['MA250'] = df_window['value'].rolling(window=250, min_periods=1).mean()
-    ma50_latest = df_window['MA50'].iloc[-1]
-    ma250_latest = df_window['MA250'].iloc[-1]
+    # 3. 初始化回测变量
+    initial_capital = INITIAL_CAPITAL
+    cash = initial_capital
+    shares = 0.0        # 持有份额
+    avg_cost_per_share = 0.0 # 平均持仓成本（每份额）
     
-    trend_direction = '数据不足'
-    if len(df_window) >= 250:
-        recent_ratio = (df_window['MA50'] / df_window['MA250']).tail(20).dropna()
-        if len(recent_ratio) >= 5:
-            slope = np.polyfit(np.arange(len(recent_ratio)), recent_ratio.values, 1)[0]
-            if slope > 0.001: trend_direction = '向上'
-            elif slope < -0.001: trend_direction = '向下'
-            else: trend_direction = '平稳'
+    trade_log = []
+    equity_values = []
+    
+    # 4. 逐日回测
+    for index, row in df.iterrows():
+        current_date = row['date']
+        current_value = row['value']
+        current_rsi = row['RSI_14']
+        
+        # 计算当前总资产 (净值 * 份额 + 现金)
+        market_value = shares * current_value
+        total_equity = cash + market_value
+        equity_values.append(total_equity)
 
-    ma50_to_ma250 = ma50_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
+        # --- 卖出判断 (止盈/止损) ---
+        if shares > 0:
+            # 当前持仓成本
+            current_holding_cost = shares * avg_cost_per_share
+            # 当前收益率: (现值 - 成本) / 成本
+            current_profit_ratio = (market_value - current_holding_cost) / current_holding_cost
+            
+            # 止损信号: 跌幅 >= 8% (STOP_LOSS_PERCENT)
+            if current_profit_ratio <= -STOP_LOSS_PERCENT:
+                sale_amount = market_value
+                cash += sale_amount
+                trade_log.append({
+                    'Date': current_date, 'Action': 'SELL (Stop Loss)', 
+                    'Shares': shares, 'Value': current_value,
+                    'Gain_Ratio': current_profit_ratio, 'Equity': total_equity
+                })
+                shares = 0.0
+                avg_cost_per_share = 0.0
+                continue # 完成交易，跳过当日买入判断
+
+            # 止盈信号: 涨幅 >= 15% (STOP_PROFIT_PERCENT)
+            if current_profit_ratio >= STOP_PROFIT_PERCENT:
+                sale_amount = market_value
+                cash += sale_amount
+                trade_log.append({
+                    'Date': current_date, 'Action': 'SELL (Take Profit)', 
+                    'Shares': shares, 'Value': current_value,
+                    'Gain_Ratio': current_profit_ratio, 'Equity': total_equity
+                })
+                shares = 0.0
+                avg_cost_per_share = 0.0
+                continue # 完成交易，跳过当日买入判断
+        
+        # --- 买入判断 (RSI极值) ---
+        # 条件：RSI 超卖 AND 仍有现金 AND 当前没有持仓 (简化：一次性买入，卖出后才能再次买入)
+        if current_rsi <= EXTREME_RSI_THRESHOLD_P1 and cash >= BUY_AMOUNT_PER_TRADE and shares == 0:
+            buy_shares = BUY_AMOUNT_PER_TRADE / current_value
+            
+            # 更新成本和份额
+            total_buy_cost = shares * avg_cost_per_share + BUY_AMOUNT_PER_TRADE
+            shares += buy_shares
+            avg_cost_per_share = total_buy_cost / shares
+            cash -= BUY_AMOUNT_PER_TRADE
+            
+            trade_log.append({
+                'Date': current_date, 'Action': 'BUY', 
+                'Shares': buy_shares, 'Value': current_value,
+                'RSI': current_rsi, 'Equity': total_equity
+            })
+
+    # --- 最终结算 ---
+    # 如果回测结束时仍有持仓，则以最后一日净值清仓
+    final_equity = cash + shares * df['value'].iloc[-1]
+    equity_values[-1] = final_equity # 修正最后一天的总资产
     
-    # 3. 回撤指标 (近 30 天)
-    df_recent_month = df_window.tail(30)['value']
-    mdd_recent_month = calculate_max_drawdown(df_recent_month)
+    # 5. 性能指标计算
+    df_equity = pd.Series(equity_values, index=df['date'])
+    df_equity = df_equity.replace(0, np.nan).dropna() # 避免初始0值影响计算
     
-    # 4. 连续下跌 (仅供报告参考，不作为买入硬性条件)
-    df_recent_week = df_window.tail(5)['value']
-    max_drop_days_week = calculate_consecutive_drops(df_recent_week)
+    total_return = (final_equity - initial_capital) / initial_capital
+    max_drawdown = calculate_max_drawdown(df_equity)
+    
+    # 简化年化收益率和夏普比率计算 (假设 252 个交易日)
+    years = (df_equity.index[-1] - df_equity.index[0]).days / 365.25
+    annual_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+    
+    # 计算每日收益率并计算夏普比率 (假设无风险利率为 2%)
+    daily_returns = df_equity.pct_change().dropna()
+    annual_volatility = daily_returns.std() * np.sqrt(252)
+    risk_free_rate = 0.02
+    sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility != 0 else np.nan
 
     return {
-        'RSI': rsi_val,
-        'MA50/MA250': ma50_to_ma250,
-        'MA50/MA250趋势': trend_direction,
-        '最大回撤(1M)': mdd_recent_month,
-        '近一周连跌': max_drop_days_week
+        '基金代码': fund_code,
+        '起始资金': initial_capital,
+        '最终资产': round(final_equity, 2),
+        '总收益率': round(total_return, 4),
+        '最大回撤': round(max_drawdown, 4),
+        '年化收益率': round(annual_return, 4),
+        '夏普比率': round(sharpe_ratio, 2),
+        '交易次数': len([t for t in trade_log if t['Action'] != 'BUY']) # 只统计卖出次数
     }
 
+# --- 数据加载与主控函数 ---
 
-# --- 策略信号生成函数 (Buy Signal) ---
-def check_buy_signal(indicators):
-    """
-    【最终修复版本 - P2调试策略】检查是否触发买入信号。
-    条件：高弹性 (回撤 >= 10%) + RSI强力超卖 (<= 35.0) + 忽略趋势。
-    **已移除过于严格的 '近一周连跌 = 1' 限制。**
-    """
-    if indicators is None:
-        return False
+def load_fund_data(filepath, fund_code):
+    """ 加载和清洗数据 (与 analyzer.py 逻辑相似) """
+    try:
+        df = pd.read_csv(filepath, encoding='utf-8')
+    except UnicodeDecodeError:
+        df = pd.read_csv(filepath, encoding='gbk')
+    except Exception as e:
+        logging.error(f"加载基金 {filepath} 失败: {e}")
+        return None
 
-    # Filter 1: 高弹性要求 (回撤 >= 10%)
-    # 关键修复：仅保留回撤深度要求，移除 '近一周连跌 = 1'
-    is_elastic = (indicators['最大回撤(1M)'] >= HIGH_ELASTICITY_MIN_DRAWDOWN)
-
-    # Filter 2: RSI 强力超卖 (使用 P2 阈值 35.0)
-    is_p2_oversold = indicators['RSI'] <= STRONG_RSI_THRESHOLD_P2
+    if 'date' not in df.columns or 'net_value' not in df.columns:
+        return None
+        
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
+    df = df.rename(columns={'net_value': 'value'})
     
-    # Filter 3: 趋势健康度检查 (DEBUG: 暂时设置为 True，跳过检查)
-    is_trend_healthy = True 
-    
-    return is_elastic and is_p2_oversold and is_trend_healthy
+    if len(df) < 250: # 至少需要一年的数据进行有效回测
+         logging.warning(f"基金 {fund_code} 数据不足 250 条，跳过回测。")
+         return None
+         
+    return df
 
-
-# --- 历史回测主函数 ---
-def backtest_strategy(start_date_str, end_date_str):
-    """对所有基金进行历史回测"""
-    LOG = setup_logging()
+def main_backtester():
+    """ 回测主函数 """
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+    logging.info("--- 基金超卖回测脚本启动 ---")
     
-    trades = []
     csv_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
-    
     if not csv_files:
-        LOG.error(f"在目录 '{FUND_DATA_DIR}' 中未找到CSV文件")
-        return []
+        logging.error(f"在目录 '{FUND_DATA_DIR}' 中未找到CSV文件。请确保数据已放置。")
+        return
 
-    LOG.info(f"开始回测，时间范围: {start_date_str} 至 {end_date_str}")
+    results = []
     
     for filepath in csv_files:
-        filename = os.path.basename(filepath)
-        fund_code = os.path.splitext(filename)[0]
+        fund_code = os.path.splitext(os.path.basename(filepath))[0]
+        logging.info(f"开始回测基金: {fund_code}...")
         
-        if filename in EXCLUDE_FILES:
-            LOG.info(f"跳过排除列表中的文件: {filename}")
-            continue
+        df_fund = load_fund_data(filepath, fund_code)
+        if df_fund is not None:
+            backtest_result = run_backtest(df_fund, fund_code)
+            if backtest_result:
+                results.append(backtest_result)
+    
+    if results:
+        df_results = pd.DataFrame(results).sort_values(by='总收益率', ascending=False)
+        generate_backtest_report(df_results)
+    else:
+        logging.info("没有基金数据满足回测要求。")
 
-        try:
-            df = pd.read_csv(filepath)
-            
-            # 兼容列名
-            if 'net_value' in df.columns:
-                df = df.rename(columns={'net_value': 'value'})
-            elif 'value' not in df.columns:
-                value_cols = [col for col in df.columns if 'value' in col or '净值' in col]
-                if value_cols:
-                    df = df.rename(columns={value_cols[0]: 'value'})
-                else:
-                    raise KeyError("CSV文件缺少 'date' 或 'net_value'/'value' 列")
+def generate_backtest_report(df_results):
+    """ 生成回测报告 Markdown 文件 """
+    report_parts = []
+    
+    report_parts.extend([
+        f"# 基金超卖策略回测报告 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})\n\n",
+        f"**回测周期:** {BACKTEST_START_DATE} 至 {BACKTEST_END_DATE}\n",
+        f"**策略:** RSI(14) $\\le {EXTREME_RSI_THRESHOLD_P1:.0f}$ 时买入 $\\yen {BUY_AMOUNT_PER_TRADE:.0f}$。\n",
+        f"**风控:** 止损 $\\le -{STOP_LOSS_PERCENT*100:.0f}\\%$；止盈 $\\ge {STOP_PROFIT_PERCENT*100:.0f}\\%$。\n\n",
+        f"## 📊 总体性能指标\n\n"
+    ])
 
-            if 'date' not in df.columns:
-                raise KeyError("CSV文件缺少 'date' 列")
+    TABLE_HEADER = "| 基金代码 | 最终资产 (¥) | **总收益率** | **年化收益率** | 最大回撤 | 夏普比率 | 交易次数 |\n"
+    TABLE_SEPARATOR = "| :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
+    report_parts.append(TABLE_HEADER)
+    report_parts.append(TABLE_SEPARATOR)
 
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
-            
-            df_test = df[(df['date'] >= start_date_str) & (df['date'] <= end_date_str)].copy()
-            
-            if df_test.empty or len(df_test) < 250:
-                LOG.warning(f"基金 {fund_code} 数据不足或不在回测范围内，跳过。")
-                continue
-
-            LOG.debug(f"开始回测基金: {fund_code}")
-            
-            active_position = None
-            
-            for i in range(len(df_test)):
-                original_df_index = df_test.index[i] 
-                
-                current_date = df_test.iloc[i]['date']
-                current_price = df_test.iloc[i]['value']
-                
-                # --- 1. 处理现有持仓 (Exit Logic) ---
-                if active_position:
-                    entry_price = active_position['entry_price']
-                    entry_date = active_position['buy_date']
-                    
-                    stop_loss_price = entry_price * (1 - STOP_LOSS_PERCENT)
-                    is_stop_loss = current_price <= stop_loss_price
-                    
-                    entry_index = active_position['entry_index']
-                    is_time_up = (i - entry_index) >= HOLDING_PERIOD
-                    
-                    if is_stop_loss or is_time_up:
-                        exit_price = current_price
-                        exit_date = current_date
-                        
-                        trades.append({
-                            '基金代码': fund_code,
-                            '买入日期': entry_date.strftime('%Y-%m-%d'),
-                            '卖出日期': exit_date.strftime('%Y-%m-%d'),
-                            '买入净值': entry_price,
-                            '卖出净值': exit_price,
-                            '收益率': (exit_price - entry_price) / entry_price,
-                            '退出原因': '止损' if is_stop_loss else '周期结束'
-                        })
-                        active_position = None 
-
-                # --- 2. 检查买入信号 (Buy Logic) ---
-                if active_position is None:
-                    indicators = calculate_indicators_at_date(df, original_df_index)
-                    
-                    if check_buy_signal(indicators):
-                        active_position = {
-                            'buy_date': current_date,
-                            'entry_price': current_price,
-                            'entry_index': i 
-                        }
+    for index, row in df_results.iterrows():
+        # 突出显示收益率最高的基金
+        gain_display = f"**{row['总收益率']:.2%}**"
+        annual_gain_display = f"**{row['年化收益率']:.2%}**"
         
-        except KeyError as e:
-            LOG.error(f"处理基金 {fund_code} 时发生数据列错误: {e}")
-            continue
-        except Exception as e:
-            LOG.error(f"处理基金 {fund_code} 时发生未知错误: {e}")
-            continue
-
-    return trades
-
-# --- 结果分析函数 ---
-def analyze_results(trades):
-    """计算回测结果统计"""
-    if not trades:
-        return "回测结果为空，没有发生交易。"
-
-    df_trades = pd.DataFrame(trades)
-    
-    avg_return = df_trades['收益率'].mean()
-    total_trades = len(df_trades)
-    winning_trades = len(df_trades[df_trades['收益率'] > 0])
-    losing_trades = total_trades - winning_trades
-    win_rate = winning_trades / total_trades
-    
-    report = [
-        "## 历史回测结果\n",
-        f"**总交易次数:** {total_trades}",
-        f"**获胜次数:** {winning_trades}",
-        f"**失败次数:** {losing_trades}",
-        f"**胜率:** {win_rate:.2%}",
-        f"**平均单次收益率:** {avg_return:.2%}\n",
-        "### 交易详情\n",
-        "| 基金代码 | 买入日期 | 卖出日期 | 退出原因 | 收益率 | 买入净值 | 卖出净值 |\n",
-        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
-    ]
-    
-    for _, row in df_trades.sort_values(by='收益率', ascending=False).head(50).iterrows():
-        report.append(
-            f"| `{row['基金代码']}` | {row['买入日期']} | {row['卖出日期']} | {row['退出原因']} | **{row['收益率']:.2%}** | {row['买入净值']:.4f} | {row['卖出净值']:.4f} |\n"
+        report_parts.append(
+            f"| `{row['基金代码']}` | {row['最终资产']:.2f} | {gain_display} | {annual_gain_display} | "
+            f"{row['最大回撤']:.2%} | {row['夏普比率']:.2f} | {int(row['交易次数'])} |\n"
         )
-    
-    if total_trades > 50:
-         report.append(f"|...|...|...|...|...|...|...|\n")
-         report.append(f"**（仅显示收益率最高的 50 笔交易，总计 {total_trades} 笔交易）**\n")
-
-    return "".join(report)
+        
+    with open(REPORT_FILE_NAME, 'w', encoding='utf-8') as f:
+        f.write("".join(report_parts))
+        
+    logging.info(f"回测完成，报告已保存到 {REPORT_FILE_NAME}")
 
 
 if __name__ == '__main__':
-    # --- 回测配置 ---
-    END_DATE = datetime.now() 
-    START_DATE = END_DATE - timedelta(days=365) 
-
-    START_DATE_STR = START_DATE.strftime('%Y-%m-%d')
-    END_DATE_STR = END_DATE.strftime('%Y-%m-%d')
-
-    # 执行回测
-    all_trades = backtest_strategy(START_DATE_STR, END_DATE_STR)
-    
-    # 生成报告
-    final_report = analyze_results(all_trades)
-    
-    # 保存报告到文件
-    report_filename = f"backtest_report_{END_DATE.strftime('%Y%m%d')}.md"
-    try:
-        with open(report_filename, 'w', encoding='utf-8') as f:
-            f.write(final_report)
-    except TypeError as e:
-        print(f"写入报告文件时发生错误: {e}. 最终报告内容如下:\n")
-        print(final_report)
-        exit(1)
-
-    print(f"\n--- 回测报告已生成 ---\n报告文件: {report_filename}\n")
-    print("脚本执行完毕。")
+    # 注意：运行此脚本前，您需要创建 'fund_data' 目录并放入 CSV 数据文件。
+    main_backtester()
+    print("回测脚本执行完毕。")
