@@ -2,29 +2,29 @@ name: 基金回测与报告推送 (Fund Backtest and Report Push)
 
 # --- 触发条件配置 ---
 on:
-  # 1. 手动触发
+  # 1. 手动触发：允许在 GitHub Actions 界面手动运行
   workflow_dispatch:
     inputs:
       reason:
         description: '手动运行的原因 (可选)'
         required: false
-        default: 'Manual trigger for backtesting'
+        default: 'Manual trigger for V5.0 backtesting'
 
   # 2. 自动触发：当特定文件变动时自动运行
   push:
     branches:
-      - main  
+      - main  # 假设您的主分支是 main
     paths:
-      # 触发路径改为匹配所有 backtester 脚本
+      # 兼容所有 backtester 脚本
       - 'backtester*.py' 
       - '.github/workflows/backtest_and_push.yml'
 
 # 定义环境变量
 env:
   TZ: 'Asia/Shanghai'
-  # ***** 关键修复 1: 报告文件名改为 V4 脚本的输出 *****
-  REPORT_FILE_NAME: 'fund_backtest_v4_report.md'
-  REPORT_DIR: 'backtest_reports'
+  # ***** 关键修复 1: 报告文件名更新为 V5.0 脚本的输出 *****
+  REPORT_FILE_NAME: 'fund_backtest_v5_report.md'
+  REPORT_DIR: 'backtest_reports' # 报告保存的目录
 
 jobs:
   run_backtest_and_push:
@@ -43,6 +43,7 @@ jobs:
           python-version: '3.10'
 
       - name: 📥 安装依赖 (Install dependencies)
+        # V5.0 脚本依赖 pandas, numpy 和 pytz
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy pytz
@@ -51,14 +52,12 @@ jobs:
         run: |
           if [ ! -d "fund_data" ]; then
             echo "::error:: fund_data 目录不存在！请在仓库根目录创建该目录并放入CSV文件。"
-            # 这里的 exit 1 会在找不到 fund_data 时立刻终止工作流
-            exit 1 
+            exit 1
           fi
           
-      # ***** 关键修复 2: 运行 V4 脚本 *****
-      - name: 🚀 运行 V4 回测脚本 (Run backtester_v4.py)
-        # 运行最新的 V4 脚本，它会生成 fund_backtest_v4_report.md
-        run: python backtester_v4.py
+      # ***** 关键修复 2: 运行 V5.0 脚本 *****
+      - name: 🚀 运行 V5.0 回测脚本 (Run backtester_v5.py)
+        run: python backtester_v5.py
         
       # ***** 新增步骤: 检查文件是否生成，防止 mv 报错 *****
       - name: 🔍 检查报告文件是否生成 (防mv报错)
@@ -69,7 +68,7 @@ jobs:
             echo "✅ 报告文件 ${{ env.REPORT_FILE_NAME }} 成功找到。"
           else
             echo "report_found=false" >> $GITHUB_OUTPUT
-            echo "❌ 报告文件 ${{ env.REPORT_FILE_NAME }} 未生成，跳过推送。"
+            echo "❌ 报告文件 ${{ env.REPORT_FILE_NAME }} 未生成，脚本可能因数据不足而跳过或报错。"
           fi
 
       # 只有当报告文件找到时，才执行后续的 Git 操作 (使用 if 条件)
@@ -84,14 +83,16 @@ jobs:
         run: |
           mkdir -p ${{ env.REPORT_DIR }}
           
+          # 生成带时区的精确时间戳
           TIMESTAMP=$(TZ='${{ env.TZ }}' date +%Y%m%d_%H%M%S)
-          TARGET_FILE="${{ env.REPORT_DIR }}/backtest_report_${TIMESTAMP}}.md"
+          TARGET_FILE="${{ env.REPORT_DIR }}/backtest_report_${TIMESTAMP}.md"
           
-          # 移动报告文件 (现在文件名应该匹配了)
+          # 移动报告文件
           mv ${{ env.REPORT_FILE_NAME }} ${TARGET_FILE}
           
           git add ${TARGET_FILE}
           
+          # 此外，创建一个名为 "latest.md" 的文件，用于快速查看最新结果
           cp ${TARGET_FILE} ${{ env.REPORT_DIR }}/latest.md
           git add ${{ env.REPORT_DIR }}/latest.md
 
@@ -101,7 +102,7 @@ jobs:
           if git diff --cached --exit-code; then
             echo "没有新的报告文件生成，无需提交。"
           else
-            # 提交信息也改为 V4
-            git commit -m "🤖 Auto-generated V4 backtest report: $(TZ='${{ env.TZ }}' date +%Y-%m-%d %H:%M:%S)"
+            # 提交信息也改为 V5
+            git commit -m "🤖 Auto-generated V5 backtest report: $(TZ='${{ env.TZ }}' date +%Y-%m-%d %H:%M:%S)"
             git push
           fi
