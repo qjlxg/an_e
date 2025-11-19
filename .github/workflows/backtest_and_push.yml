@@ -86,8 +86,8 @@ jobs:
         run: |
           mkdir -p ${{ env.REPORT_DIR }}
 
-          # 生成带时区的精确时间戳
-          TIMESTAMP=$(TZ='${{ env.TZ }}' date +%Y%m%d_%H%M%S)
+          # 生成带时区的精确时间戳 (已修复：使用单引号包裹格式字符串)
+          TIMESTAMP=$(TZ='${{ env.TZ }}' date '+%Y%m%d_%H%M%S')
           TARGET_FILE="${{ env.REPORT_DIR }}/backtest_report_${TIMESTAMP}.md"
 
           # 移动报告文件
@@ -105,8 +105,8 @@ jobs:
           if git diff --cached --exit-code; then
             echo "没有新的报告文件生成，无需提交。"
           else
-            # 提交信息也改为 V5
-            COMMIT_MSG="🤖 Auto-generated V5 backtest report: $(TZ='${{ env.TZ }}' date +%Y-%m-%d %H:%M:%S)"
+            # 提交信息也改为 V5 (已修复：使用单引号包裹格式字符串)
+            COMMIT_MSG="🤖 Auto-generated V5 backtest report: $(TZ='${{ env.TZ }}' date '+%Y-%m-%d %H:%M:%S')"
             git commit -m "${COMMIT_MSG}"
 
             # ⭐️ 关键修复：在推送前先拉取并合并远程更改
