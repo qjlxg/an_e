@@ -7,11 +7,11 @@ import pytz
 import logging
 import math
 
-# --- 配置参数 (完整保留) ---
+# --- 配置参数 (完整保留) ---# 只有近一个月最大回撤达到 $15\%$ 或更高的基金，才会进入报告中的高优先级超卖判断。
 FUND_DATA_DIR = 'fund_data'
-MIN_CONSECUTIVE_DROP_DAYS = 3
-MIN_MONTH_DRAWDOWN = 0.06
-HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
+MIN_CONSECUTIVE_DROP_DAYS = 3#表示最小连续下跌天数为 3 天
+MIN_MONTH_DRAWDOWN = 0.10  #(即 10%) 是基础回撤条件，所有基金只有达到这个回撤才会被纳入报告。
+HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15  # (即 15%) 是用于定义 "高弹性" 基金的更严格回撤条件，只有达到这个条件的基金才会进入报告中的第一和第二优先级 (P1, P2) 筛选，并触发行动提示中的超卖判断。
 MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report'
 
