@@ -10,7 +10,7 @@ import math
 # --- V5.0 策略所需配置参数 ---
 FUND_DATA_DIR = 'fund_data'
 MIN_MONTH_DRAWDOWN = 0.06 # V5.0 震荡市核心触发 (回撤 >= 5%, 此处使用 6% 近似筛选)
-HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10 # 高弹性策略的基础回撤要求 (10%)
+HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15 # 高弹性策略的基础回撤要求 (15%)
 MIN_DAILY_DROP_PERCENT = 0.03 # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report_v5'
 
