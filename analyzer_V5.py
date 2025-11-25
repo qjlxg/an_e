@@ -12,13 +12,14 @@ FUND_DATA_DIR = 'fund_data'
 MIN_MONTH_DRAWDOWN = 0.06 # V5.0 震荡市核心触发 (回撤 >= 5%, 此处使用 6% 近似筛选)
 HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15 # 高弹性策略的基础回撤要求 (15%)
 MIN_DAILY_DROP_PERCENT = 0.03 # 当日大跌的定义 (3%)
-REPORT_BASE_NAME = 'fund_warning_report_v5_auto_filter'
+REPORT_BASE_NAME = 'fund_warning_report_v5_final_filter'
 
 # --- 核心阈值调整 ---
 EXTREME_RSI_THRESHOLD_P1 = 29.0 # 网格级：RSI(14) 极值超卖
 STRONG_RSI_THRESHOLD_P2 = 35.0 # 强力超卖观察池
 SHORT_TERM_RSI_EXTREME = 20.0 # RSI(6)的极值超卖阈值
 TREND_HEALTH_THRESHOLD = 0.95 # MA50/MA250 健康度阈值
+MIN_BUY_SIGNAL_SCORE = 4.0 # 【新增】可试仓组的最低信号分数要求 (只允许 网格级/高吸/防御)
 
 # --- 设置日志 (函数配置 1/13) ---
 def setup_logging():
@@ -37,7 +38,6 @@ def validate_fund_data(df, fund_code):
     """验证基金数据的完整性和质量"""
     if df.empty: return False, "数据为空"
     if 'value' not in df.columns: return False, "缺少净值列"
-    # 【已保留】最小数据要求为 60
     if len(df) < 60: return False, f"数据不足60条，当前只有{len(df)}条"
     if (df['value'] <= 0).any(): return False, "存在无效净值(<=0)"
     return True, "数据有效"
@@ -92,14 +92,9 @@ def calculate_technical_indicators(df):
     try:
         if 'value' not in df_asc.columns or len(df_asc) < 60:
             return {
-                'RSI(14)': np.nan, 
-                'RSI(6)': np.nan, 
-                'MACD信号': '数据不足', 
-                '净值/MA50': np.nan,
-                '净值/MA250': np.nan, 
-                'MA50/MA250': np.nan, 
-                'MA50/MA250趋势': '数据不足',
-                '布林带位置': '数据不足', 
+                'RSI(14)': np.nan, 'RSI(6)': np.nan, 'MACD信号': '数据不足', 
+                '净值/MA50': np.nan, '净值/MA250': np.nan, 'MA50/MA250': np.nan, 
+                'MA50/MA250趋势': '数据不足', '布林带位置': '数据不足', 
                 '最新净值': df_asc['value'].iloc[-1] if not df_asc.empty else np.nan,
                 '当日跌幅': np.nan
             }
@@ -110,7 +105,6 @@ def calculate_technical_indicators(df):
         for window in [14, 6]:
             gain = (delta.where(delta > 0, 0)).rolling(window=window, min_periods=1).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=window, min_periods=1).mean()
-            # 使用 EWM 平滑计算 RS，以降低极端值影响，但这块逻辑保持与原文一致
             rs = gain / loss.replace(0, np.nan) 
             df_asc[f'RSI_{window}'] = 100 - (100 / (1 + rs))
 
@@ -200,7 +194,6 @@ def calculate_technical_indicators(df):
 def calculate_consecutive_drops(series):
     try:
         if series.empty or len(series) < 2: return 0
-        
         drops = (series.diff() < 0).values
         max_drop_days = 0
         current_drop_days = 0
@@ -221,7 +214,6 @@ def calculate_consecutive_drops(series):
 def calculate_max_drawdown(series):
     try:
         if series.empty: return 0.0
-        
         rolling_max = series.cummax()
         drawdown = (rolling_max - series) / rolling_max
         return drawdown.max()
@@ -329,7 +321,6 @@ def analyze_single_fund(filepath):
         
         action_prompt = generate_v5_action_signal(row_data)
         
-        # 无论是否达到 MIN_MONTH_DRAWDOWN，只要有数据，就返回，让 generate_report 处理所有筛选和排序
         if not pd.isna(tech_indicators['最新净值']):
              return {
                 '基金代码': fund_code,
@@ -375,7 +366,6 @@ def format_table_row(index, row, table_part=1):
     
     if is_data_insufficient:
         trend_status = "---"
-    # 使用 TREND_HEALTH_THRESHOLD 0.95 来判断
     elif trend_display == '向下' or (not pd.isna(ma_ratio) and ma_ratio < TREND_HEALTH_THRESHOLD): 
         trend_status = f"⚠️ **{trend_display}** ({ma_ratio_display})"
     else:
@@ -386,9 +376,13 @@ def format_table_row(index, row, table_part=1):
 
     if table_part == 1:
         # 表格 1 (7列): 排名, 基金代码, 最大回撤 (1M), 当日涨跌幅, RSI(14), RSI(6), 行动提示
+        # RSI值如果极值超卖，字体加粗
+        rsi14_display = f"**{row['RSI(14)']:.2f}**" if not pd.isna(row['RSI(14)']) and row['RSI(14)'] <= STRONG_RSI_THRESHOLD_P2 else f"{row['RSI(14)']:.2f}"
+        rsi6_display = f"**{row['RSI(6)']:.2f}**" if not pd.isna(row['RSI(6)']) and row['RSI(6)'] <= SHORT_TERM_RSI_EXTREME else f"{row['RSI(6)']:.2f}"
+        
         return (
             f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
-            f"{daily_drop_display} | **{row['RSI(14)']:.2f}** | **{row['RSI(6)']:.2f}** | **{row['行动提示']}** |\n"
+            f"{daily_drop_display} | {rsi14_display} | {rsi6_display} | **{row['行动提示']}** |\n"
         )
     else:
         # 表格 2 (8列): 基金代码, MACD信号, 布林带位置, 净值/MA50, MA50/MA250趋势健康度, 净值/MA250, 试水买价
@@ -401,7 +395,7 @@ def format_table_row(index, row, table_part=1):
 # --- 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
     """
-    生成完整的Markdown格式报告，使用综合评分实现 V5.0 最终决策排序。
+    生成完整的Markdown格式报告，使用综合评分实现 V5.0 最终决策排序，并增加信号下限过滤。
     """
     try:
         if not results:
@@ -428,35 +422,45 @@ def generate_report(results, timestamp_str):
         df_filtered.loc[df_filtered['行动提示'].str.contains('【震荡-关注】'), 'signal_score'] = 1
         
         # 3. 趋势过滤器 (Trend Filter)
-        # 趋势健康度：健康 = 100, 不健康 = 0, 数据不足 = 50
         def get_trend_score(row):
             trend = row['MA50/MA250趋势']
             ratio = row['MA50/MA250']
             
-            # 数据不足或 MA250 缺失
             if pd.isna(ratio) or trend == '数据不足':
-                return 50 # 中立，但需要人工审核
+                return 50 # 数据不足/需人工审核
                 
-            # 不健康：趋势向下 或 MA50/MA250 < 0.95
             if trend == '向下' or ratio < TREND_HEALTH_THRESHOLD:
                 return 0 # 拒绝买入
             
-            # 健康：趋势平稳/向上 且 MA50/MA250 >= 0.95
             return 100 # 允许买入
 
         df_filtered['trend_score'] = df_filtered.apply(get_trend_score, axis=1)
 
-        # 4. V5.0 综合评分 (Final Score) - 决定最终排名
-        # 综合评分 = 信号分数 * 趋势过滤器 (100) + 最大回撤 (作为次级排序)
+        # 4. V5.0 综合评分 (Final Score)
         df_filtered['final_score'] = df_filtered['signal_score'] * (df_filtered['trend_score'] / 100) * 1000 + (df_filtered['最大回撤'] * 100)
         
-        # 5. 分组和排序
-        df_sorted = df_filtered.sort_values(by=['final_score', '最大回撤'], ascending=[False, False]).reset_index(drop=True)
+        # 5. 分组
+        # A. 可试仓/最佳共振：趋势健康 AND 信号分数 >= MIN_BUY_SIGNAL_SCORE (4.0)
+        df_buy = df_filtered[(df_filtered['trend_score'] == 100) & (df_filtered['signal_score'] >= MIN_BUY_SIGNAL_SCORE)].copy()
         
-        # 6. 报告分组：直接将趋势不健康的排除在可买组之外
-        df_buy = df_sorted[df_sorted['trend_score'] == 100]
-        df_reject_trend = df_sorted[df_sorted['trend_score'] == 0]
-        df_need_check = df_sorted[df_sorted['trend_score'] == 50]
+        # B. 弱信号/等待确认：趋势健康 AND 信号分数 < MIN_BUY_SIGNAL_SCORE (如 关注/预警)
+        df_weak_signal = df_filtered[(df_filtered['trend_score'] == 100) & (df_filtered['signal_score'] < MIN_BUY_SIGNAL_SCORE)].copy()
+        
+        # C. 趋势不明确：趋势分数 = 50
+        df_need_check = df_filtered[df_filtered['trend_score'] == 50].copy()
+        
+        # D. 趋势不健康：趋势分数 = 0
+        df_reject_trend = df_filtered[df_filtered['trend_score'] == 0].copy()
+        
+        
+        # 6. 报告排序 (各自组内排序)
+        # 可试仓组：按信号分数和回撤排序 (最高优先级)
+        df_buy_sorted = df_buy.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
+        # 弱信号组：按信号分数和回撤排序 (中等优先级)
+        df_weak_signal_sorted = df_weak_signal.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
+        # 拒绝/审核组：按回撤排序 (次要优先级)
+        df_need_check_sorted = df_need_check.sort_values(by='最大回撤', ascending=False)
+        df_reject_trend_sorted = df_reject_trend.sort_values(by='最大回撤', ascending=False)
         
         
         report_parts = []
@@ -464,43 +468,46 @@ def generate_report(results, timestamp_str):
             f"# 基金 V5.0 策略选股报告 ({timestamp_str} UTC+8)\n\n",
             f"## 分析总结\n\n",
             f"本次分析共发现 **{len(df_filtered)}** 只基金满足基础回撤条件（$\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）。\n",
-            f"其中，**{len(df_buy)}** 只基金**通过趋势健康度审核**，可根据 V5.0 姿态试仓。\n",
-            f"**决策重点：** **V5.0 策略启动必须先进行宏观环境判断！** 本报告已自动过滤趋势不健康的基金。\n",
+            f"其中，**{len(df_buy)}** 只基金同时满足 **趋势健康度** 和 **最低信号强度** ($\ge {MIN_BUY_SIGNAL_SCORE:.1f}$)，被列为**最佳试仓目标**。\n",
+            f"**决策重点：** **V5.0 策略启动必须先进行宏观环境判断！** 请优先从 I 组选择标的。\n",
             f"\n---\n"
         ])
         
         
-        # --- 报告内容生成 ---
-        
-        # A. 【可试仓/最高优先级】 (通过趋势健康度审核)
-        if not df_buy.empty:
-            
-            # 重新按信号强度（非最终分）排序，以保证网格级在最前
-            df_buy_sorted = df_buy.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
-            
+        # A. 【可试仓/最高优先级】 (通过趋势健康度审核 & 强信号)
+        if not df_buy_sorted.empty:
             report_parts.extend([
-                f"\n## 🏆 I. 【V5.0 可试仓/最佳共振目标】 ({len(df_buy)}只)\n\n",
-                f"**纪律：** 这些基金 **通过趋势健康度审核** (MA50/MA250 $\\ge {TREND_HEALTH_THRESHOLD}$ 且趋势非向下)。**可根据信号强度和宏观姿态（游击/防御）确定仓位。**\n\n"
+                f"\n## 🏆 I. 【V5.0 可试仓/最佳共振目标】 ({len(df_buy_sorted)}只)\n\n",
+                f"**纪律：** 这些基金 **趋势健康** 且具有 **强信号**（网格级/高吸/防御），是**优先选择**的试仓标的。\n\n"
             ])
             report_parts.extend(generate_group_tables(df_buy_sorted))
 
         
-        # B. 【趋势不明确/需人工审核】 (数据不足)
-        if not df_need_check.empty:
+        # B. 【弱信号/等待确认】 (趋势健康 & 弱信号)
+        if not df_weak_signal_sorted.empty:
             report_parts.extend([
-                f"\n## 🔍 II. 【趋势不明确/需人工审核】 ({len(df_need_check)}只)\n\n",
+                f"\n## 💡 II. 【弱信号/等待确认】 ({len(df_weak_signal_sorted)}只)\n\n",
+                f"**纪律：** 这些基金 **趋势健康** 但信号较弱（如【关注】/【预警】）。**需等待信号增强，或在极特殊情况下少量试仓。**\n\n"
+            ])
+            report_parts.extend(generate_group_tables(df_weak_signal_sorted))
+        
+        
+        # C. 【趋势不明确/需人工审核】 (数据不足)
+        if not df_need_check_sorted.empty:
+            report_parts.extend([
+                f"\n## 🔍 III. 【趋势不明确/需人工审核】 ({len(df_need_check_sorted)}只)\n\n",
                 f"**纪律：** 这些基金**数据不足 250 天** 或 **技术指标计算有误**。回撤已达标，但需**手动核查** MA50/MA250 健康度。\n\n"
             ])
-            report_parts.extend(generate_group_tables(df_need_check))
+            report_parts.extend(generate_group_tables(df_need_check_sorted))
             
 
-        # C. 【趋势不健康/必须放弃】 (未通过趋势健康度审核)
-        if not df_reject_trend.empty:
+        # D. 【趋势不健康/必须放弃】 (未通过趋势健康度审核)
+        if not df_reject_trend_sorted.empty:
             report_parts.extend([
-                f"\n## ❌ III. 【趋势不健康/必须放弃】 ({len(df_reject_trend)}只)\n\n",
-                f"**纪律：** 这些基金**未通过趋势健康度审核**（趋势向下 或 MA50/MA250 $< {TREND_HEALTH_THRESHOLD}$）。**风险过高，请放弃试仓。**\n\n"
+                f"\n## ❌ IV. 【趋势不健康/必须放弃】 ({len(df_reject_trend_sorted)}只)\n\n",
+                f"**纪律：** 这些基金**未通过趋势健康度审核**。**风险过高，请放弃试仓。**\n\n"
             ])
-            report_parts.extend(generate_group_tables(df_reject_trend))
+            report_parts.extend(generate_group_tables(df_reject_trend_sorted))
 
 
         # 策略执行纪律（最后再次强调 V5.0 的宏观判断）
@@ -547,7 +554,6 @@ def generate_group_tables(df_group):
         TABLE_2_SEPARATOR
     ])
 
-    # 在这里重置索引，以便 Table 2 仍然能正确匹配 Table 1 的分组
     current_index = 0 
     for _, row in df_group.iterrows():
         current_index += 1
@@ -598,6 +604,6 @@ def main():
 if __name__ == '__main__':
     success = main()
     if success:
-        print("脚本执行完毕。V5.0 策略报告已更新为'最终决策模式'，自动过滤趋势不健康基金。")
+        print(f"脚本执行完毕。V5.0 策略报告已更新为'最终决策模式'，并已设置可试仓信号下限 (Score >= {MIN_BUY_SIGNAL_SCORE:.1f})。")
     else:
         print("脚本执行失败，请检查 fund_analysis.log 文件以获取详细错误信息。")
