@@ -9,9 +9,9 @@ import math
 
 # --- 配置参数 (完整保留) ---
 FUND_DATA_DIR = 'fund_data'
-MIN_CONSECUTIVE_DROP_DAYS = 3
+MIN_CONSECUTIVE_DROP_DAYS = 5
 MIN_MONTH_DRAWDOWN = 0.06
-HIGH_ELASTICITY_MIN_DRAWDOWN = 0.10  # 高弹性策略的基础回撤要求 (10%)
+HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15  # 高弹性策略的基础回撤要求 (15%)
 MIN_DAILY_DROP_PERCENT = 0.03  # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report'
 
