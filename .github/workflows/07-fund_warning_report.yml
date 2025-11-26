@@ -7,7 +7,7 @@ on:
       - '.github/workflows/07-fund_warning_report.yml'
       - 'fund_data/**.csv'
       
-  # 2. 定时运行条件：周一到周五的 21:15, 22:15, 23:15 运行
+  # 2. 定时运行条件：周一到周五的 21:15, 22:15, 23:15 运行 (北京时间)
   schedule:
     # 表达式：分钟 小时 日 月 星期
     # '15 21,22,23 * * 1-5' 表示：
@@ -19,7 +19,7 @@ on:
 
 jobs:
   analyze_funds:
-    # 设置时区为北京时间
+    # 设置时区为北京时间，确保报告中的时间戳正确
     env:
       TZ: Asia/Shanghai
       
@@ -33,20 +33,21 @@ jobs:
           fetch-depth: 0 
 
       - name: Set up Python
-        uses: actions/setup-python@v5 
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # 安装 pandas 和 requests，确保脚本运行环境完整
           pip install pandas requests
 
       - name: Run fund analysis script
         id: analysis
         run: python analyzer_V5.py
 
-      - name: Commit and push report (Manual Git Commands)
+      - name: Commit and push report
         # 仅在脚本成功运行后提交文件
         if: success()
         run: |
@@ -54,11 +55,9 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
           
-          # 查找并添加所有生成的报告文件
-          # 【更新点 1】添加所有带时间戳的 MD 文件
+          # 查找并添加所有生成的 Markdown 报告文件
+          # 脚本生成的文件名格式为 fund_warning_report_v5_merged_table_YYYYMMDD_HHMMSS.md
           git add '**/fund_warning_report_*.md'
-          # 【更新点 2】添加固定名称的 CSV 文件
-         # git add '**/fund_warning_report_combined.csv'
           
           # 检查是否有文件更改，如果没有则退出
           if [ -z "$(git status --porcelain)" ]; then
@@ -67,7 +66,7 @@ jobs:
           fi
           
           # 提交更改
-          git commit -m "Automated fund analysis report update"
+          git commit -m "Automated fund analysis report update: $(date +%Y-%m-%d)"
           
           # 解决非快进(non-fast-forward)错误：拉取远程更改并 rebase
           # 这确保了本地提交基于远程的最新提交，解决定时任务之间的冲突
