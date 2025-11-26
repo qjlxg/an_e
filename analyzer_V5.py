@@ -19,7 +19,7 @@ EXTREME_RSI_THRESHOLD_P1 = 29.0 # 网格级：RSI(14) 极值超卖
 STRONG_RSI_THRESHOLD_P2 = 35.0 # 强力超卖观察池
 SHORT_TERM_RSI_EXTREME = 20.0 # RSI(6)的极值超卖阈值
 TREND_HEALTH_THRESHOLD = 0.9 # **优化 5: MA50/MA250 健康度阈值 (调整为1.0)**
-MIN_BUY_SIGNAL_SCORE = 4.0 # 可试仓组的最低信号分数要求 (只允许 网格级/高吸/防御)
+MIN_BUY_SIGNAL_SCORE = 3.0 # 可试仓组的最低信号分数要求 (只允许 网格级/高吸/防御)
 TREND_SLOPE_THRESHOLD = 0.005 # **优化 4: 趋势拟合斜率阈值 (0.001 -> 0.005)**
 
 # --- 设置日志 (函数配置 1/13) ---
