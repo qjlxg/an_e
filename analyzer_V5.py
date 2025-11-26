@@ -14,12 +14,12 @@ HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15 # 高弹性策略的基础回撤要求 (15%)
 MIN_DAILY_DROP_PERCENT = 0.03 # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report_v5_merged_table'
 
-# --- 核心阈值调整 (已优化) ---
+# --- 核心阈值调整 ---
 EXTREME_RSI_THRESHOLD_P1 = 29.0 # 网格级：RSI(14) 极值超卖
 STRONG_RSI_THRESHOLD_P2 = 35.0 # 强力超卖观察池
 SHORT_TERM_RSI_EXTREME = 20.0 # RSI(6)的极值超卖阈值
-TREND_HEALTH_THRESHOLD = 0.9 # MA50/MA250 健康度阈值放宽到 0.9
-MIN_BUY_SIGNAL_SCORE = 3.5 # 最低信号分数 (排除弱金叉/连跌)，
+TREND_HEALTH_THRESHOLD = 0.9 # MA50/MA250 健康度阈值 (0.9)
+MIN_BUY_SIGNAL_SCORE = 3.7 # 最低信号分数 (根据讨论，强信号最低分设为3.7)
 TREND_SLOPE_THRESHOLD = 0.005 # 趋势拟合斜率阈值
 
 # --- 设置日志 (函数配置 1/15) ---
@@ -234,18 +234,18 @@ def calculate_consecutive_drops(series):
     """计算连续下跌天数"""
     try:
         if series.empty or len(series) < 2: return 0
+        # 检查最新一天是否下跌（与前一天相比），以便计算当前的连跌天数
         drops = (series.diff() < 0).values
-        max_drop_days = 0
         current_drop_days = 0
         
-        for is_dropped in drops[1:]:
-            if is_dropped: 
+        # 从最后一天向前计算当前的连续下跌天数 (不包括第一天，因为它是 diff 的 NaN)
+        for is_dropped in reversed(drops[1:]):
+            if is_dropped:
                 current_drop_days += 1
-                max_drop_days = max(max_drop_days, current_drop_days)
-            else: 
-                current_drop_days = 0
+            else:
+                break # 遇到上涨或平盘即停止
         
-        return max_drop_days
+        return current_drop_days
     except Exception as e:
         logging.error(f"计算连续下跌天数时发生错误: {e}")
         return 0
@@ -280,7 +280,6 @@ def generate_exit_signal(row):
         exit_signals.append("🚫 止盈/止损：MACD死叉")
         
     # 3. 止损信号：近一月回撤超限
-    # 注意：此处阈值 > 0.10 用于生成提示，与核心阈值 HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15 区分
     if mdd_recent_month > 0.10: 
         exit_signals.append(f"🛑 止损：回撤超 10% ({mdd_recent_month:.2%})")
         
@@ -293,7 +292,6 @@ def generate_exit_signal(row):
 def generate_v5_action_signal(row):
     """
     根据 V5.0 策略的技术要求，生成试仓信号。
-    注意：此处不处理止损否决逻辑，交给 format_table_row 函数进行展示层处理。
     """
     rsi_14_val = row.get('RSI(14)', np.nan)
     rsi_6_val = row.get('RSI(6)', np.nan)
@@ -385,6 +383,7 @@ def analyze_single_fund(filepath):
         
         tech_indicators = calculate_technical_indicators(df)
         
+        # 注意：这里计算的 consecutive_drop_recent 已经是当前的连跌天数
         consecutive_drop_recent = calculate_consecutive_drops(df['value'].tail(10)) 
 
         row_data = {
@@ -402,7 +401,7 @@ def analyze_single_fund(filepath):
                  '基金代码': fund_code,
                  '最大回撤': mdd_recent_month,
                  '最大连续下跌': calculate_consecutive_drops(df['value']),
-                 '近一周连跌': calculate_consecutive_drops(df['value'].tail(5)),
+                 '近10日连跌': consecutive_drop_recent,
                  **tech_indicators,
                  '行动提示': action_prompt,
                  '退出提示': exit_prompt
@@ -434,9 +433,9 @@ def format_technical_value(value, format_type='percent'):
 def format_table_row(index, row):
     """
     表格行格式化 (精简版 + 冲突处理)
-    【V5.0 修正】在 V5.0 信号中，如果触发止损，则加上否决提示。
     """
     latest_value = row.get('最新净值', 1.0)
+    # 试水买价 (跌3%) 计算保持不变
     trial_price = latest_value * (1 - 0.03) 
     
     trend_display = row['MA50/MA250趋势']
@@ -470,7 +469,6 @@ def format_table_row(index, row):
 
 
     # *** 对应精简后的表头输出 ***
-    # 移除 RSI(6), MACD信号, 布林带位置, 净值/MA50, 净值/MA250
     return (
         f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
         f"{daily_drop_display} | {rsi14_display} | {v5_signal_display} | "
@@ -488,6 +486,7 @@ def generate_report(results, timestamp_str):
 
         df_results = pd.DataFrame(results)
         
+        # 过滤出符合基础回撤条件的基金
         df_filtered = df_results[df_results['最大回撤'] >= MIN_MONTH_DRAWDOWN].copy()
         
         if df_filtered.empty:
@@ -524,7 +523,7 @@ def generate_report(results, timestamp_str):
         # 3. V5.0 综合评分 
         df_filtered['final_score'] = df_filtered['signal_score'] * (df_filtered['trend_score'] / 100) * 1000 + (df_filtered['最大回撤'] * 100)
         
-        # *** 【核心修正】新增止损否决标志 ***
+        # *** 新增止损否决标志 ***
         # 0 = 未触发止损 (可买入)；1 = 触发止损 (否决买入)
         df_filtered['is_stop_loss'] = np.where(df_filtered['最大回撤'] > 0.10, 1, 0)
         # ------------------------------------
@@ -539,6 +538,12 @@ def generate_report(results, timestamp_str):
         df_buy_sorted = df_buy.sort_values(
             by=['is_stop_loss', 'signal_score', '最大回撤'], 
             ascending=[True, False, False] # True: 0排在前面（未止损）；False: 高分高回撤排在前面
+        )
+        
+        # FIX: 对趋势不健康的基金进行排序
+        df_reject_trend_sorted = df_reject_trend.sort_values(
+            by=['最大回撤', 'signal_score'],
+            ascending=[False, False]
         )
         
         
@@ -603,13 +608,11 @@ def generate_report(results, timestamp_str):
 def generate_merged_table(df_group):
     """生成报告中的Markdown表格 (精简版)"""
     
-    # *** 简化后的新表头 ***
-    # 移除 RSI(6), MACD信号, 布林带位置, 净值/MA50, 净值/MA250
+    # *** 简化后的新表头 (9列) ***
     FULL_HEADER = (
         f"| 排名 | 基金代码 | **最大回撤 (1M)** | **当日跌幅** | RSI(14) | **V5.0 信号** | "
         f"**退出提示** | MA50/MA250健康度 | 试水买价 (跌3%) |\n"
     )
-    # *** 对应精简后的表头数量 (9列) ***
     FULL_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
     
     parts = []
@@ -651,6 +654,9 @@ def main():
         
         if not os.path.isdir(FUND_DATA_DIR):
             logging.error(f"基金数据目录 '{FUND_DATA_DIR}' 不存在，请创建该目录并放入 CSV 文件。")
+            # 即使目录不存在，也生成一个空的报告
+            with open(report_file, 'w', encoding='utf-8') as f:
+                 f.write(f"# 基金预警报告 ({timestamp_for_report} UTC+8)\n\n**错误：** 基金数据目录 `fund_data` 不存在或为空，请检查文件路径。")
             return False
 
         results = analyze_all_funds()
@@ -674,6 +680,6 @@ if __name__ == '__main__':
         
     success = main()
     if success:
-        print(f"脚本执行完毕。V5.0 策略报告已更新，包含了最新的优化和配置。")
+        print(f"脚本执行完毕。V5.0 策略报告已更新，您的 **可买入目标** 现在会排在报告最前面（🥇 I.1 组）。")
     else:
         print("脚本执行失败，请检查 fund_analysis.log 文件以获取详细错误信息。")
