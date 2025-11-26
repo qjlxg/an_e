@@ -58,7 +58,7 @@ jobs:
           # 【更新点 1】添加所有带时间戳的 MD 文件
           git add '**/fund_warning_report_*.md'
           # 【更新点 2】添加固定名称的 CSV 文件
-          git add '**/fund_warning_report_combined.csv'
+         # git add '**/fund_warning_report_combined.csv'
           
           # 检查是否有文件更改，如果没有则退出
           if [ -z "$(git status --porcelain)" ]; then
