@@ -164,7 +164,7 @@ def calculate_technical_indicators(df):
             value_t_minus_1 = df_asc['value'].iloc[-2]
             if value_t_minus_1 > 0:
                 daily_drop = (value_latest - value_t_minus_1) / value_t_minus_1
-                
+            
         # 5. 布林带位置
         bollinger_position = calculate_bollinger_bands(df_asc['value'])
 
@@ -323,13 +323,13 @@ def analyze_single_fund(filepath):
         
         if not pd.isna(tech_indicators['最新净值']):
              return {
-                '基金代码': fund_code,
-                '最大回撤': mdd_recent_month,
-                '最大连续下跌': calculate_consecutive_drops(df['value'].tail(30)),
-                '近一周连跌': calculate_consecutive_drops(df['value'].tail(5)),
-                **tech_indicators,
-                '行动提示': action_prompt
-            }
+                 '基金代码': fund_code,
+                 '最大回撤': mdd_recent_month,
+                 '最大连续下跌': calculate_consecutive_drops(df['value'].tail(30)),
+                 '近一周连跌': calculate_consecutive_drops(df['value'].tail(5)),
+                 **tech_indicators,
+                 '行动提示': action_prompt
+             }
         return None
     except Exception as e:
         logging.error(f"分析基金 {filepath} 时发生数据处理错误: {e}")
@@ -390,7 +390,7 @@ def format_table_row(index, row):
 def generate_report(results, timestamp_str):
     """
     生成完整的Markdown格式报告，使用综合评分实现 V5.0 最终决策排序，并增加信号下限过滤。
-    表格合并为一个。
+    **已根据用户要求修改：只输出 I. 【可试仓/最佳共振目标】 和 IV. 【趋势不健康/必须放弃】**
     """
     try:
         if not results:
@@ -443,8 +443,8 @@ def generate_report(results, timestamp_str):
         
         # 6. 报告排序 (各自组内排序)
         df_buy_sorted = df_buy.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
-        df_weak_signal_sorted = df_weak_signal.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
-        df_need_check_sorted = df_need_check.sort_values(by='最大回撤', ascending=False)
+        # df_weak_signal_sorted = df_weak_signal.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False]) # 不需要排序，因为不输出
+        # df_need_check_sorted = df_need_check.sort_values(by='最大回撤', ascending=False) # 不需要排序，因为不输出
         df_reject_trend_sorted = df_reject_trend.sort_values(by='最大回撤', ascending=False)
         
         
@@ -459,43 +459,39 @@ def generate_report(results, timestamp_str):
         ])
         
         
-        # A. 【可试仓/最高优先级】 (通过趋势健康度审核 & 强信号)
+        # A. 【可试仓/最高优先级】 -> I. (KEEP)
         if not df_buy_sorted.empty:
             report_parts.extend([
                 f"\n## 🏆 I. 【V5.0 可试仓/最佳共振目标】 ({len(df_buy_sorted)}只)\n\n",
                 f"**纪律：** 这些基金 **趋势健康** 且具有 **强信号**（网格级/高吸/防御），是**优先选择**的试仓标的。\n\n"
             ])
-            # **调用新的合并表格生成函数**
             report_parts.append(generate_merged_table(df_buy_sorted))
 
         
-        # B. 【弱信号/等待确认】 (趋势健康 & 弱信号)
-        if not df_weak_signal_sorted.empty:
-            report_parts.extend([
-                f"\n## 💡 II. 【弱信号/等待确认】 ({len(df_weak_signal_sorted)}只)\n\n",
-                f"**纪律：** 这些基金 **趋势健康** 但信号较弱（如【关注】/【预警】）。**需等待信号增强，或在极特殊情况下少量试仓。**\n\n"
-            ])
-            # **调用新的合并表格生成函数**
-            report_parts.append(generate_merged_table(df_weak_signal_sorted))
+        # B. 【弱信号/等待确认】 -> II. (REMOVED as requested by user)
+        # if not df_weak_signal_sorted.empty:
+        #     report_parts.extend([
+        #         f"\n## 💡 II. 【弱信号/等待确认】 ({len(df_weak_signal_sorted)}只)\n\n",
+        #         f"**纪律：** 这些基金 **趋势健康** 但信号较弱（如【关注】/【预警】）。**需等待信号增强，或在极特殊情况下少量试仓。**\n\n"
+        #     ])
+        #     report_parts.append(generate_merged_table(df_weak_signal_sorted))
         
         
-        # C. 【趋势不明确/需人工审核】 (数据不足)
-        if not df_need_check_sorted.empty:
-            report_parts.extend([
-                f"\n## 🔍 III. 【趋势不明确/需人工审核】 ({len(df_need_check_sorted)}只)\n\n",
-                f"**纪律：** 这些基金**数据不足 250 天** 或 **技术指标计算有误**。回撤已达标，但需**手动核查** MA50/MA250 健康度。\n\n"
-            ])
-            # **调用新的合并表格生成函数**
-            report_parts.append(generate_merged_table(df_need_check_sorted))
+        # C. 【趋势不明确/需人工审核】 -> III. (REMOVED as requested by user)
+        # if not df_need_check_sorted.empty:
+        #     report_parts.extend([
+        #         f"\n## 🔍 III. 【趋势不明确/需人工审核】 ({len(df_need_check_sorted)}只)\n\n",
+        #         f"**纪律：** 这些基金**数据不足 250 天** 或 **技术指标计算有误**。回撤已达标，但需**手动核查** MA50/MA250 健康度。\n\n"
+        #     ])
+        #     report_parts.append(generate_merged_table(df_need_check_sorted))
             
 
-        # D. 【趋势不健康/必须放弃】 (未通过趋势健康度审核)
+        # D. 【趋势不健康/必须放弃】 -> IV. (KEEP)
         if not df_reject_trend_sorted.empty:
             report_parts.extend([
                 f"\n## ❌ IV. 【趋势不健康/必须放弃】 ({len(df_reject_trend_sorted)}只)\n\n",
                 f"**纪律：** 这些基金**未通过趋势健康度审核**。**风险过高，请放弃试仓。**\n\n"
             ])
-            # **调用新的合并表格生成函数**
             report_parts.append(generate_merged_table(df_reject_trend_sorted))
 
 
@@ -573,6 +569,7 @@ def main():
         
         report_content = generate_report(results, timestamp_for_report)
         
+        # 注意：此处的文件路径依赖于执行环境。在实际环境中运行时，请确保 fund_data 目录存在。
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report_content)
         
