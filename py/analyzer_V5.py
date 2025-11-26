@@ -18,11 +18,11 @@ REPORT_BASE_NAME = 'fund_warning_report_v5_merged_table'
 EXTREME_RSI_THRESHOLD_P1 = 29.0 # 网格级：RSI(14) 极值超卖
 STRONG_RSI_THRESHOLD_P2 = 35.0 # 强力超卖观察池
 SHORT_TERM_RSI_EXTREME = 20.0 # RSI(6)的极值超卖阈值
-TREND_HEALTH_THRESHOLD = 0.9 # **优化：MA50/MA250 健康度阈值放宽到 0.9**
-MIN_BUY_SIGNAL_SCORE = 3.7 # 可试仓组的最低信号分数要求 (保持 3.7)
-TREND_SLOPE_THRESHOLD = 0.005 # 趋势拟合斜率阈值
+TREND_HEALTH_THRESHOLD = 1.0 # **优化 5: MA50/MA250 健康度阈值 (调整为1.0)**
+MIN_BUY_SIGNAL_SCORE = 3.7 # 可试仓组的最低信号分数要求 (只允许 网格级/高吸/防御)
+TREND_SLOPE_THRESHOLD = 0.005 # **优化 4: 趋势拟合斜率阈值 (0.001 -> 0.005)**
 
-# --- 设置日志 (函数配置 1/15) ---
+# --- 设置日志 (函数配置 1/13) ---
 def setup_logging():
     """设置日志配置"""
     logging.basicConfig(
@@ -34,45 +34,18 @@ def setup_logging():
         ]
     )
 
-# --- 数据预处理和验证 (函数配置 2/15) ---
-def load_and_preprocess_data(filepath, fund_code):
-    """
-    加载、预处理和验证基金数据。
-    **优化：抽象数据加载逻辑**
-    """
-    try:
-        # 尝试使用 UTF-8, 失败后尝试 GBK
-        try:
-            df = pd.read_csv(filepath)
-        except UnicodeDecodeError:
-            df = pd.read_csv(filepath, encoding='gbk')
-        
-        # 统一列名
-        if 'date' not in df.columns or 'net_value' not in df.columns:
-            if 'Date' in df.columns and 'NetValue' in df.columns:
-                 df = df.rename(columns={'Date': 'date', 'NetValue': 'net_value'})
-            else:
-                logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列。")
-                return None, "缺少关键列"
-            
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
-        df = df.rename(columns={'net_value': 'value'})
-        
-        if df.empty: return None, "数据为空"
-        if 'value' not in df.columns: return None, "缺少净值列"
-        if len(df) < 60: return None, f"数据不足60条，当前只有{len(df)}条"
-        if (df['value'] <= 0).any(): return None, "存在无效净值(<=0)"
-        
-        return df, "数据有效"
-        
-    except Exception as e:
-        logging.error(f"加载基金 {fund_code} 数据时发生错误: {e}")
-        return None, f"加载错误: {e}"
+# --- 验证数据 (函数配置 2/13) ---
+def validate_fund_data(df, fund_code):
+    """验证基金数据的完整性和质量"""
+    if df.empty: return False, "数据为空"
+    if 'value' not in df.columns: return False, "缺少净值列"
+    if len(df) < 60: return False, f"数据不足60条，当前只有{len(df)}条"
+    if (df['value'] <= 0).any(): return False, "存在无效净值(<=0)"
+    return True, "数据有效"
 
-# --- 布林带计算 (函数配置 3/15) ---
+# --- 布林带计算 (函数配置 3/13) ---
 def calculate_bollinger_bands(series, window=20):
-    """计算布林带位置 (逻辑不变)"""
+    """计算布林带位置"""
     if len(series) < window:
         return "数据不足"
     
@@ -100,6 +73,7 @@ def calculate_bollinger_bands(series, window=20):
     else:
         range_band = latest_upper - latest_lower
         
+        # 优化 4: 额外检查，防止 range 极小导致位置计算不稳定
         if range_band <= 1e-6:
             return "轨道中间" 
             
@@ -111,11 +85,11 @@ def calculate_bollinger_bands(series, window=20):
         else:
             return "轨道中间"
 
-# --- 技术指标计算 (函数配置 4/15) ---
+# --- 技术指标计算 (函数配置 4/13) ---
 def calculate_technical_indicators(df):
     """
-    计算基金净值的完整技术指标
-    **关键优化：RSI(EMA)修正**
+    计算基金净值的完整技术指标 (RSI(14), RSI(6), MACD, MA, 趋势等)
+    **优化：RSI除零处理；MACD死叉检测；趋势拟合窗口扩大**
     """
     df_asc = df.copy()
 
@@ -131,24 +105,19 @@ def calculate_technical_indicators(df):
 
         delta = df_asc['value'].diff()
 
-        # 1. RSI (14) & (6) - **修正为使用 EMA 平滑**
+        # 1. RSI (14) & (6)
         for window in [14, 6]:
-            # 分离涨跌
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
+            gain = (delta.where(delta > 0, 0)).rolling(window=window, min_periods=1).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=window, min_periods=1).mean()
             
-            # 使用 EMA 平滑 Gain/Loss
-            avg_gain = gain.ewm(span=window, adjust=False, min_periods=1).mean()
-            avg_loss = loss.ewm(span=window, adjust=False, min_periods=1).mean()
-            
-            # 避免 RSI 除零错误
-            rs = avg_gain / avg_loss.replace(0, 1e-10) 
+            # **优化 2: 避免 RSI 除零错误 (loss=0)**
+            rs = gain / loss.replace(0, 1e-10) 
             df_asc[f'RSI_{window}'] = 100 - (100 / (1 + rs))
 
         rsi_14_latest = df_asc['RSI_14'].iloc[-1]
         rsi_6_latest = df_asc['RSI_6'].iloc[-1]
         
-        # 2. MACD (逻辑不变)
+        # 2. MACD (包括金叉和死叉检测)
         ema_12 = df_asc['value'].ewm(span=12, adjust=False).mean()
         ema_26 = df_asc['value'].ewm(span=26, adjust=False).mean()
         df_asc['MACD'] = ema_12 - ema_26
@@ -162,16 +131,16 @@ def calculate_technical_indicators(df):
         macd_signal = '观察'
         if not np.isnan(macd_prev) and not np.isnan(signal_prev):
             is_golden_cross = macd_latest > signal_latest and macd_prev <= signal_prev
-            is_dead_cross = macd_latest < signal_latest and macd_prev >= signal_prev 
+            is_dead_cross = macd_latest < signal_latest and macd_prev >= signal_prev # **优化 3: 死叉检测**
             
             if is_golden_cross:
                 if macd_latest > 0: macd_signal = '强势金叉'
                 elif macd_latest < 0: macd_signal = '弱势金叉'
                 else: macd_signal = '金叉'
             elif is_dead_cross:
-                macd_signal = '死叉' 
+                macd_signal = '死叉' # **添加死叉信号**
         
-        # 3. 移动平均线和趋势分析 (逻辑不变)
+        # 3. 移动平均线和趋势分析
         df_asc['MA50'] = df_asc['value'].rolling(window=50, min_periods=1).mean()
         df_asc['MA250'] = df_asc['value'].rolling(window=250, min_periods=1).mean() 
         
@@ -190,11 +159,13 @@ def calculate_technical_indicators(df):
             ma50_to_ma250 = ma50_latest / ma250_latest if ma250_latest and ma250_latest != 0 else np.nan
             
             trend_direction = '数据不足'
+            # **优化 4: 延长拟合窗口到 50 天**
             recent_ratio = (df_asc['MA50'] / df_asc['MA250']).tail(50).dropna() 
             
             if len(recent_ratio) >= 5:
                 # 拟合MA50/MA250比值的斜率
                 slope = np.polyfit(np.arange(len(recent_ratio)), recent_ratio.values, 1)[0]
+                # 使用更高的 TREND_SLOPE_THRESHOLD
                 if slope > TREND_SLOPE_THRESHOLD: trend_direction = '向上'
                 elif slope < -TREND_SLOPE_THRESHOLD: trend_direction = '向下'
                 else: trend_direction = '平稳'
@@ -231,15 +202,15 @@ def calculate_technical_indicators(df):
             '最新净值': np.nan, '当日跌幅': np.nan
         }
 
-# --- 连续下跌计算 (函数配置 5/15) ---
+# --- 连续下跌计算 (函数配置 5/13) ---
 def calculate_consecutive_drops(series):
-    # ... (逻辑不变)
     try:
         if series.empty or len(series) < 2: return 0
         drops = (series.diff() < 0).values
         max_drop_days = 0
         current_drop_days = 0
         
+        # 注意: drops 数组的第一个元素是 NaN (diff result), 从第二个元素开始遍历
         for is_dropped in drops[1:]:
             if is_dropped: 
                 current_drop_days += 1
@@ -252,9 +223,8 @@ def calculate_consecutive_drops(series):
         logging.error(f"计算连续下跌天数时发生错误: {e}")
         return 0
 
-# --- 最大回撤计算 (函数配置 6/15) ---
+# --- 最大回撤计算 (函数配置 6/13) ---
 def calculate_max_drawdown(series):
-    # ... (逻辑不变)
     try:
         if series.empty: return 0.0
         rolling_max = series.cummax()
@@ -264,22 +234,25 @@ def calculate_max_drawdown(series):
         logging.error(f"计算最大回撤时发生错误: {e}")
         return 0.0
 
-# --- 卖出/止损信号生成 (函数配置 7/15) ---
+# --- 卖出/止损信号生成 (优化 6 - 新增函数) ---
 def generate_exit_signal(row):
-    # ... (逻辑不变)
+    """根据 V5.0 止盈止损策略，生成退出/止损提示"""
     rsi_14_val = row.get('RSI(14)', np.nan)
     macd_signal = row.get('MACD信号', '')
     mdd_recent_month = row.get('最大回撤', 0.0)
     
     exit_signals = []
     
+    # 1. 止盈信号：RSI 过买
     if not pd.isna(rsi_14_val) and rsi_14_val > 70.0:
         exit_signals.append("🚫 止盈：RSI(14) 过买")
         
+    # 2. 止盈/止损信号：MACD 死叉
     if macd_signal == '死叉': 
         exit_signals.append("🚫 止盈/止损：MACD死叉")
         
-    if mdd_recent_month > 0.10: 
+    # 3. 止损信号：近一月回撤超限
+    if mdd_recent_month > 0.10: # 回撤超 10% 止损阈值
         exit_signals.append(f"🛑 止损：回撤超 10% ({mdd_recent_month:.2%})")
         
     if not exit_signals:
@@ -287,20 +260,25 @@ def generate_exit_signal(row):
         
     return ' | '.join(exit_signals)
 
-# --- V5.0 行动信号生成 (函数配置 8/15) ---
+# --- V5.0 行动信号生成 (函数配置 7/13) ---
 def generate_v5_action_signal(row):
-    # ... (逻辑不变)
+    """
+    根据 V5.0 策略的技术要求，生成试仓信号。
+    **优化：添加连续下跌加权信号**
+    """
     rsi_14_val = row.get('RSI(14)', np.nan)
     rsi_6_val = row.get('RSI(6)', np.nan)
     macd_signal = row.get('MACD信号', '')
     bollinger_position = row.get('布林带位置', '')
     mdd_recent_month = row.get('最大回撤', 0.0)
     daily_drop_val = row.get('当日跌幅', 0.0)
+    
+    # **优化 6: 连续下跌天数**
     consecutive_drop_recent = row.get('近10日连跌', 0) 
     
     signals = []
 
-    # --- V5.0 网格级 / 极值超卖信号 ---
+    # --- V5.0 网格级 / 极值超卖信号 (最高优先级，独立于姿态) ---
     if not pd.isna(rsi_14_val) and rsi_14_val <= EXTREME_RSI_THRESHOLD_P1:
         rsi_display = f"RSI14:{rsi_14_val:.1f}"
         if rsi_6_val <= SHORT_TERM_RSI_EXTREME:
@@ -312,7 +290,9 @@ def generate_v5_action_signal(row):
 
     # --- V5.0 游击姿态 (震荡市) 信号 ---
     if mdd_recent_month >= MIN_MONTH_DRAWDOWN:
+        # **优化 6: 连续下跌权重加分**
         if consecutive_drop_recent >= 5:
+             # 如果已经有网格级信号，则不重复添加，但会影响评分
              if not any('网格级' in s for s in signals):
                 signals.append("✨【震荡-连跌】连跌5日+高回撤") 
                 
@@ -336,9 +316,9 @@ def generate_v5_action_signal(row):
         
     return ' | '.join(signals)
 
-# --- 遍历并分析所有基金 (函数配置 9/15) ---
+# --- 遍历并分析所有基金 (函数配置 8/13) ---
 def analyze_all_funds():
-    # ... (逻辑不变)
+    """遍历 FUND_DATA_DIR 下所有 CSV 文件并分析"""
     fund_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
     results = []
     
@@ -354,21 +334,37 @@ def analyze_all_funds():
     logging.info(f"所有基金分析完成，共 {len(results)} 个基金符合报告条件。")
     return results
 
-# --- 单基金分析 (函数配置 10/15) ---
+# --- 单基金分析 (函数配置 9/13) ---
 def analyze_single_fund(filepath):
     """
-    单基金分析，使用抽象后的数据加载函数。
+    单基金分析，加入动态日期回撤计算和新增指标。
+    **优化：动态日期窗口**
     """
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
-    
-    # **优化：使用抽象函数加载数据**
-    df, msg = load_and_preprocess_data(filepath, fund_code)
-    if df is None: 
-        logging.warning(f"基金 {fund_code} 分析跳过: {msg}")
-        return None
-        
+    df = pd.DataFrame()
+
     try:
-        # 动态日期窗口计算回撤 (逻辑不变)
+        # 尝试使用 UTF-8, 失败后尝试 GBK
+        try:
+            df = pd.read_csv(filepath)
+        except UnicodeDecodeError:
+            df = pd.read_csv(filepath, encoding='gbk')
+        
+        if 'date' not in df.columns or 'net_value' not in df.columns:
+            if 'Date' in df.columns and 'NetValue' in df.columns:
+                 df = df.rename(columns={'Date': 'date', 'NetValue': 'net_value'})
+            else:
+                return None
+            
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values(by='date', ascending=True).reset_index(drop=True)
+        df = df.rename(columns={'net_value': 'value'})
+        
+        is_valid, msg = validate_fund_data(df, fund_code)
+        if not is_valid: 
+            return None
+        
+        # **优化 1: 动态日期窗口计算回撤**
         latest_date = df['date'].iloc[-1]
         one_month_ago = latest_date - pd.DateOffset(months=1)
         df_recent_month = df[df['date'] >= one_month_ago]['value']
@@ -380,16 +376,19 @@ def analyze_single_fund(filepath):
         
         tech_indicators = calculate_technical_indicators(df)
         
+        # **优化 6: 计算连续下跌天数**
         consecutive_drop_recent = calculate_consecutive_drops(df['value'].tail(10)) 
 
         row_data = {
             **tech_indicators, 
             '最大回撤': mdd_recent_month, 
             '当日跌幅': tech_indicators['当日跌幅'],
-            '近10日连跌': consecutive_drop_recent
+            '近10日连跌': consecutive_drop_recent # 传递给信号生成函数
         }
         
         action_prompt = generate_v5_action_signal(row_data)
+        
+        # **优化 6: 新增退出提示**
         exit_prompt = generate_exit_signal(row_data)
         
         if not pd.isna(tech_indicators['最新净值']):
@@ -400,16 +399,15 @@ def analyze_single_fund(filepath):
                  '近一周连跌': calculate_consecutive_drops(df['value'].tail(5)),
                  **tech_indicators,
                  '行动提示': action_prompt,
-                 '退出提示': exit_prompt
+                 '退出提示': exit_prompt # 新增列
              }
         return None
     except Exception as e:
         logging.error(f"分析基金 {filepath} 时发生数据处理错误: {e}")
         return None
 
-# --- 技术值格式化 (函数配置 11/15) ---
+# --- 技术值格式化 (函数配置 10/13) ---
 def format_technical_value(value, format_type='percent'):
-    # ... (逻辑不变)
     if pd.isna(value): return '---'
     
     if format_type == 'report_daily_drop':
@@ -425,19 +423,21 @@ def format_technical_value(value, format_type='percent'):
     elif format_type == 'decimal4': return f"{value:.4f}"
     else: return str(value)
 
-# --- 表格行格式化 (函数配置 12/15) ---
+# --- 表格行格式化 (函数配置 11/13) ---
 def format_table_row(index, row):
-    # ... (逻辑不变)
+    """
+    **优化：新增退出提示列的格式化**
+    """
     latest_value = row.get('最新净值', 1.0)
-    trial_price = latest_value * (1 - 0.03) 
+    trial_price = latest_value * (1 - 0.03) # 预估跌3%时的试水价格
     
     trend_display = row['MA50/MA250趋势']
     ma_ratio = row.get('MA50/MA250')
     ma_ratio_display = format_technical_value(ma_ratio, 'decimal2')
     
+    # 趋势风险警告 (基于优化的 TREND_HEALTH_THRESHOLD = 1.0)
     is_data_insufficient = pd.isna(ma_ratio) or trend_display == '数据不足'
     
-    # 趋势风险警告 (基于优化的 TREND_HEALTH_THRESHOLD = 0.9)
     if is_data_insufficient:
         trend_status = "---"
     elif trend_display == '向下' or (not pd.isna(ma_ratio) and ma_ratio < TREND_HEALTH_THRESHOLD): 
@@ -447,20 +447,25 @@ def format_table_row(index, row):
         
     daily_drop_display = format_technical_value(row['当日跌幅'], 'report_daily_drop')
     
+    # RSI值如果极值超卖，字体加粗
     rsi14_display = f"**{row['RSI(14)']:.2f}**" if not pd.isna(row['RSI(14)']) and row['RSI(14)'] <= STRONG_RSI_THRESHOLD_P2 else f"{row['RSI(14)']:.2f}"
     rsi6_display = f"**{row['RSI(6)']:.2f}**" if not pd.isna(row['RSI(6)']) and row['RSI(6)'] <= SHORT_TERM_RSI_EXTREME else f"{row['RSI(6)']:.2f}"
 
+    # 合并后的 14 列 (新增 退出提示)
     return (
         f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
         f"{daily_drop_display} | {rsi14_display} | {rsi6_display} | **{row['行动提示']}** | "
-        f"**{row['退出提示']}** | "
+        f"**{row['退出提示']}** | " # **新增列：退出提示**
         f"{row['MACD信号']} | {row['布林带位置']} | {format_technical_value(row['净值/MA50'], 'decimal2')} | "
         f"{trend_status} | {format_technical_value(row['净值/MA250'], 'decimal2') if not pd.isna(row['净值/MA250']) else '---'} | `{trial_price:.4f}` |\n"
     )
 
-# --- 报告生成 (函数配置 13/15) ---
+# --- 报告生成 (函数配置 12/13) ---
 def generate_report(results, timestamp_str):
-    # ... (逻辑不变)
+    """
+    生成完整的Markdown格式报告，使用综合评分实现 V5.0 最终决策排序，并增加信号下限过滤。
+    **只输出 I. 【可试仓/最佳共振目标】 和 IV. 【趋势不健康/必须放弃】**
+    """
     try:
         if not results:
             return (f"# 基金预警报告 ({timestamp_str} UTC+8)\n\n"
@@ -468,6 +473,7 @@ def generate_report(results, timestamp_str):
 
         df_results = pd.DataFrame(results)
         
+        # 1. 过滤：只保留回撤达到 MIN_MONTH_DRAWDOWN 的基金
         df_filtered = df_results[df_results['最大回撤'] >= MIN_MONTH_DRAWDOWN].copy()
         
         if df_filtered.empty:
@@ -475,33 +481,34 @@ def generate_report(results, timestamp_str):
                       f"**恭喜，没有发现满足基础预警条件（近 1 个月回撤 $\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）的基金。**")
 
 
-        # 2. V5.0 信号分数 
+        # 2. V5.0 信号分数 (Signal Score)
         df_filtered['signal_score'] = 0
-        df_filtered.loc[df_filtered['行动提示'].str.contains('💥【网格级】RSI极值共振'), 'signal_score'] = 5.0
-        df_filtered.loc[df_filtered['行动提示'].str.contains('💥【网格级】RSI极值'), 'signal_score'] = 4.5
-        df_filtered.loc[df_filtered['行动提示'].str.contains('🌟【网格级】RSI极值'), 'signal_score'] = 4.5
-        df_filtered.loc[df_filtered['行动提示'].str.contains('🎯【震荡-高吸】'), 'signal_score'] = 4.0
+        df_filtered.loc[df_filtered['行动提示'].str.contains('💥【网格级】'), 'signal_score'] = 5
+        df_filtered.loc[df_filtered['行动提示'].str.contains('🌟【网格级】'), 'signal_score'] = 4.5
+        df_filtered.loc[df_filtered['行动提示'].str.contains('🎯【震荡-高吸】'), 'signal_score'] = 4
+        # **连续下跌信号加分**
         df_filtered.loc[df_filtered['行动提示'].str.contains('✨【震荡-连跌】'), 'signal_score'] = 3.5 
-        df_filtered.loc[df_filtered['行动提示'].str.contains('🛡️【防御-反弹】'), 'signal_score'] = 3.0
-        df_filtered.loc[df_filtered['行动提示'].str.contains('🔥【震荡-预警】'), 'signal_score'] = 2.0
-        df_filtered.loc[df_filtered['行动提示'].str.contains('【震荡-关注】'), 'signal_score'] = 1.0
+        df_filtered.loc[df_filtered['行动提示'].str.contains('🛡️【防御-反弹】'), 'signal_score'] = 3
+        df_filtered.loc[df_filtered['行动提示'].str.contains('🔥【震荡-预警】'), 'signal_score'] = 2
+        df_filtered.loc[df_filtered['行动提示'].str.contains('【震荡-关注】'), 'signal_score'] = 1
         
-        # 3. 趋势过滤器 
+        # 3. 趋势过滤器 (Trend Filter)
         def get_trend_score(row):
             trend = row['MA50/MA250趋势']
             ratio = row['MA50/MA250']
             
             if pd.isna(ratio) or trend == '数据不足':
-                return 50 
+                return 50 # 数据不足/需人工审核
                 
+            # 趋势向下 或 MA50/MA250 < 1.0 拒绝买入 (优化 5)
             if trend == '向下' or ratio < TREND_HEALTH_THRESHOLD: 
                 return 0 # 拒绝买入
             
-            return 100 
+            return 100 # 允许买入
 
         df_filtered['trend_score'] = df_filtered.apply(get_trend_score, axis=1)
 
-        # 4. V5.0 综合评分 
+        # 4. V5.0 综合评分 (Final Score)
         df_filtered['final_score'] = df_filtered['signal_score'] * (df_filtered['trend_score'] / 100) * 1000 + (df_filtered['最大回撤'] * 100)
         
         # 5. 分组
@@ -509,7 +516,7 @@ def generate_report(results, timestamp_str):
         df_reject_trend = df_filtered[df_filtered['trend_score'] == 0].copy()
         
         
-        # 6. 报告排序 
+        # 6. 报告排序 (各自组内排序)
         df_buy_sorted = df_buy.sort_values(by=['signal_score', '最大回撤'], ascending=[False, False])
         df_reject_trend_sorted = df_reject_trend.sort_values(by='最大回撤', ascending=False)
         
@@ -525,7 +532,7 @@ def generate_report(results, timestamp_str):
         ])
         
         
-        # A. 【可试仓/最高优先级】 -> I. 
+        # A. 【可试仓/最高优先级】 -> I. (KEEP)
         if not df_buy_sorted.empty:
             report_parts.extend([
                 f"\n## 🏆 I. 【V5.0 可试仓/最佳共振目标】 ({len(df_buy_sorted)}只)\n\n",
@@ -534,7 +541,7 @@ def generate_report(results, timestamp_str):
             report_parts.append(generate_merged_table(df_buy_sorted))
 
         
-        # D. 【趋势不健康/必须放弃】 -> IV. 
+        # D. 【趋势不健康/必须放弃】 -> IV. (KEEP)
         if not df_reject_trend_sorted.empty:
             report_parts.extend([
                 f"\n## ❌ IV. 【趋势不健康/必须放弃】 ({len(df_reject_trend_sorted)}只)\n\n",
@@ -543,7 +550,7 @@ def generate_report(results, timestamp_str):
             report_parts.append(generate_merged_table(df_reject_trend_sorted))
 
 
-        # 策略执行纪律
+        # 策略执行纪律（最后再次强调 V5.0 的宏观判断）
         report_parts.extend([
             "\n---\n",
             f"## **⚠️ V5.0 宏观环境与趋势健康度审核总结**\n\n",
@@ -560,13 +567,15 @@ def generate_report(results, timestamp_str):
         logging.error(f"生成报告时发生错误: {e}")
         return f"# 报告生成错误\n\n错误信息: {str(e)}"
 
-# --- 辅助函数：生成合并后的表格 (函数配置 14/15) ---
+# --- 辅助函数：生成合并后的表格 (函数配置 13/13) ---
 def generate_merged_table(df_group):
-    # ... (逻辑不变)
+    
+    # 完整的 14 列标题（新增 '退出提示'）
     FULL_HEADER = (
         f"| 排名 | 基金代码 | 最大回撤 (1M) | **当日跌幅** | RSI(14) | **RSI(6)** | V5.0 信号 | "
         f"**退出提示** | MACD信号 | 布林带位置 | 净值/MA50 | **MA50/MA250健康度** | 净值/MA250 | 试水买价 (跌3%) |\n"
     )
+    # 完整的 14 列分隔符
     FULL_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
     
     parts = []
@@ -585,7 +594,7 @@ def generate_merged_table(df_group):
     parts.append("\n---\n")
     return "".join(parts)
 
-# --- 主函数 (函数配置 15/15) ---
+# --- 主函数 ---
 def main():
     """主函数"""
     try:
@@ -631,6 +640,6 @@ if __name__ == '__main__':
         
     success = main()
     if success:
-        print(f"脚本执行完毕。V5.0 策略报告已更新，包含所有优化：RSI(EMA)修正、代码结构优化和参数调整。")
+        print(f"脚本执行完毕。V5.0 策略报告已更新，包含所有优化：动态回撤、完整MACD、严格趋势、连续下跌加权及止盈/止损提示。")
     else:
         print("脚本执行失败，请检查 fund_analysis.log 文件以获取详细错误信息。")
