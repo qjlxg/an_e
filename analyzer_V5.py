@@ -54,26 +54,37 @@ def load_name_mapping(file_path):
             
         name_mapping = {}
         for index, row in df.iterrows():
-            # 1. 获取原始代码并清理空格
             raw_code = str(row['基金代码']).strip()
             fund_name = str(row['基金简称']).strip()
             
             if not raw_code:
                 continue
 
-            # 2. 生成【不带前导零】的版本 (例如 '21315' 或 '1')
-            unpadded_code = raw_code.lstrip('0')
+            # *** 超强健修正步骤 ***
+            # 强制移除可能的浮点数后缀 '.0'，以防代码被读取为 '21315.0'
+            clean_code = raw_code
+            if raw_code.endswith('.0'):
+                clean_code = raw_code[:-2]
+            # **********************
+                
+            # 1. 生成【不带前导零】的版本 (例如 '21315' 或 '1')
+            unpadded_code = clean_code.lstrip('0')
             if not unpadded_code:
-                 unpadded_code = raw_code # 防止原始代码是 '0' 或 '00' 
+                 unpadded_code = clean_code # 防止原始代码是 '0' 或 '00' 
             
-            # 3. 生成【6位带前导零】的版本 (例如 '021315' 或 '000001')
+            # 2. 生成【6位带前导零】的版本 (例如 '021315' 或 '000001')
             # 使用不带前导零的版本进行填充
             padded_code = unpadded_code.zfill(6)
 
-            # 存储映射：确保文件名（带前导零）和对照表（不带前导零）都能匹配
-            name_mapping[unpadded_code] = fund_name  # Key 1: '21315' (最常见的对照表格式)
-            name_mapping[padded_code] = fund_name    # Key 2: '021315' (最常见的文件名格式)
-            name_mapping[raw_code] = fund_name       # Key 3: 原始读取到的代码 (以防万一)
+            # 存储映射：
+            # Key 1: '21315' (最常见的对照表格式)
+            # Key 2: '021315' (最常见的文件名格式)
+            # Key 3: '21315.0' (原始读取值，以防万一)
+            # Key 4: '21315' (清理后的值)
+            name_mapping[unpadded_code] = fund_name  
+            name_mapping[padded_code] = fund_name    
+            name_mapping[raw_code] = fund_name       
+            name_mapping[clean_code] = fund_name     
             
         logging.info(f"成功加载 {len(df)} 条基金名称对照记录，共 {len(name_mapping)} 个匹配键。")
         return name_mapping
