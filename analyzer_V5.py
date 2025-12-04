@@ -37,25 +37,45 @@ def setup_logging():
         ]
     )
 
-# --- 修正函数: 加载基金代码和名称的对照表 ---
+# --- 修正函数: 加载基金代码和名称的对照表 (增加多键匹配逻辑) ---
 def load_name_mapping(file_path):
-    """从 CSV 文件加载基金代码到基金简称的映射表。"""
+    """从 CSV 文件加载基金代码到基金简称的映射表，并生成多重匹配键。"""
     if not os.path.exists(file_path):
         logging.error(f"名称对照表文件 '{file_path}' 不存在，请检查文件路径。")
         return {}
     
     try:
-        # 使用 pandas 读取 CSV，确保基金代码作为字符串读取，这是防止格式丢失的关键一步
+        # 确保基金代码作为字符串读取，以减少格式丢失
         df = pd.read_csv(file_path, dtype={'基金代码': str}) 
         
-        # 确保关键列存在
         if '基金代码' not in df.columns or '基金简称' not in df.columns:
             logging.error("名称对照表缺少 '基金代码' 或 '基金简称' 列。")
             return {}
             
-        # 建立 基金代码 -> 基金简称 的映射字典
-        name_mapping = df.set_index('基金代码')['基金简称'].astype(str).to_dict()
-        logging.info(f"成功加载 {len(name_mapping)} 条基金名称对照记录。")
+        name_mapping = {}
+        for index, row in df.iterrows():
+            # 1. 获取原始代码并清理空格
+            raw_code = str(row['基金代码']).strip()
+            fund_name = str(row['基金简称']).strip()
+            
+            if not raw_code:
+                continue
+
+            # 2. 生成【不带前导零】的版本 (例如 '21315' 或 '1')
+            unpadded_code = raw_code.lstrip('0')
+            if not unpadded_code:
+                 unpadded_code = raw_code # 防止原始代码是 '0' 或 '00' 
+            
+            # 3. 生成【6位带前导零】的版本 (例如 '021315' 或 '000001')
+            # 使用不带前导零的版本进行填充
+            padded_code = unpadded_code.zfill(6)
+
+            # 存储映射：确保文件名（带前导零）和对照表（不带前导零）都能匹配
+            name_mapping[unpadded_code] = fund_name  # Key 1: '21315' (最常见的对照表格式)
+            name_mapping[padded_code] = fund_name    # Key 2: '021315' (最常见的文件名格式)
+            name_mapping[raw_code] = fund_name       # Key 3: 原始读取到的代码 (以防万一)
+            
+        logging.info(f"成功加载 {len(df)} 条基金名称对照记录，共 {len(name_mapping)} 个匹配键。")
         return name_mapping
     except Exception as e:
         logging.error(f"加载名称对照表时发生错误: {e}")
@@ -386,29 +406,27 @@ def analyze_all_funds(name_mapping):
 # --- 修正函数: 单基金分析 (函数配置 10/15) ---
 def analyze_single_fund(filepath, name_mapping):
     """
-    单基金分析，增加了基金名称的智能匹配。
+    单基金分析，现在依赖于 load_name_mapping 中生成的健壮的匹配键。
     """
     # 从文件名中提取基金代码 (例如 '021315')
     fund_code = os.path.splitext(os.path.basename(filepath))[0] 
     
-    # *** 核心修正开始 ***
-    # 假设：文件名代码带前导零，对照表代码不带前导零
-    fund_code_lookup = fund_code.lstrip('0') # 例如 '21315'
-    if not fund_code_lookup:
-        fund_code_lookup = fund_code # 处理代码本身是'0'或'00'的情况
-
-    # 1. 尝试使用去除前导零的代码进行查找 (最可能成功)
-    fund_name = name_mapping.get(fund_code_lookup)
+    # 1. 尝试使用文件名中的完整代码进行查找 (这是 name_mapping 中的 Key 2/3)
+    fund_name = name_mapping.get(fund_code)
     
-    # 2. 如果未找到，尝试使用原始带前导零的代码进行查找 (以防对照表本身有前导零)
+    # 2. 如果未找到，尝试使用去除前导零的版本进行查找 (这是 name_mapping 中的 Key 1)
+    # 这是额外的安全措施，以防文件名格式特殊
     if fund_name is None:
-        fund_name = name_mapping.get(fund_code)
+        fund_code_lookup = fund_code.lstrip('0')
+        # 避免代码本身是'0'或'00'导致空字符串
+        if not fund_code_lookup: fund_code_lookup = fund_code 
+        
+        fund_name = name_mapping.get(fund_code_lookup)
         
     # 3. 如果仍然未找到，使用默认值
     if fund_name is None:
         fund_name = f"代码{fund_code}"
-    # *** 核心修正结束 ***
-
+    
     logging.info(f"正在分析: {fund_name} ({fund_code})")
     
     # 使用抽象函数加载数据
@@ -515,6 +533,7 @@ def format_table_row(index, row):
 
 
     # *** 对应精简后的表头输出 (新增基金名称) ***
+    # 基金名称加粗，更加突出
     return (
         f"| {index} | `{row['基金代码']}` | **{row['基金名称']}** | **{format_technical_value(row['最大回撤'], 'percent')}** | "
         f"{daily_drop_display} | {rsi14_display} | {v5_signal_display} | "
