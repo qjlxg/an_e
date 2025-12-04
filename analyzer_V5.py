@@ -14,16 +14,13 @@ HIGH_ELASTICITY_MIN_DRAWDOWN = 0.15 # 高弹性策略的基础回撤要求 (15%)
 MIN_DAILY_DROP_PERCENT = 0.03 # 当日大跌的定义 (3%)
 REPORT_BASE_NAME = 'fund_warning_report_v5_merged_table'
 
-# 新增：名称对照表文件名常量
-NAME_MAPPING_FILE = '名称对照表.xlsx - Sheet1.csv' 
-
 # --- 核心阈值调整 ---
-EXTREME_RSI_THRESHOLD_P1 = 29.0 
-STRONG_RSI_THRESHOLD_P2 = 35.0 
-SHORT_TERM_RSI_EXTREME = 20.0 
-TREND_HEALTH_THRESHOLD = 0.9 
-MIN_BUY_SIGNAL_SCORE = 3.7 
-TREND_SLOPE_THRESHOLD = 0.005 
+EXTREME_RSI_THRESHOLD_P1 = 29.0 # 网格级：RSI(14) 极值超卖
+STRONG_RSI_THRESHOLD_P2 = 35.0 # 强力超卖观察池
+SHORT_TERM_RSI_EXTREME = 20.0 # RSI(6)的极值超卖阈值
+TREND_HEALTH_THRESHOLD = 0.9 # MA50/MA250 健康度阈值 (0.9)
+MIN_BUY_SIGNAL_SCORE = 3.7 # 最低信号分数 (根据讨论，强信号最低分设为3.7)
+TREND_SLOPE_THRESHOLD = 0.005 # 趋势拟合斜率阈值
 
 # --- 设置日志 (函数配置 1/15) ---
 def setup_logging():
@@ -36,50 +33,6 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
-
-# --- 修正函数: 加载基金代码和名称的对照表 (增加多键匹配逻辑) ---
-def load_name_mapping(file_path):
-    """从 CSV 文件加载基金代码到基金简称的映射表，并生成多重匹配键。"""
-    if not os.path.exists(file_path):
-        logging.error(f"名称对照表文件 '{file_path}' 不存在，请检查文件路径。")
-        return {}
-    
-    try:
-        # 确保基金代码作为字符串读取，以减少格式丢失
-        df = pd.read_csv(file_path, dtype={'基金代码': str}) 
-        
-        if '基金代码' not in df.columns or '基金简称' not in df.columns:
-            logging.error("名称对照表缺少 '基金代码' 或 '基金简称' 列。")
-            return {}
-            
-        name_mapping = {}
-        for index, row in df.iterrows():
-            # 1. 获取原始代码并清理空格
-            raw_code = str(row['基金代码']).strip()
-            fund_name = str(row['基金简称']).strip()
-            
-            if not raw_code:
-                continue
-
-            # 2. 生成【不带前导零】的版本 (例如 '21315' 或 '1')
-            unpadded_code = raw_code.lstrip('0')
-            if not unpadded_code:
-                 unpadded_code = raw_code # 防止原始代码是 '0' 或 '00' 
-            
-            # 3. 生成【6位带前导零】的版本 (例如 '021315' 或 '000001')
-            # 使用不带前导零的版本进行填充
-            padded_code = unpadded_code.zfill(6)
-
-            # 存储映射：确保文件名（带前导零）和对照表（不带前导零）都能匹配
-            name_mapping[unpadded_code] = fund_name  # Key 1: '21315' (最常见的对照表格式)
-            name_mapping[padded_code] = fund_name    # Key 2: '021315' (最常见的文件名格式)
-            name_mapping[raw_code] = fund_name       # Key 3: 原始读取到的代码 (以防万一)
-            
-        logging.info(f"成功加载 {len(df)} 条基金名称对照记录，共 {len(name_mapping)} 个匹配键。")
-        return name_mapping
-    except Exception as e:
-        logging.error(f"加载名称对照表时发生错误: {e}")
-        return {}
 
 # --- 数据预处理和验证 (函数配置 2/15) ---
 def load_and_preprocess_data(filepath, fund_code):
@@ -281,6 +234,7 @@ def calculate_consecutive_drops(series):
     """计算连续下跌天数"""
     try:
         if series.empty or len(series) < 2: return 0
+        # 检查最新一天是否下跌（与前一天相比），以便计算当前的连跌天数
         drops = (series.diff() < 0).values
         current_drop_days = 0
         
@@ -289,7 +243,7 @@ def calculate_consecutive_drops(series):
             if is_dropped:
                 current_drop_days += 1
             else:
-                break 
+                break # 遇到上涨或平盘即停止
         
         return current_drop_days
     except Exception as e:
@@ -386,7 +340,7 @@ def generate_v5_action_signal(row):
     return ' | '.join(signals)
 
 # --- 遍历并分析所有基金 (函数配置 9/15) ---
-def analyze_all_funds(name_mapping):
+def analyze_all_funds():
     """遍历 FUND_DATA_DIR 下所有 CSV 文件并分析"""
     fund_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
     results = []
@@ -396,38 +350,19 @@ def analyze_all_funds(name_mapping):
         return results
 
     for filepath in fund_files:
-        fund_result = analyze_single_fund(filepath, name_mapping)
+        fund_result = analyze_single_fund(filepath)
         if fund_result:
             results.append(fund_result)
             
     logging.info(f"所有基金分析完成，共 {len(results)} 个基金符合报告条件。")
     return results
 
-# --- 修正函数: 单基金分析 (函数配置 10/15) ---
-def analyze_single_fund(filepath, name_mapping):
+# --- 单基金分析 (函数配置 10/15) ---
+def analyze_single_fund(filepath):
     """
-    单基金分析，现在依赖于 load_name_mapping 中生成的健壮的匹配键。
+    单基金分析，使用抽象后的数据加载函数。
     """
-    # 从文件名中提取基金代码 (例如 '021315')
-    fund_code = os.path.splitext(os.path.basename(filepath))[0] 
-    
-    # 1. 尝试使用文件名中的完整代码进行查找 (这是 name_mapping 中的 Key 2/3)
-    fund_name = name_mapping.get(fund_code)
-    
-    # 2. 如果未找到，尝试使用去除前导零的版本进行查找 (这是 name_mapping 中的 Key 1)
-    # 这是额外的安全措施，以防文件名格式特殊
-    if fund_name is None:
-        fund_code_lookup = fund_code.lstrip('0')
-        # 避免代码本身是'0'或'00'导致空字符串
-        if not fund_code_lookup: fund_code_lookup = fund_code 
-        
-        fund_name = name_mapping.get(fund_code_lookup)
-        
-    # 3. 如果仍然未找到，使用默认值
-    if fund_name is None:
-        fund_name = f"代码{fund_code}"
-    
-    logging.info(f"正在分析: {fund_name} ({fund_code})")
+    fund_code = os.path.splitext(os.path.basename(filepath))[0]
     
     # 使用抽象函数加载数据
     df, msg = load_and_preprocess_data(filepath, fund_code)
@@ -448,6 +383,7 @@ def analyze_single_fund(filepath, name_mapping):
         
         tech_indicators = calculate_technical_indicators(df)
         
+        # 注意：这里计算的 consecutive_drop_recent 已经是当前的连跌天数
         consecutive_drop_recent = calculate_consecutive_drops(df['value'].tail(10)) 
 
         row_data = {
@@ -463,7 +399,6 @@ def analyze_single_fund(filepath, name_mapping):
         if not pd.isna(tech_indicators['最新净值']):
              return {
                  '基金代码': fund_code,
-                 '基金名称': fund_name, # 使用成功匹配的名称
                  '最大回撤': mdd_recent_month,
                  '最大连续下跌': calculate_consecutive_drops(df['value']),
                  '近10日连跌': consecutive_drop_recent,
@@ -500,6 +435,7 @@ def format_table_row(index, row):
     表格行格式化 (精简版 + 冲突处理)
     """
     latest_value = row.get('最新净值', 1.0)
+    # 试水买价 (跌3%) 计算保持不变
     trial_price = latest_value * (1 - 0.03) 
     
     trend_display = row['MA50/MA250趋势']
@@ -532,10 +468,9 @@ def format_table_row(index, row):
         v5_signal_display = f"**{v5_signal_content}**"
 
 
-    # *** 对应精简后的表头输出 (新增基金名称) ***
-    # 基金名称加粗，更加突出
+    # *** 对应精简后的表头输出 ***
     return (
-        f"| {index} | `{row['基金代码']}` | **{row['基金名称']}** | **{format_technical_value(row['最大回撤'], 'percent')}** | "
+        f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
         f"{daily_drop_display} | {rsi14_display} | {v5_signal_display} | "
         f"**{exit_prompt}** | "
         f"{trend_status} | `{trial_price:.4f}` |\n"
@@ -673,13 +608,12 @@ def generate_report(results, timestamp_str):
 def generate_merged_table(df_group):
     """生成报告中的Markdown表格 (精简版)"""
     
-    # *** 简化后的新表头 (10列，新增基金名称) ***
+    # *** 简化后的新表头 (9列) ***
     FULL_HEADER = (
-        f"| 排名 | 基金代码 | **基金名称** | **最大回撤 (1M)** | **当日跌幅** | RSI(14) | **V5.0 信号** | "
+        f"| 排名 | 基金代码 | **最大回撤 (1M)** | **当日跌幅** | RSI(14) | **V5.0 信号** | "
         f"**退出提示** | MA50/MA250健康度 | 试水买价 (跌3%) |\n"
     )
-    # 调整分隔符的对齐方式以匹配新增的列 (基金名称列左对齐/居中，使用 :--- )
-    FULL_SEPARATOR = f"| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
+    FULL_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
     
     parts = []
     
@@ -702,12 +636,6 @@ def main():
     """主函数"""
     try:
         setup_logging()
-        
-        # 新增：加载基金名称对照表
-        name_mapping = load_name_mapping(NAME_MAPPING_FILE)
-        if not name_mapping:
-            logging.warning("未能加载基金名称对照表，报告将只显示基金代码。")
-            
         try:
             tz = pytz.timezone('Asia/Shanghai')
             now = datetime.now(tz)
@@ -726,12 +654,12 @@ def main():
         
         if not os.path.isdir(FUND_DATA_DIR):
             logging.error(f"基金数据目录 '{FUND_DATA_DIR}' 不存在，请创建该目录并放入 CSV 文件。")
+            # 即使目录不存在，也生成一个空的报告
             with open(report_file, 'w', encoding='utf-8') as f:
                  f.write(f"# 基金预警报告 ({timestamp_for_report} UTC+8)\n\n**错误：** 基金数据目录 `fund_data` 不存在或为空，请检查文件路径。")
             return False
 
-        # 传递 name_mapping 给 analyze_all_funds
-        results = analyze_all_funds(name_mapping)
+        results = analyze_all_funds()
         
         report_content = generate_report(results, timestamp_for_report)
         
