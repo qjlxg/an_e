@@ -9,7 +9,7 @@ on:
       
 
   schedule:
-    - cron: '0 14 * * *' 
+    - cron: '0 18 * * *' 
     
   # 3. 允许手动触发
   workflow_dispatch:
