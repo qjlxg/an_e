@@ -37,7 +37,7 @@ def setup_logging():
         ]
     )
 
-# --- 修正函数: 加载基金代码和名称的对照表 (超强健格式处理 V3) ---
+# --- 修正函数: 加载基金代码和名称的对照表 (强制 6 位匹配 V4) ---
 def load_name_mapping(file_path):
     """从 CSV 文件加载基金代码到基金简称的映射表，并生成多重匹配键。"""
     if not os.path.exists(file_path):
@@ -45,8 +45,8 @@ def load_name_mapping(file_path):
         return {}
     
     try:
-        # 1. 读取文件，让 Pandas 自动推断类型 (可能为 int/float)
-        df = pd.read_csv(file_path) 
+        # 1. 强制基金代码作为字符串读取
+        df = pd.read_csv(file_path, dtype={'基金代码': str}) 
         
         if '基金代码' not in df.columns or '基金简称' not in df.columns:
             logging.error("名称对照表缺少 '基金代码' 或 '基金简称' 列。")
@@ -54,37 +54,28 @@ def load_name_mapping(file_path):
             
         name_mapping = {}
         for index, row in df.iterrows():
-            # 2. 获取原始值，它可能是 float (如 21315.0)、int (如 21315) 或 str (如 '021315')
-            raw_value = row['基金代码']
+            # 2. 获取原始值，并去除空格
+            raw_code = str(row['基金代码']).strip()
             fund_name = str(row['基金简称']).strip()
             
-            if pd.isna(raw_value): continue
+            if not raw_code:
+                continue
 
-            # 3. 鲁棒地转换为一个干净的、不带前导零的基础字符串 (e.g., '21315')
-            if isinstance(raw_value, float):
-                # 针对 21315.0 的情况
-                clean_code_str = str(int(raw_value)) 
-            elif isinstance(raw_value, int):
-                # 针对 21315 的情况
-                clean_code_str = str(raw_value)
-            else:
-                # 针对 '021315' 或 '21315.0' 的字符串情况
-                clean_code_str = str(raw_value).strip()
-                if clean_code_str.endswith('.0'):
-                    clean_code_str = clean_code_str[:-2]
+            # 3. 鲁棒清理：移除可能的浮点数后缀 '.0'
+            clean_code = raw_code
+            if clean_code.endswith('.0'):
+                clean_code = clean_code[:-2]
+                
+            # 4. 获取不带前导零的核心代码 (e.g., '21315')
+            unpadded_code = clean_code.lstrip('0')
+            if not unpadded_code: unpadded_code = clean_code 
             
-            # 4. 移除所有前导零得到最终的不补零键
-            unpadded_code = clean_code_str.lstrip('0')
-            if not unpadded_code:
-                 unpadded_code = clean_code_str # 避免代码是 '0' 或 '00' 
-            
-            # 5. 生成您文件名所用的 6 位补零键
-            padded_code = unpadded_code.zfill(6)
+            # 5. *** 强制生成 6 位补零键 (与文件名精确匹配) ***
+            padded_code_key = unpadded_code.zfill(6)
 
-            # 6. 存储映射：确保文件名（021315）和对照表（21315）都能匹配
-            name_mapping[unpadded_code] = fund_name  # Key 1: '21315' (不补零键)
-            name_mapping[padded_code] = fund_name    # Key 2: '021315' (6位补零键，与文件名匹配)
-            name_mapping[clean_code_str] = fund_name # Key 3: 原始读取到的值 (以防万一)
+            # 6. 存储映射：仅使用 6 位键和不补零键进行存储
+            name_mapping[padded_code_key] = fund_name  # Key 1: '021315' (与文件名精确匹配)
+            name_mapping[unpadded_code] = fund_name    # Key 2: '21315' (以防文件名是短格式)
             
         logging.info(f"成功加载 {len(df)} 条基金名称对照记录，共 {len(name_mapping)} 个匹配键。")
         return name_mapping
@@ -419,13 +410,13 @@ def analyze_single_fund(filepath, name_mapping):
     """
     单基金分析，使用文件名代码作为查找键。
     """
-    # 从文件名中提取基金代码 (例如 '021315')
+    # 从文件名中提取基金代码 (例如 '021315')，并去除任何可能的隐藏空格
     fund_code = os.path.splitext(os.path.basename(filepath))[0].strip()
     
-    # 1. 尝试使用文件名中的完整 6 位代码进行查找
+    # 1. 尝试使用文件名中的完整 6 位代码进行查找 (这是 name_mapping 中的 Key 1)
     fund_name = name_mapping.get(fund_code)
     
-    # 2. 如果未找到，尝试使用去除前导零的版本进行查找
+    # 2. 如果未找到，尝试使用去除前导零的版本进行查找 (这是 name_mapping 中的 Key 2)
     if fund_name is None:
         fund_code_lookup = fund_code.lstrip('0')
         # 避免代码本身是'0'或'00'导致空字符串
