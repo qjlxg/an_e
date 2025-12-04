@@ -3,7 +3,7 @@ name: 数据更新
 on:
   
   schedule:
-    - cron: '0 14 * * *' 
+    - cron: '0 13 * * *' 
   
   # 通过手动触发
   workflow_dispatch:
@@ -13,7 +13,7 @@ on:
     branches:
       - main
     paths:
-      - '.github/workflows/净值更新-fund_spider.yml'
+      - '.github/workflows/数据更新-fund_spider.yml'
       - 'fund_spider.py'
       - 'C类.txt'
 
