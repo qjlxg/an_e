@@ -4,8 +4,7 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-# --- 核心参数 (绝对不动，作为实战标尺) ---
-GRID_GAP = -5.0        
+# --- 核心参数 (绝对保持不变) ---
 RETR_WATCH = -10.0     
 RSI_LOW = 30           
 BIAS_LOW = -5.0        
@@ -25,7 +24,6 @@ def process_file(file_path):
         df['日期'] = pd.to_datetime(df['日期'])
         df = df.sort_values(by='日期').reset_index(drop=True)
         
-        # 核心指标逻辑：严格维持原样
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
@@ -52,7 +50,7 @@ def process_file(file_path):
     except: return None
 
 def get_performance_stats():
-    """仅升级复盘表，增加原始环境数值，用于后续分析"""
+    """升级：增加‘解套天数’统计，追踪信号触发后的回升时间"""
     history_files = glob.glob('202*/**/*.csv', recursive=True)
     perf_list = []
     for h_file in history_files:
@@ -71,21 +69,29 @@ def get_performance_stats():
                     idx_list = raw_df[raw_df['日期'] == str(sig['date'])].index
                     if not idx_list.empty:
                         curr_idx = idx_list[0]
-                        # 追踪后11日表现
-                        future_df = raw_df.iloc[curr_idx+1 : curr_idx+11]
-                        if not future_df.empty:
-                            max_up = (future_df['收盘'].max() - sig['price']) / sig['price'] * 100
-                            max_down = (future_df['收盘'].min() - sig['price']) / sig['price'] * 100
-                            
+                        # 1. 追踪短周期表现 (10天)
+                        future_10 = raw_df.iloc[curr_idx+1 : curr_idx+11]
+                        
+                        # 2. 计算回本天数 (在信号之后的所有数据中寻找)
+                        recovery_df = raw_df.iloc[curr_idx+1:]
+                        back_days = "未回本"
+                        back_idx = recovery_df[recovery_df['收盘'] >= sig['price']].index
+                        if not back_idx.empty:
+                            back_days = back_idx[0] - curr_idx
+                        
+                        if not future_10.empty:
+                            max_up = (future_10['收盘'].max() - sig['price']) / sig['price'] * 100
+                            max_down = (future_10['收盘'].min() - sig['price']) / sig['price'] * 100
                             status = "✅反弹中" if max_up >= 1.0 else "❌走弱" if max_down <= -3.0 else "⏳磨底中"
                             
                             perf_list.append({
                                 '日期': sig['date'], '代码': code,
-                                '回撤%': sig.get('回撤%', 0), # 记录触发时的原始回撤
-                                'RSI': sig.get('RSI', 0),    # 记录触发时的原始RSI
-                                'BIAS': sig.get('BIAS', 0),  # 记录触发时的原始BIAS
+                                '回撤%': sig.get('回撤%', 0),
+                                'RSI': sig.get('RSI', 0),
+                                'BIAS': sig.get('BIAS', 0),
                                 '周期最高%': round(max_up, 2), 
                                 '期间最深%': round(max_down, 2),
+                                '回本天数': back_days, # 新增列
                                 '评分': sig.get('评分', 1), 
                                 '结果': status
                             })
@@ -98,17 +104,19 @@ def update_readme(current_res, perf_df):
     
     if not perf_df.empty:
         win_rate = (len(perf_df[perf_df['结果'] == '✅反弹中']) / len(perf_df)) * 100
-        content += f"## 📊 策略效率 (3日内最高反弹 > 1% 概率)\n> **当前综合胜率**: `{win_rate:.2f}%` | **回测样本**: `{len(perf_df)}` \n\n"
+        # 计算平均解套时间(仅针对已回本的)
+        recovered = perf_df[perf_df['回本天数'] != '未回本']
+        avg_back = recovered['回本天数'].mean() if not recovered.empty else 0
+        content += f"## 📊 策略效率 (10日追踪)\n> **综合胜率**: `{win_rate:.2f}%` | **平均回本**: `{avg_back:.1f}天` | **样本数**: `{len(perf_df)}` \n\n"
 
     content += "## 🎯 实时监控 (回撤 > 10%)\n"
     if current_res:
         df = pd.DataFrame(current_res).sort_values('评分', ascending=False)
         content += df.to_markdown(index=False) + "\n\n"
     
-    content += "## 📈 历史定投点效果追踪 (详细回测版)\n"
+    content += "## 📈 历史效果复盘 (含解套周期)\n"
     if not perf_df.empty:
-        # 按你的要求，输出包含原始数值的详细表格
-        cols = ['日期', '代码', '回撤%', 'RSI', 'BIAS', '周期最高%', '期间最深%', '评分', '结果']
+        cols = ['日期', '代码', '回撤%', 'RSI', 'BIAS', '周期最高%', '期间最深%', '回本天数', '评分', '结果']
         content += perf_df[cols].tail(25).iloc[::-1].to_markdown(index=False) + "\n"
     
     with open('README.md', 'w', encoding='utf-8') as f:
@@ -118,13 +126,11 @@ def main():
     files = glob.glob('fund_data/*.csv')
     with Pool(cpu_count()) as p:
         results = [r for r in p.map(process_file, files) if r is not None]
-    
     if results:
         now = datetime.now()
         folder = now.strftime('%Y/%m')
         os.makedirs(folder, exist_ok=True)
         pd.DataFrame(results).to_csv(f"{folder}/sig_{now.strftime('%d_%H%M%S')}.csv", index=False)
-    
     perf_df = get_performance_stats()
     update_readme(results, perf_df)
 
