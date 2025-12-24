@@ -4,10 +4,10 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-# --- 阈值设置 ---
+# --- 策略参数 ---
 RSI_LOW = 30
 BIAS_LOW = -4.0
-RETR_WATCH = -10.0  # 回撤10%进入雷达
+RETR_WATCH = -5.0  # 高位回撤10%进入雷达
 VOL_BURST = 1.5    # 1.5倍放量
 
 def calculate_rsi(series, period=6):
@@ -17,6 +17,7 @@ def calculate_rsi(series, period=6):
     return 100 - (100 / (1 + (gain / loss)))
 
 def process_file(file_path):
+    """处理核心逻辑：筛选信号"""
     try:
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
@@ -37,7 +38,7 @@ def process_file(file_path):
 
         if '收盘' not in df.columns or len(df) < 30: return None
 
-        # 计算核心指标
+        # 计算指标
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
@@ -51,51 +52,104 @@ def process_file(file_path):
         
         # 只要满足“回撤过10%”就进备选池
         if curr['retr'] <= RETR_WATCH:
+            tags = []
+            if curr['rsi'] < RSI_LOW: tags.append("RSI")
+            if curr['bias'] < BIAS_LOW: tags.append("BIAS")
+            if not is_otc and curr['v_ratio'] > VOL_BURST: tags.append("🔥")
+            
             return {
-                '代码': code,
-                '价格': round(curr['收盘'], 4),
+                'date': str(curr['日期']).split(' ')[0],
+                'fund_code': code,
+                'price': round(curr['收盘'], 4),
                 '回撤%': round(curr['retr'], 2),
                 'RSI': round(curr['rsi'], 2),
                 'BIAS': round(curr['bias'], 2),
                 '量比': round(curr['v_ratio'], 2) if curr['v_ratio'] > 0 else "--",
-                '信号': f"{'RSI' if curr['rsi']<RSI_LOW else ''} {'BIAS' if curr['bias']<BIAS_LOW else ''} {'🔥' if (not is_otc and curr['v_ratio']>VOL_BURST) else ''}".strip()
+                '信号': " ".join(tags) if tags else "观察"
             }
     except: return None
     return None
 
-def update_readme(all_data):
-    now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content = f"# 🤖 ETF/基金 阶梯式抄底雷达\n\n> 更新时间: `{now_bj}`\n\n"
-    
-    if not all_data:
-        content += "### 🎯 实时信号\n✅ 市场整体估值尚可，暂无大幅回撤品种。\n"
-    else:
-        df = pd.DataFrame(all_data)
-        
-        # 1. 强力共振区 (两个指标都见底 + 放量)
-        strong = df[df['信号'].str.contains('RSI') & df['信号'].str.contains('BIAS')]
-        content += "### 🔴 第一梯队：技术面见底 (RSI & BIAS 共振)\n"
-        content += strong.to_markdown(index=False) if not strong.empty else "*暂无品种进入强力共振区*\n"
-        
-        # 2. 放量关注区 (有超跌信号且放量)
-        burst = df[df['信号'].str.contains('🔥')]
-        content += "\n### 🟠 第二梯队：异动放量区 (恐慌盘/接盘盘)\n"
-        content += burst.to_markdown(index=False) if not burst.empty else "*暂无异常放量品种*\n"
-        
-        # 3. 基础雷达区 (所有回撤>10%的品种)
-        content += "\n### 🔵 第三梯队：高位回撤池 (跌幅 > 10%)\n"
-        content += df.sort_values('回撤%').head(15).to_markdown(index=False)
+def get_performance_history():
+    """复盘功能：对比历史信号与次日实际走势"""
+    history_files = glob.glob('202*/**/*.csv', recursive=True)
+    perf_list = []
+    for h_file in history_files:
+        if 'performance' in h_file or 'history' in h_file: continue
+        try:
+            h_df = pd.read_csv(h_file)
+            for _, sig in h_df.iterrows():
+                code = str(sig['fund_code'])
+                raw_path = f'fund_data/{code}.csv'
+                if os.path.exists(raw_path):
+                    raw_df = pd.read_csv(raw_path)
+                    # 适配场内/场外列名
+                    if 'net_value' in raw_df.columns:
+                        raw_df = raw_df.rename(columns={'date': '日期', 'net_value': '收盘'})
+                    
+                    raw_df['日期'] = pd.to_datetime(raw_df['日期']).dt.strftime('%Y-%m-%d')
+                    idx = raw_df[raw_df['日期'] == str(sig['date'])].index
+                    if len(idx) > 0 and (idx[0] + 1) < len(raw_df):
+                        next_day = raw_df.iloc[idx[0] + 1]
+                        change = (next_day['收盘'] - sig['price']) / sig['price'] * 100
+                        perf_list.append({
+                            '日期': sig['date'], '代码': code, '买入价': sig['price'],
+                            '次日价': next_day['收盘'], '涨跌%': round(change, 2),
+                            '结果': '涨' if change > 0 else '跌'
+                        })
+        except: continue
+    return pd.DataFrame(perf_list)
 
-    content += "\n\n---\n**逻辑说明**：\n- **第一梯队**：短线情绪与价格乖离同时到达极值，反弹概率高。\n- **第二梯队**：放量代表多空分歧加大，往往是变盘信号。\n- **第三梯队**：仅展示回撤深度，作为中长期观察名单。"
+def update_readme(current_res, perf_df):
+    """生成漂亮的 README 面板"""
+    now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    content = f"# 🤖 ETF/基金 策略雷达 & 历史复盘\n\n> 最后更新: `{now_bj}`\n\n"
+    
+    # 1. 实时信号
+    content += "## 🎯 实时监控 (回撤 > 10%)\n"
+    if current_res:
+        df = pd.DataFrame(current_res)
+        # 强力共振
+        strong = df[df['信号'].str.contains('RSI') & df['信号'].str.contains('BIAS')]
+        if not strong.empty:
+            content += "### 🔴 第一梯队：技术见底 (RSI & BIAS 共振)\n"
+            content += strong.to_markdown(index=False) + "\n\n"
+        
+        # 其他信号
+        others = df[~df.index.isin(strong.index)]
+        content += "### 🔵 第二梯队：备选观察名单\n"
+        content += others.sort_values('回撤%').to_markdown(index=False) + "\n"
+    else:
+        content += "✅ **当前暂无满足回撤条件的品种。**\n"
+
+    # 2. 历史复盘
+    content += "\n## 📈 历史战绩复盘 (次日统计)\n"
+    if not perf_df.empty:
+        win_rate = (perf_df['结果'] == '涨').sum() / len(perf_df) * 100
+        content += f"**总计信号**: `{len(perf_df)}` | **次日上涨概率**: `{win_rate:.2f}%` \n\n"
+        content += perf_df.tail(10).iloc[::-1].to_markdown(index=False) + "\n"
+    else:
+        content += "⏳ **暂无复盘数据。一旦产生历史信号且数据更新，此处将自动核算胜率。**\n"
     
     with open('README.md', 'w', encoding='utf-8') as f:
         f.write(content)
 
 def main():
+    # 1. 扫描当前信号
     files = glob.glob('fund_data/*.csv')
     with Pool(cpu_count()) as p:
         results = [r for r in p.map(process_file, files) if r is not None]
-    update_readme(results)
+    
+    # 2. 存档今日信号 (这就是你的历史记录)
+    if results:
+        now = datetime.now()
+        folder = now.strftime('%Y/%m')
+        os.makedirs(folder, exist_ok=True)
+        pd.DataFrame(results).to_csv(f"{folder}/sig_{now.strftime('%d_%H%M%S')}.csv", index=False)
+    
+    # 3. 计算历史表现并更新面板
+    perf_df = get_performance_history()
+    update_readme(results, perf_df)
 
 if __name__ == "__main__":
     main()
