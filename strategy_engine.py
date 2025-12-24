@@ -4,18 +4,17 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-# --- 策略参数 ---
-RSI_THRESHOLD = 30
-BIAS_THRESHOLD = -4.0
-RETRENCHMENT_LIMIT = -10.0  # 高位回撤起码10%
-VOL_RATIO_LIMIT = 1.5       # 成交量放大 1.5 倍
+# --- 阈值设置 ---
+RSI_LOW = 30
+BIAS_LOW = -4.0
+RETR_WATCH = -10.0  # 回撤10%进入雷达
+VOL_BURST = 1.5    # 1.5倍放量
 
 def calculate_rsi(series, period=6):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + (gain / loss)))
 
 def process_file(file_path):
     try:
@@ -25,93 +24,75 @@ def process_file(file_path):
             df = pd.read_csv(file_path, encoding='gbk')
         if df.empty: return None
 
-        # 格式自适应 (场内 vs 场外)
-        if 'net_value' in df.columns:
+        # 格式自适应
+        is_otc = 'net_value' in df.columns
+        if is_otc:
             df = df.rename(columns={'date': '日期', 'net_value': '收盘'})
             df['日期'] = pd.to_datetime(df['日期'])
             df = df.sort_values(by='日期', ascending=True).reset_index(drop=True)
-            # 场外基金没有成交量，设为1以跳过放量逻辑
-            df['成交量'] = 1 
+            df['成交量'] = 0
         else:
-            # 适配场内 ETF 列名
             df = df.rename(columns={'成交量': 'vol'})
-            if 'vol' not in df.columns: df['vol'] = 1
-            df['成交量'] = df['vol']
+            df['成交量'] = df.get('vol', 0)
 
         if '收盘' not in df.columns or len(df) < 30: return None
 
-        # 1. 计算指标
+        # 计算核心指标
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
-        
-        # 2. 计算回撤 (30日高点)
-        window_max = df['收盘'].rolling(window=30).max()
-        df['retrenchment'] = ((df['收盘'] - window_max) / window_max) * 100
-        
-        # 3. 计算成交量放大比率 (当前量 / 5日均量)
-        df['vol_ma5'] = df['成交量'].rolling(window=5).mean()
-        df['vol_ratio'] = df['成交量'] / df['vol_ma5']
-        
-        latest = df.iloc[-1]
+        df['max_30'] = df['收盘'].rolling(window=30).max()
+        df['retr'] = ((df['收盘'] - df['max_30']) / df['max_30']) * 100
+        df['v_ma5'] = df['成交量'].rolling(window=5).mean()
+        df['v_ratio'] = df['成交量'] / df['v_ma5']
+
+        curr = df.iloc[-1]
         code = os.path.splitext(os.path.basename(file_path))[0]
         
-        # 条件打标
-        is_rsi_low = latest['rsi'] < RSI_THRESHOLD
-        is_bias_low = latest['bias'] < BIAS_THRESHOLD
-        is_drop_enough = latest['retrenchment'] <= RETRENCHMENT_LIMIT
-        is_vol_burst = latest['vol_ratio'] >= VOL_RATIO_LIMIT if latest['vol_ratio'] > 0 else False
-
-        # 汇总：只要满足任何一个超跌指标且回撤够大就记录
-        if (is_rsi_low or is_bias_low) and is_drop_enough:
-            tags = []
-            if is_rsi_low: tags.append("RSI超卖")
-            if is_bias_low: tags.append("BIAS负乖离")
-            if is_vol_burst: tags.append("🔥放量")
-            
+        # 只要满足“回撤过10%”就进备选池
+        if curr['retr'] <= RETR_WATCH:
             return {
-                '日期': str(latest['日期']).split(' ')[0],
                 '代码': code,
-                '价格': round(latest['收盘'], 4),
-                '回撤%': round(latest['retrenchment'], 2),
-                'RSI': round(latest['rsi'], 2),
-                'BIAS': round(latest['bias'], 2),
-                '量比': round(latest['vol_ratio'], 2) if latest['vol_ratio'] > 1 else "--",
-                '满足信号': " | ".join(tags)
+                '价格': round(curr['收盘'], 4),
+                '回撤%': round(curr['retr'], 2),
+                'RSI': round(curr['rsi'], 2),
+                'BIAS': round(curr['bias'], 2),
+                '量比': round(curr['v_ratio'], 2) if curr['v_ratio'] > 0 else "--",
+                '信号': f"{'RSI' if curr['rsi']<RSI_LOW else ''} {'BIAS' if curr['bias']<BIAS_LOW else ''} {'🔥' if (not is_otc and curr['v_ratio']>VOL_BURST) else ''}".strip()
             }
     except: return None
     return None
 
-def update_readme(results):
+def update_readme(all_data):
     now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    md_content = f"# 🤖 ETF/基金 多维度自动监控看板\n\n"
-    md_content += f"> 更新时间: `{now_bj}` | **核心准则：回撤 > 10% 才有抄底价值**\n\n"
+    content = f"# 🤖 ETF/基金 阶梯式抄底雷达\n\n> 更新时间: `{now_bj}`\n\n"
     
-    if results:
-        df_res = pd.DataFrame(results)
-        # 排序：优先展示放量的，然后是回撤最大的
-        df_res['burst'] = df_res['满足信号'].str.contains("🔥").astype(int)
-        df_res = df_res.sort_values(by=['burst', '回撤%'], ascending=[False, True])
-        
-        md_content += "### 🎯 实时筛选清单\n"
-        md_content += df_res.drop(columns=['burst']).to_markdown(index=False) + "\n\n"
-        md_content += "> **提示**：标注 🔥 的品种代表成交量异常放大，反转概率更高。\n"
+    if not all_data:
+        content += "### 🎯 实时信号\n✅ 市场整体估值尚可，暂无大幅回撤品种。\n"
     else:
-        md_content += "### 🎯 实时筛选清单\n✅ **当前暂无满足“高位回撤>10%”且“技术指标见底”的品种。**\n"
+        df = pd.DataFrame(all_data)
+        
+        # 1. 强力共振区 (两个指标都见底 + 放量)
+        strong = df[df['信号'].str.contains('RSI') & df['信号'].str.contains('BIAS')]
+        content += "### 🔴 第一梯队：技术面见底 (RSI & BIAS 共振)\n"
+        content += strong.to_markdown(index=False) if not strong.empty else "*暂无品种进入强力共振区*\n"
+        
+        # 2. 放量关注区 (有超跌信号且放量)
+        burst = df[df['信号'].str.contains('🔥')]
+        content += "\n### 🟠 第二梯队：异动放量区 (恐慌盘/接盘盘)\n"
+        content += burst.to_markdown(index=False) if not burst.empty else "*暂无异常放量品种*\n"
+        
+        # 3. 基础雷达区 (所有回撤>10%的品种)
+        content += "\n### 🔵 第三梯队：高位回撤池 (跌幅 > 10%)\n"
+        content += df.sort_values('回撤%').head(15).to_markdown(index=False)
 
-    md_content += "\n---\n### 📊 筛选标准说明\n"
-    md_content += "1. **回撤%**: 当前价格较近30个交易日最高点的跌幅。\n"
-    md_content += "2. **RSI(6)**: 低于 30 进入超卖区。\n"
-    md_content += "3. **BIAS(6)**: 乖离率低于 -4% 意味着短线超跌。\n"
-    md_content += "4. **量比**: 大于 1.5 意味着今日成交量超过过去5日均值的50%。\n"
+    content += "\n\n---\n**逻辑说明**：\n- **第一梯队**：短线情绪与价格乖离同时到达极值，反弹概率高。\n- **第二梯队**：放量代表多空分歧加大，往往是变盘信号。\n- **第三梯队**：仅展示回撤深度，作为中长期观察名单。"
     
     with open('README.md', 'w', encoding='utf-8') as f:
-        f.write(md_content)
+        f.write(content)
 
 def main():
-    data_dir = 'fund_data'
-    if not os.path.exists(data_dir): return
-    files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.csv')]
+    files = glob.glob('fund_data/*.csv')
     with Pool(cpu_count()) as p:
         results = [r for r in p.map(process_file, files) if r is not None]
     update_readme(results)
