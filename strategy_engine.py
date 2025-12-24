@@ -4,11 +4,11 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-# --- 策略参数 ---
+# --- 核心参数 ---
 RSI_LOW = 30
 BIAS_LOW = -4.0
-RETR_WATCH = -5.0  # 高位回撤10%进入雷达
-VOL_BURST = 1.5    # 1.5倍放量
+RETR_WATCH = -10.0  # 至少回撤10%才进列表
+VOL_BURST = 1.5    # 成交量放大1.5倍
 
 def calculate_rsi(series, period=6):
     delta = series.diff()
@@ -17,7 +17,6 @@ def calculate_rsi(series, period=6):
     return 100 - (100 / (1 + (gain / loss)))
 
 def process_file(file_path):
-    """处理核心逻辑：筛选信号"""
     try:
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
@@ -25,7 +24,7 @@ def process_file(file_path):
             df = pd.read_csv(file_path, encoding='gbk')
         if df.empty: return None
 
-        # 格式自适应
+        # 1. 格式自适应 (场内 vs 场外)
         is_otc = 'net_value' in df.columns
         if is_otc:
             df = df.rename(columns={'date': '日期', 'net_value': '收盘'})
@@ -38,7 +37,7 @@ def process_file(file_path):
 
         if '收盘' not in df.columns or len(df) < 30: return None
 
-        # 计算指标
+        # 2. 计算指标
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
@@ -71,83 +70,87 @@ def process_file(file_path):
     return None
 
 def get_performance_history():
-    """复盘功能：对比历史信号与次日实际走势"""
+    """复盘：对比历史信号和次日价格走势 """
     history_files = glob.glob('202*/**/*.csv', recursive=True)
     perf_list = []
     for h_file in history_files:
-        if 'performance' in h_file or 'history' in h_file: continue
+        if any(x in h_file for x in ['performance', 'track', 'history']): continue
         try:
             h_df = pd.read_csv(h_file)
+            # 确保存档文件包含必要列名
+            if not all(col in h_df.columns for col in ['date', 'fund_code', 'price']): continue
+            
             for _, sig in h_df.iterrows():
-                code = str(sig['fund_code'])
+                code = str(sig['fund_code']).zfill(6) # 补齐6位代码
                 raw_path = f'fund_data/{code}.csv'
                 if os.path.exists(raw_path):
                     raw_df = pd.read_csv(raw_path)
-                    # 适配场内/场外列名
                     if 'net_value' in raw_df.columns:
                         raw_df = raw_df.rename(columns={'date': '日期', 'net_value': '收盘'})
-                    
                     raw_df['日期'] = pd.to_datetime(raw_df['日期']).dt.strftime('%Y-%m-%d')
-                    idx = raw_df[raw_df['日期'] == str(sig['date'])].index
-                    if len(idx) > 0 and (idx[0] + 1) < len(raw_df):
-                        next_day = raw_df.iloc[idx[0] + 1]
+                    
+                    target_date = str(sig['date'])
+                    idx_list = raw_df[raw_df['日期'] == target_date].index
+                    if not idx_list.empty and (idx_list[0] + 1) < len(raw_df):
+                        next_day = raw_df.iloc[idx_list[0] + 1]
                         change = (next_day['收盘'] - sig['price']) / sig['price'] * 100
                         perf_list.append({
-                            '日期': sig['date'], '代码': code, '买入价': sig['price'],
-                            '次日价': next_day['收盘'], '涨跌%': round(change, 2),
+                            '日期': target_date, '代码': code, '入场价': sig['price'],
+                            '次日收盘': round(next_day['收盘'], 4), '涨跌%': round(change, 2),
                             '结果': '涨' if change > 0 else '跌'
                         })
         except: continue
     return pd.DataFrame(perf_list)
 
 def update_readme(current_res, perf_df):
-    """生成漂亮的 README 面板"""
     now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content = f"# 🤖 ETF/基金 策略雷达 & 历史复盘\n\n> 最后更新: `{now_bj}`\n\n"
+    content = f"# 🤖 ETF/基金 策略雷达 & 历史记录\n\n> 最后更新: `{now_bj}`\n\n"
     
-    # 1. 实时信号
+    # 1. 实时雷达
     content += "## 🎯 实时监控 (回撤 > 10%)\n"
     if current_res:
         df = pd.DataFrame(current_res)
-        # 强力共振
-        strong = df[df['信号'].str.contains('RSI') & df['信号'].str.contains('BIAS')]
+        # 第一梯队：技术见底
+        strong = df[df['信号'].str.contains('RSI') | df['信号'].str.contains('BIAS')]
         if not strong.empty:
-            content += "### 🔴 第一梯队：技术见底 (RSI & BIAS 共振)\n"
-            content += strong.to_markdown(index=False) + "\n\n"
+            content += "### 🔴 第一梯队：技术指标见底\n"
+            content += strong.sort_values('回撤%').to_markdown(index=False) + "\n\n"
         
-        # 其他信号
-        others = df[~df.index.isin(strong.index)]
-        content += "### 🔵 第二梯队：备选观察名单\n"
-        content += others.sort_values('回撤%').to_markdown(index=False) + "\n"
+        # 第二梯队：仅回撤观察
+        others = df[df['信号'] == "观察"]
+        if not others.empty:
+            content += "### 🔵 第二梯队：高位回撤观察 (跌幅 > 10%)\n"
+            content += others.sort_values('回撤%').head(15).to_markdown(index=False) + "\n"
     else:
         content += "✅ **当前暂无满足回撤条件的品种。**\n"
 
     # 2. 历史复盘
-    content += "\n## 📈 历史战绩复盘 (次日统计)\n"
+    content += "\n## 📈 历史战绩统计 (信号次日表现)\n"
     if not perf_df.empty:
         win_rate = (perf_df['结果'] == '涨').sum() / len(perf_df) * 100
         content += f"**总计信号**: `{len(perf_df)}` | **次日上涨概率**: `{win_rate:.2f}%` \n\n"
-        content += perf_df.tail(10).iloc[::-1].to_markdown(index=False) + "\n"
+        content += perf_df.tail(15).iloc[::-1].to_markdown(index=False) + "\n"
     else:
-        content += "⏳ **暂无复盘数据。一旦产生历史信号且数据更新，此处将自动核算胜率。**\n"
+        content += "⏳ **暂无复盘数据。当第一次产生信号且次日数据更新后，此处自动核算。**\n"
     
     with open('README.md', 'w', encoding='utf-8') as f:
         f.write(content)
 
 def main():
-    # 1. 扫描当前信号
+    # 1. 筛选今日信号
     files = glob.glob('fund_data/*.csv')
     with Pool(cpu_count()) as p:
         results = [r for r in p.map(process_file, files) if r is not None]
     
-    # 2. 存档今日信号 (这就是你的历史记录)
+    # 2. 存档信号 (供复盘使用)
     if results:
         now = datetime.now()
         folder = now.strftime('%Y/%m')
         os.makedirs(folder, exist_ok=True)
+        # 保存为CSV，列名固定为 date, fund_code, price 方便复盘读取
         pd.DataFrame(results).to_csv(f"{folder}/sig_{now.strftime('%d_%H%M%S')}.csv", index=False)
     
-    # 3. 计算历史表现并更新面板
+    # 3. 统计复盘并更新 README
     perf_df = get_performance_history()
     update_readme(results, perf_df)
 
