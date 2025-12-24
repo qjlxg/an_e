@@ -71,8 +71,8 @@ def get_performance_stats():
                     idx_list = raw_df[raw_df['日期'] == str(sig['date'])].index
                     if not idx_list.empty:
                         curr_idx = idx_list[0]
-                        # 追踪后3日表现
-                        future_df = raw_df.iloc[curr_idx+1 : curr_idx+4]
+                        # 追踪后11日表现
+                        future_df = raw_df.iloc[curr_idx+1 : curr_idx+11]
                         if not future_df.empty:
                             max_up = (future_df['收盘'].max() - sig['price']) / sig['price'] * 100
                             max_down = (future_df['收盘'].min() - sig['price']) / sig['price'] * 100
