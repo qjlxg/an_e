@@ -26,7 +26,7 @@ jobs:
         python-version: '3.10'
 
     - name: Install dependencies
-      run: pip install pandas
+      run: pip install pandas tabulate
 
     - name: Run Engine
       run: python strategy_engine.py
@@ -37,6 +37,6 @@ jobs:
         git config --local user.name "StrategyBot"
         git add .
         if ! git diff --cached --quiet; then
-          git commit -m "Auto Update $(date +'%Y-%m-%d %H:%M')"
+          git commit -m "AutoUpdate $(date +'%Y-%m-%d %H:%M')"
           git push
         fi
