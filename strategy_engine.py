@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-# --- 核心参数 ---
+# --- 参数 ---
 RSI_LOW = 30
 BIAS_LOW = -4.0
 RETR_WATCH = -10.0
@@ -24,9 +24,7 @@ def process_file(file_path):
             df = pd.read_csv(file_path, encoding='gbk')
         if df.empty: return None
 
-        # 格式自适应
-        is_otc = 'net_value' in df.columns
-        if is_otc:
+        if 'net_value' in df.columns:
             df = df.rename(columns={'date': '日期', 'net_value': '收盘'})
             df['日期'] = pd.to_datetime(df['日期'])
             df = df.sort_values(by='日期', ascending=True).reset_index(drop=True)
@@ -37,7 +35,6 @@ def process_file(file_path):
 
         if '收盘' not in df.columns or len(df) < 30: return None
 
-        # 计算指标
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
@@ -50,10 +47,18 @@ def process_file(file_path):
         code = os.path.splitext(os.path.basename(file_path))[0]
         
         if curr['retr'] <= RETR_WATCH:
+            # --- 评分逻辑 ---
+            score = 1 # 基础回撤分
             tags = []
-            if curr['rsi'] < RSI_LOW: tags.append("RSI")
-            if curr['bias'] < BIAS_LOW: tags.append("BIAS")
-            if not is_otc and curr['v_ratio'] > VOL_BURST: tags.append("🔥")
+            if curr['rsi'] < RSI_LOW: 
+                score += 2
+                tags.append("RSI超卖")
+            if curr['bias'] < BIAS_LOW: 
+                score += 2
+                tags.append("BIAS超跌")
+            if curr['v_ratio'] > VOL_BURST: 
+                score += 2
+                tags.append("🔥放量")
             
             return {
                 'date': str(curr['日期']).split(' ')[0],
@@ -63,13 +68,13 @@ def process_file(file_path):
                 'RSI': round(curr['rsi'], 2),
                 'BIAS': round(curr['bias'], 2),
                 '量比': round(curr['v_ratio'], 2) if curr['v_ratio'] > 0 else "--",
-                '信号': " ".join(tags) if tags else "观察"
+                '评分': score,
+                '建议': "🚀重点关注" if score >= 3 else "⌛等待"
             }
     except: return None
     return None
 
 def get_performance_3day():
-    """复盘：计算信号发出后3日内的最高涨幅"""
     history_files = glob.glob('202*/**/*.csv', recursive=True)
     perf_list = []
     for h_file in history_files:
@@ -88,50 +93,47 @@ def get_performance_3day():
                     idx_list = raw_df[raw_df['日期'] == str(sig['date'])].index
                     if not idx_list.empty:
                         curr_idx = idx_list[0]
-                        # 获取未来3天的数据
                         future_df = raw_df.iloc[curr_idx+1 : curr_idx+4]
                         if not future_df.empty:
-                            max_price = future_df['收盘'].max()
-                            max_change = (max_price - sig['price']) / sig['price'] * 100
-                            last_price = future_df.iloc[-1]['收盘']
-                            end_change = (last_price - sig['price']) / sig['price'] * 100
+                            max_p = future_df['收盘'].max()
+                            max_chg = (max_p - sig['price']) / sig['price'] * 100
+                            # 获取最新状态（如果是复盘旧信号，看现在的价格）
+                            current_p = raw_df.iloc[-1]['收盘']
+                            cum_chg = (current_p - sig['price']) / sig['price'] * 100
                             
                             perf_list.append({
-                                '日期': sig['date'], '代码': code, '入场': sig['price'],
-                                '3日最高%': round(max_change, 2),
-                                '目前累积%': round(end_change, 2),
-                                '状态': '✅获利' if max_change > 1.5 else '❌走弱'
+                                '日期': sig['date'], '代码': code,
+                                '3日最高%': round(max_chg, 2),
+                                '累计总收益%': round(cum_chg, 2),
+                                '得分': sig.get('评分', '-'),
+                                '结果': '✅获利' if max_chg > 1.2 else '❌走弱'
                             })
         except: continue
     return pd.DataFrame(perf_list)
 
 def update_readme(current_res, perf_df):
     now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content = f"# 🤖 ETF/基金 策略雷达 (实战加强版)\n\n> 最后更新: `{now_bj}`\n\n"
+    content = f"# 🤖 ETF/基金 智能决策看板\n\n> 最后更新: `{now_bj}`\n\n"
     
-    # 1. 战绩看板
+    # 1. 战绩
     if not perf_df.empty:
-        win_rate = (perf_df['3日最高%'] > 1.0).sum() / len(perf_df) * 100
-        content += "## 📊 策略效率 (3日内最高反弹 > 1% 概率)\n"
-        content += f"> **当前综合胜率**: `{win_rate:.2f}%` | **回测样本**: `{len(perf_df)}` \n\n"
+        win_rate = (perf_df['结果'] == '✅获利').sum() / len(perf_df) * 100
+        content += "## 📊 策略实战效率\n"
+        content += f"> **3日反弹胜率**: `{win_rate:.2f}%` | **回测样本**: `{len(perf_df)}` \n\n"
 
-    # 2. 实时雷达
-    content += "## 🎯 实时监控 (回撤 > 10%)\n"
+    # 2. 实时
+    content += "## 🎯 实时决策 (回撤 > 10%)\n"
     if current_res:
-        df = pd.DataFrame(current_res)
-        strong = df[df['信号'].str.contains('RSI|BIAS|🔥')]
-        if not strong.empty:
-            content += "### 🔴 第一梯队：技术见底/放量异动\n"
-            content += strong.sort_values('回撤%').to_markdown(index=False) + "\n\n"
-        
-        others = df[df['信号'] == "观察"]
-        content += "### 🔵 第二梯队：深度回撤池\n"
-        content += others.sort_values('回撤%').head(10).to_markdown(index=False) + "\n"
+        df = pd.DataFrame(current_res).sort_values(by='评分', ascending=False)
+        content += df.to_markdown(index=False) + "\n\n"
+        content += "> **评分说明**: 3分以上为“极度超跌/异动”，通常反弹概率更高。\n"
+    else:
+        content += "✅ **当前暂无满足条件的信号。**\n"
     
-    # 3. 历史明细
-    content += "\n## 📈 历史信号追踪 (3日表现)\n"
+    # 3. 历史
+    content += "\n## 📈 信号表现追踪 (3日表现)\n"
     if not perf_df.empty:
-        content += perf_df.tail(15).iloc[::-1].to_markdown(index=False) + "\n"
+        content += perf_df.tail(20).iloc[::-1].to_markdown(index=False) + "\n"
     
     with open('README.md', 'w', encoding='utf-8') as f:
         f.write(content)
