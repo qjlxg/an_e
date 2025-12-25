@@ -2,7 +2,7 @@ import os
 import glob
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from multiprocessing import Pool, cpu_count
 
 # --- 核心锁死风控参数 ---
@@ -12,7 +12,7 @@ STOP_BUY_LOSS_RATIO = -5.0 # 组合总亏损超过5%，禁买令开启
 
 # --- 策略技术参数 ---
 RETR_WINDOW = 250      
-RETR_WATCH = -10.0     
+RETR_WATCH = -20.0     
 RSI_LOW = 30           
 BIAS_LOW = -5.0        
 
@@ -31,11 +31,10 @@ def process_file(file_path):
         df['日期'] = pd.to_datetime(df['日期'])
         df = df.sort_values(by='日期').reset_index(drop=True)
         
-        # --- 数据清洗逻辑 ---
         if len(df) < 2: return None
         curr = df.iloc[-1]
         prev = df.iloc[-2]
-        # 如果最新价是1.0且跌幅离谱（比如从1.2以上直接掉下来），判定为数据缺失，丢弃
+        # 数据清洗：过滤掉净值缺失填充1.0导致的假跌
         if curr['收盘'] == 1.0 and prev['收盘'] > 1.1: return None
         
         df['rsi'] = calculate_rsi(df['收盘'], 6)
@@ -48,19 +47,14 @@ def process_file(file_path):
         df['persist_days'] = df['in_watch'].groupby((df['in_watch'] != df['in_watch'].shift()).cumsum()).cumcount() + 1
         df.loc[~df['in_watch'], 'persist_days'] = 0
 
-        curr = df.iloc[-1] # 重新获取包含指标的末行
+        curr = df.iloc[-1]
         code = os.path.splitext(os.path.basename(file_path))[0]
         
         if curr['in_watch']:
             score = 1
             if curr['rsi'] < RSI_LOW: score += 2
             if curr['bias'] < BIAS_LOW: score += 2
-            
-            risk_level = "正常"
-            if curr['rsi'] > 55 and score == 1:
-                risk_level = "🚩高风险(陷阱)"
-            elif score >= 3:
-                risk_level = "✅高胜率区"
+            risk_level = "✅高胜率区" if score >= 3 else "🚩高风险(陷阱)" if (curr['rsi'] > 55 and score == 1) else "正常"
                 
             return {
                 'date': str(curr['日期']).split(' ')[0],
@@ -96,8 +90,7 @@ def get_performance_stats():
                     signal_price = sig['price']
                     latest_price = raw_df.iloc[-1]['收盘']
                     
-                    # --- 统计端数据清洗 ---
-                    # 价格正好为1.0且亏损超过20%，大概率是缺失数据，不进入追踪
+                    # 统计端数据清洗
                     if latest_price == 1.0 and signal_price > 1.2: continue
                     
                     prev_price = raw_df.iloc[-2]['收盘'] if len(raw_df) > 1 else latest_price
@@ -122,8 +115,11 @@ def get_performance_stats():
     return pd.DataFrame(perf_list)
 
 def update_readme(current_res, perf_df):
-    now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content = f"# 🤖 ETF/基金 策略雷达 (实战锁死+清洗版)\n\n> 最后更新: `{now_bj}`\n\n"
+    # --- 修改为北京时间 (UTC+8) ---
+    now_utc = datetime.now(timezone.utc)
+    now_bj = (now_utc + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    content = f"# 🤖 ETF/基金 策略雷达 (1万实战·北京时间版)\n\n> 最后更新: `{now_bj}` (北京时间)\n\n"
     
     total_invested = 0
     total_profit_loss_val = 0
@@ -139,14 +135,13 @@ def update_readme(current_res, perf_df):
             total_invested = len(active_focus) * PORTFOLIO_UNIT
             total_profit_loss_val = (active_focus['总盈亏%'] / 100 * PORTFOLIO_UNIT).sum()
             avg_return_rate = (total_profit_loss_val / total_invested) * 100 if total_invested > 0 else 0
-            
-            if total_invested >= TOTAL_BUDGET_CAP: is_budget_full = True
-            if avg_return_rate <= STOP_BUY_LOSS_RATIO: is_panic_mode = True
+            is_budget_full = total_invested >= TOTAL_BUDGET_CAP
+            is_panic_mode = avg_return_rate <= STOP_BUY_LOSS_RATIO
 
-            content += "## 💰 实战风控盘口 (含数据异常过滤)\n"
+            content += "## 💰 实战风控盘口\n"
             content += f"> **模拟总投入**: `¥{total_invested} / ¥{TOTAL_BUDGET_CAP}` | **当前总盈亏**: `{'🔴' if total_profit_loss_val > 0 else '🟢'} ¥{total_profit_loss_val:.2f} ({avg_return_rate:+.2f}%)` \n"
             status_desc = "🛡️ 预算内" if not is_budget_full else "⛔ 预算满员"
-            if is_panic_mode: status_desc += " | ❌ 禁买令 (组合亏损超标)"
+            if is_panic_mode: status_desc += " | ❌ 禁买令 (总亏损过大)"
             content += f"> **风控状态**: `{status_desc}`\n\n"
 
     content += "## 🎯 实时信号监控\n"
@@ -159,10 +154,8 @@ def update_readme(current_res, perf_df):
             return "✅ 可分批建仓"
         df['建议'] = df.apply(decide, axis=1)
         content += df.to_markdown(index=False) + "\n\n"
-    else:
-        content += "> 💤 无触发回撤阈值的品种。\n\n"
 
-    content += "## 🔥 活跃买点追踪 (已过滤异常数据)\n"
+    content += "## 🔥 活跃买点追踪 (自动清洗异常)\n"
     if not perf_df.empty:
         recent_limit = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         active_focus = perf_df[(perf_df['评分'] >= 3) & (perf_df['日期'] >= recent_limit)].sort_values('日期', ascending=False).drop_duplicates(subset=['代码'])
