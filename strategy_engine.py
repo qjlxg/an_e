@@ -5,11 +5,12 @@ import numpy as np
 from datetime import datetime, timedelta
 from multiprocessing import Pool, cpu_count
 
-# --- 核心参数 (250日长周期) ---
+# --- 核心参数 ---
 RETR_WINDOW = 250      
 RETR_WATCH = -10.0     
 RSI_LOW = 30           
 BIAS_LOW = -5.0        
+PORTFOLIO_UNIT = 2000  # 假设每只 3分信号基金 投入 2000元
 
 def calculate_rsi(series, period=6):
     delta = series.diff()
@@ -26,14 +27,12 @@ def process_file(file_path):
         df['日期'] = pd.to_datetime(df['日期'])
         df = df.sort_values(by='日期').reset_index(drop=True)
         
-        # 指标计算
         df['rsi'] = calculate_rsi(df['收盘'], 6)
         df['ma6'] = df['收盘'].rolling(window=6).mean()
         df['bias'] = ((df['收盘'] - df['ma6']) / df['ma6']) * 100
         df['max_high'] = df['收盘'].rolling(window=RETR_WINDOW).max()
         df['retr'] = ((df['收盘'] - df['max_high']) / df['max_high']) * 100
         
-        # 信号持续性追踪
         df['in_watch'] = df['retr'] <= RETR_WATCH
         df['persist_days'] = df['in_watch'].groupby((df['in_watch'] != df['in_watch'].shift()).cumsum()).cumcount() + 1
         df.loc[~df['in_watch'], 'persist_days'] = 0
@@ -62,7 +61,7 @@ def process_file(file_path):
                 '回撤%': round(curr['retr'], 2),
                 'RSI': round(curr['rsi'], 2),
                 'BIAS': round(curr['bias'], 2),
-                'price': round(curr['收盘'], 4) # 记录当时的信号价
+                'price': round(curr['收盘'], 4)
             }
     except: return None
 
@@ -85,20 +84,16 @@ def get_performance_stats():
                 idx_list = raw_df[raw_df['日期'] == str(sig['date'])].index
                 if not idx_list.empty:
                     curr_idx = idx_list[0]
-                    # 基准价格与最新价格
                     signal_price = sig['price']
                     latest_price = raw_df.iloc[-1]['收盘']
-                    # 计算今日相对于昨天的变动
                     prev_price = raw_df.iloc[-2]['收盘'] if len(raw_df) > 1 else latest_price
                     daily_raw = (latest_price - prev_price) / prev_price * 100
                     
-                    # 动态涨跌提醒逻辑
                     color_tag = "🔴 " if daily_raw > 0 else "🟢 " if daily_raw < 0 else ""
                     daily_display = f"{color_tag}{daily_raw:+.2f}%"
                     
                     total_hold_change = (latest_price - signal_price) / signal_price * 100
                     
-                    # 回本天数逻辑
                     recovery_df = raw_df.iloc[curr_idx+1:]
                     back_days = "未回本"
                     back_idx = recovery_df[recovery_df['收盘'] >= signal_price].index
@@ -120,32 +115,45 @@ def get_performance_stats():
 
 def update_readme(current_res, perf_df):
     now_bj = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content = f"# 🤖 ETF/基金 策略雷达 (250日实战监控版)\n\n> 最后更新: `{now_bj}`\n\n"
+    content = f"# 🤖 ETF/基金 策略雷达 (250日实战对冲版)\n\n> 最后更新: `{now_bj}`\n\n"
     
-    # 1. 实时监控 (高分优先)
-    content += "## 🎯 实时信号监控 (含持续性追踪)\n"
+    # --- 新增：综合实战盘口 (对冲计算) ---
+    content += "## 💰 综合实战盘口 (1万资金模拟对冲)\n"
+    if not perf_df.empty:
+        recent_limit = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+        active_focus = perf_df[(perf_df['评分'] >= 3) & (perf_df['日期'] >= recent_limit)].drop_duplicates(subset=['代码'])
+        
+        if not active_focus.empty:
+            total_invested = len(active_focus) * PORTFOLIO_UNIT
+            total_profit_loss = (active_focus['总盈亏%'] / 100 * PORTFOLIO_UNIT).sum()
+            avg_return = (total_profit_loss / total_invested) * 100 if total_invested > 0 else 0
+            
+            # 对冲强度计算 (正负抵消的程度)
+            pos_count = len(active_focus[active_focus['总盈亏%'] > 0])
+            neg_count = len(active_focus[active_focus['总盈亏%'] < 0])
+            hedge_status = "🛡️ 强对冲" if pos_count > 0 and neg_count > 0 else "⚠️ 风险同向"
+            
+            content += f"> **当前持仓数**: `{len(active_focus)}` | **累计模拟投入**: `¥{total_invested}`\n"
+            content += f"> **对冲总盈亏**: `{'🔴' if total_profit_loss > 0 else '🟢'} ¥{total_profit_loss:.2f} ({avg_return:+.2f}%)` \n"
+            content += f"> **对冲状态**: `{hedge_status}` (盈利:{pos_count} / 亏损:{neg_count})\n\n"
+        else:
+            content += "> 💤 组合当前空仓中。\n\n"
+
+    # 原有功能不变
+    content += "## 🎯 实时信号监控 (含持续性)\n"
     if current_res:
         df = pd.DataFrame(current_res).sort_values(['评分', '回撤%'], ascending=[False, True])
         content += df.to_markdown(index=False) + "\n\n"
-    else:
-        content += "> 💤 当前无触发回撤阈值的品种。\n\n"
 
-    # 2. 🔥 活跃买点动态追踪 (针对评分>=3)
-    content += "## 🔥 活跃买点动态追踪 (3分以上信号表现)\n"
+    content += "## 🔥 活跃买点动态追踪 (3分以上单品)\n"
     if not perf_df.empty:
         recent_limit = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-        # 筛选14天内的高分信号并去重，保留每个代码最新的信号
-        active_focus = perf_df[(perf_df['评分'] >= 3) & (perf_df['日期'] >= recent_limit)]
-        active_focus = active_focus.sort_values('日期', ascending=False).drop_duplicates(subset=['代码'])
-        
+        active_focus = perf_df[(perf_df['评分'] >= 3) & (perf_df['日期'] >= recent_limit)].sort_values('日期', ascending=False).drop_duplicates(subset=['代码'])
         if not active_focus.empty:
             cols = ['日期', '代码', '评分', '信号价', '最新价', '今日涨跌', '总盈亏%', '状态', '回本天数']
             content += active_focus[cols].to_markdown(index=False) + "\n\n"
-        else:
-            content += "> ⏳ 最近 14 天暂无高分买入信号。\n\n"
 
-    # 3. 历史全景复盘
-    content += "## 📈 历史效果复盘\n"
+    content += "## 📈 历史全景复盘\n"
     if not perf_df.empty:
         hist_cols = ['日期', '代码', '评分', '信号价', '总盈亏%', '状态', '回本天数']
         content += perf_df[hist_cols].tail(15).iloc[::-1].to_markdown(index=False) + "\n"
