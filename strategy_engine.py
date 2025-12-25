@@ -11,7 +11,7 @@ from multiprocessing import Pool, cpu_count
 TOTAL_BUDGET_CAP = 10000   # 1万本金总上限
 PORTFOLIO_UNIT = 2000      # 单笔抄底金额
 STOP_BUY_LOSS_RATIO = -5.0 # 组合总亏损超5%，开启禁买令
-RETR_WATCH = -15.0         # 回撤阈值锁定为 -15.0
+RETR_WATCH = -10.0         # 回撤阈值锁定为 -20.0
 RETR_WINDOW = 250          # 250日实战周期
 RSI_LOW = 30           
 BIAS_LOW = -5.0        
