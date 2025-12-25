@@ -12,7 +12,7 @@ STOP_BUY_LOSS_RATIO = -5.0 # 组合总亏损超过5%，禁买令开启
 
 # --- 策略技术参数 ---
 RETR_WINDOW = 250      
-RETR_WATCH = -10.0     
+RETR_WATCH = -15.0     
 RSI_LOW = 30           
 BIAS_LOW = -5.0        
 
