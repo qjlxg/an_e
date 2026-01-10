@@ -199,7 +199,7 @@ def update_readme(current_res, perf_df):
     now_utc = datetime.now(timezone.utc)
     now_bj = (now_utc + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
     
-    content = f"# 🤖 ETF/基金 策略雷达 (250日实战锁死版)\n\n> 最后更新: `{now_bj}` (北京时间)\n\n"
+    content = f"# 🤖 策略雷达 \n\n> 最后更新: `{now_bj}` (北京时间)\n\n"
     
     total_invested = 0
     total_profit_loss_val = 0
