@@ -37,7 +37,7 @@ def setup_logging():
 # --- 数据预处理和验证 (函数配置 2/15) ---
 def load_and_preprocess_data(filepath, fund_code):
     """
-    加载、预处理和验证基金数据。
+    加载、预处理和验证数据。
     """
     try:
         try:
@@ -50,7 +50,7 @@ def load_and_preprocess_data(filepath, fund_code):
             if 'Date' in df.columns and 'NetValue' in df.columns:
                  df = df.rename(columns={'Date': 'date', 'NetValue': 'net_value'})
             else:
-                logging.warning(f"基金 {fund_code} 缺少 'date' 或 'net_value' 列。")
+                logging.warning(f" {fund_code} 缺少 'date' 或 'net_value' 列。")
                 return None, "缺少关键列"
             
         df['date'] = pd.to_datetime(df['date'])
@@ -65,7 +65,7 @@ def load_and_preprocess_data(filepath, fund_code):
         return df, "数据有效"
         
     except Exception as e:
-        logging.error(f"加载基金 {fund_code} 数据时发生错误: {e}")
+        logging.error(f"加载 {fund_code} 数据时发生错误: {e}")
         return None, f"加载错误: {e}"
 
 # --- 布林带计算 (函数配置 3/15) ---
@@ -112,7 +112,7 @@ def calculate_bollinger_bands(series, window=20):
 # --- 技术指标计算 (函数配置 4/15) ---
 def calculate_technical_indicators(df):
     """
-    计算基金净值的完整技术指标
+    计算净值的完整技术指标
     RSI 修正：使用 EMA 平滑 Gain/Loss
     """
     df_asc = df.copy()
@@ -339,14 +339,14 @@ def generate_v5_action_signal(row):
         
     return ' | '.join(signals)
 
-# --- 遍历并分析所有基金 (函数配置 9/15) ---
+# --- 遍历并分析所有 (函数配置 9/15) ---
 def analyze_all_funds():
     """遍历 FUND_DATA_DIR 下所有 CSV 文件并分析"""
     fund_files = glob.glob(os.path.join(FUND_DATA_DIR, '*.csv'))
     results = []
     
     if not fund_files:
-        logging.warning(f"在目录 '{FUND_DATA_DIR}' 中未找到任何基金数据文件。")
+        logging.warning(f"在目录 '{FUND_DATA_DIR}' 中未找到任何数据文件。")
         return results
 
     for filepath in fund_files:
@@ -354,20 +354,20 @@ def analyze_all_funds():
         if fund_result:
             results.append(fund_result)
             
-    logging.info(f"所有基金分析完成，共 {len(results)} 个基金符合报告条件。")
+    logging.info(f"所有分析完成，共 {len(results)} 个符合报告条件。")
     return results
 
-# --- 单基金分析 (函数配置 10/15) ---
+# --- 单分析 (函数配置 10/15) ---
 def analyze_single_fund(filepath):
     """
-    单基金分析，使用抽象后的数据加载函数。
+    单分析，使用抽象后的数据加载函数。
     """
     fund_code = os.path.splitext(os.path.basename(filepath))[0]
     
     # 使用抽象函数加载数据
     df, msg = load_and_preprocess_data(filepath, fund_code)
     if df is None: 
-        logging.warning(f"基金 {fund_code} 分析跳过: {msg}")
+        logging.warning(f" {fund_code} 分析跳过: {msg}")
         return None
         
     try:
@@ -398,7 +398,7 @@ def analyze_single_fund(filepath):
         
         if not pd.isna(tech_indicators['最新净值']):
              return {
-                 '基金代码': fund_code,
+                 '代码': fund_code,
                  '最大回撤': mdd_recent_month,
                  '最大连续下跌': calculate_consecutive_drops(df['value']),
                  '近10日连跌': consecutive_drop_recent,
@@ -408,7 +408,7 @@ def analyze_single_fund(filepath):
              }
         return None
     except Exception as e:
-        logging.error(f"分析基金 {filepath} 时发生数据处理错误: {e}")
+        logging.error(f"分析 {filepath} 时发生数据处理错误: {e}")
         return None
 
 # --- 技术值格式化 (函数配置 11/15) ---
@@ -470,7 +470,7 @@ def format_table_row(index, row):
 
     # *** 对应精简后的表头输出 ***
     return (
-        f"| {index} | `{row['基金代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
+        f"| {index} | `{row['代码']}` | **{format_technical_value(row['最大回撤'], 'percent')}** | "
         f"{daily_drop_display} | {rsi14_display} | {v5_signal_display} | "
         f"**{exit_prompt}** | "
         f"{trend_status} | `{trial_price:.4f}` |\n"
@@ -481,17 +481,17 @@ def generate_report(results, timestamp_str):
     """生成完整的Markdown格式报告"""
     try:
         if not results:
-            return (f"# 基金预警报告 ({timestamp_str} UTC+8)\n\n"
-                      f"**恭喜，没有发现任何有效的基金数据。**")
+            return (f"# 预警报告 ({timestamp_str} UTC+8)\n\n"
+                      f"**恭喜，没有发现任何有效的数据。**")
 
         df_results = pd.DataFrame(results)
         
-        # 过滤出符合基础回撤条件的基金
+        # 过滤出符合基础回撤条件的
         df_filtered = df_results[df_results['最大回撤'] >= MIN_MONTH_DRAWDOWN].copy()
         
         if df_filtered.empty:
-            return (f"# 基金 V5.0 策略选股报告 ({timestamp_str} UTC+8)\n\n"
-                      f"**恭喜，没有发现满足基础预警条件（近 1 个月回撤 $\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）的基金。**")
+            return (f"#  V5.0 策略选股报告 ({timestamp_str} UTC+8)\n\n"
+                      f"**恭喜，没有发现满足基础预警条件（近 1 个月回撤 $\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）的。**")
 
 
         # 1. V5.0 信号分数 
@@ -529,7 +529,7 @@ def generate_report(results, timestamp_str):
         # ------------------------------------
         
         # 4. 分组
-        # 仅保留通过趋势健康度且信号强度达标的基金
+        # 仅保留通过趋势健康度且信号强度达标的
         df_buy = df_filtered[(df_filtered['trend_score'] == 100) & (df_filtered['signal_score'] >= MIN_BUY_SIGNAL_SCORE)].copy()
         df_reject_trend = df_filtered[df_filtered['trend_score'] == 0].copy()
         
@@ -540,7 +540,7 @@ def generate_report(results, timestamp_str):
             ascending=[True, False, False] # True: 0排在前面（未止损）；False: 高分高回撤排在前面
         )
         
-        # FIX: 对趋势不健康的基金进行排序
+        # FIX: 对趋势不健康的进行排序
         df_reject_trend_sorted = df_reject_trend.sort_values(
             by=['最大回撤', 'signal_score'],
             ascending=[False, False]
@@ -554,10 +554,10 @@ def generate_report(results, timestamp_str):
         
         report_parts = []
         report_parts.extend([
-            f"# 基金 V5.0 策略选股报告 ({timestamp_str} UTC+8)\n\n",
+            f"#  V5.0 策略选股报告 ({timestamp_str} UTC+8)\n\n",
             f"## 分析总结\n\n",
-            f"本次分析共发现 **{len(df_filtered)}** 只基金满足基础回撤条件（$\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）。\n",
-            f"其中，**{len(df_i_buyable)}** 只基金同时满足 **趋势健康、最低信号强度** 和 **未触发止损**，被列为**最高优先级试仓目标**。\n",
+            f"本次分析共发现 **{len(df_filtered)}** 只满足基础回撤条件（$\\ge {MIN_MONTH_DRAWDOWN*100:.0f}\\%$）。\n",
+            f"其中，**{len(df_i_buyable)}** 只同时满足 **趋势健康、最低信号强度** 和 **未触发止损**，被列为**最高优先级试仓目标**。\n",
             f"**决策重点：** **请优先从 🥇 I.1 组选择标的。**\n",
             f"\n---\n"
         ])
@@ -584,7 +584,7 @@ def generate_report(results, timestamp_str):
         if not df_reject_trend_sorted.empty:
             report_parts.extend([
                 f"\n## ❌ IV. 【趋势不健康/必须放弃】 ({len(df_reject_trend_sorted)}只)\n\n",
-                f"**纪律：** 这些基金**未通过趋势健康度审核**（MA50/MA250 $< {TREND_HEALTH_THRESHOLD:.1f}$ 或 趋势向下）。**风险过高，请放弃试仓。**\n\n"
+                f"**纪律：** 这些**未通过趋势健康度审核**（MA50/MA250 $< {TREND_HEALTH_THRESHOLD:.1f}$ 或 趋势向下）。**风险过高，请放弃试仓。**\n\n"
             ])
             report_parts.append(generate_merged_table(df_reject_trend_sorted))
 
@@ -610,7 +610,7 @@ def generate_merged_table(df_group):
     
     # *** 简化后的新表头 (9列) ***
     FULL_HEADER = (
-        f"| 排名 | 基金代码 | **最大回撤 (1M)** | **当日跌幅** | RSI(14) | **V5.0 信号** | "
+        f"| 排名 | 代码 | **最大回撤 (1M)** | **当日跌幅** | RSI(14) | **V5.0 信号** | "
         f"**退出提示** | MA50/MA250健康度 | 试水买价 (跌3%) |\n"
     )
     FULL_SEPARATOR = f"| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n" 
@@ -650,13 +650,13 @@ def main():
         os.makedirs(dir_name, exist_ok=True)
         report_file = os.path.join(dir_name, f"{REPORT_BASE_NAME}_{timestamp_for_filename}.md")
 
-        logging.info("开始分析基金数据...")
+        logging.info("开始分析数据...")
         
         if not os.path.isdir(FUND_DATA_DIR):
-            logging.error(f"基金数据目录 '{FUND_DATA_DIR}' 不存在，请创建该目录并放入 CSV 文件。")
+            logging.error(f"数据目录 '{FUND_DATA_DIR}' 不存在，请创建该目录并放入 CSV 文件。")
             # 即使目录不存在，也生成一个空的报告
             with open(report_file, 'w', encoding='utf-8') as f:
-                 f.write(f"# 基金预警报告 ({timestamp_for_report} UTC+8)\n\n**错误：** 基金数据目录 `fund_data` 不存在或为空，请检查文件路径。")
+                 f.write(f"# 预警报告 ({timestamp_for_report} UTC+8)\n\n**错误：** 数据目录 `fund_data` 不存在或为空，请检查文件路径。")
             return False
 
         results = analyze_all_funds()
